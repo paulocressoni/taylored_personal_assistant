@@ -1,0 +1,35 @@
+name: CI
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+
+jobs:
+    backend:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                working-directory: backend
+        steps:
+            - uses: actions/checkout@v4
+            - uses: astral-sh/setup-uv@v5
+              with:
+                  python-version: "3.12"
+            - run: uv sync
+
+            - name: Lint
+              run: uv run ruff check .
+
+            - name: Format check
+              run: uv run ruff format --check .
+
+            - name: Type check
+              run: uv run mypy app
+
+            - name: Tests
+              env:
+                  ENV: dev
+              run: |
+                  cp .env.dev.example .env.dev
+                  uv run pytest
