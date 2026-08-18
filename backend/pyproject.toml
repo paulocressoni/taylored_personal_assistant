@@ -14,6 +14,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "mypy>=2.3.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -28,3 +29,15 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["app*"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# Fast unit suite by default; integration tests (live DeepSeek API) opt in.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: live DeepSeek API smoke tests (excluded from the fast suite by default)",
+]
+python_files = ["test_*.py", "smoke_*.py"]

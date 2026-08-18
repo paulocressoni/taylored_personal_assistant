@@ -1,5 +1,9 @@
+# Environment files — real secrets never enter the repo.
+# Only the *.example templates are committed.
 .env
-backend/.env
+.env.*
+!.env.*.example
+
 .venv/
 __pycache__/
 *.egg-info/
