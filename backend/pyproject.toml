@@ -33,3 +33,11 @@ include = ["app*"]
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# Fast unit suite by default; integration tests (live DeepSeek API) opt in.
+addopts = "-m 'not integration'"
+markers = [
+    "integration: live DeepSeek API smoke tests (excluded from the fast suite by default)",
+]
+python_files = ["test_*.py", "smoke_*.py"]
