@@ -7,7 +7,7 @@ Missing/invalid required settings crash at startup, never mid-request.
 import os
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 VALID_ENVS = ("dev", "prod")
@@ -33,8 +33,11 @@ class Settings(BaseSettings):
         extra="ignore",  # ignore stray vars, don't blow up on them
     )
 
-    env: Literal["dev", "prod"]
-    deepseek_api_key: SecretStr
+    # Defaults exist only so static checkers accept `Settings()`.
+    # At runtime pydantic overrides them from env vars / .env, and the
+    # validator below keeps the "fail fast at startup" guarantee.
+    env: Literal["dev", "prod"] = "dev"
+    deepseek_api_key: SecretStr = SecretStr("")
 
     # Deterministic settings with sane defaults (NOT vector memory)
     default_timezone: str = "Europe/Berlin"
@@ -45,6 +48,15 @@ class Settings(BaseSettings):
     def has_deepseek(self) -> bool:
         # SecretStr holds the real value in .get_secret_value(); str() masks it.
         return bool(self.deepseek_api_key.get_secret_value())
+
+    @model_validator(mode="after")
+    def _fail_fast_on_missing_required(self) -> "Settings":
+        if not self.deepseek_api_key.get_secret_value():
+            raise ValueError(
+                "DEEPSEEK_API_KEY is required but was not found. "
+                f"Add it to .env.{_APP_ENV} or set the DEEPSEEK_API_KEY env var."
+            )
+        return self
 
 
 # Step 2 — module-level instance: importing app.core.config resolves settings
