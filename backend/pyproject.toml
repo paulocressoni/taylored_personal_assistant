@@ -41,3 +41,6 @@ markers = [
     "integration: live DeepSeek API smoke tests (excluded from the fast suite by default)",
 ]
 python_files = ["test_*.py", "smoke_*.py"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
