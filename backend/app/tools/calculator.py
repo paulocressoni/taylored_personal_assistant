@@ -43,5 +43,5 @@ def calculate(expression: str) -> str:
         tree = ast.parse(expression, mode="eval")
         result = _eval_node(tree.body)
         return str(result)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - tool boundary: return error string, never raise
         return f"Error evaluating {expression!r}: {exc}"

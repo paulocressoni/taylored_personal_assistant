@@ -34,7 +34,7 @@ def tool_exec_node(state: IPAState) -> dict:
         else:
             try:
                 content = tool.invoke(args)
-            except Exception as exc:  # never let a tool crash the graph
+            except Exception as exc:  # noqa: BLE001 - tool boundary: never crash the graph
                 content = f"Tool error: {type(exc).__name__}: {exc}"
 
         results.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
