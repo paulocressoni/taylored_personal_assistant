@@ -14,7 +14,11 @@ from uuid import UUID
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import BaseMessage
-from langchain_core.outputs import LLMResult
+from langchain_core.outputs import (
+    ChatGeneration,
+    ChatGenerationChunk,
+    LLMResult,
+)
 
 
 class RunTelemetry(BaseCallbackHandler):
@@ -63,6 +67,10 @@ class RunTelemetry(BaseCallbackHandler):
         # are what you'd feed into a cost estimate later (see M02 findings).
         for generations in response.generations:
             for generation in generations:
-                usage = getattr(generation.message, "usage_metadata", None) or {}
-                self.input_tokens += usage.get("input_tokens", 0)
-                self.output_tokens += usage.get("output_tokens", 0)
+                # Only chat generations carry .message; the isinstance narrows
+                # the union so mypy knows .message exists (it always will for
+                # ChatDeepSeek, but non-chat generations are handled safely).
+                if isinstance(generation, (ChatGeneration, ChatGenerationChunk)):
+                    usage = getattr(generation.message, "usage_metadata", None) or {}
+                    self.input_tokens += usage.get("input_tokens", 0)
+                    self.output_tokens += usage.get("output_tokens", 0)

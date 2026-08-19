@@ -61,4 +61,9 @@ def router_node(state: IPAState, config: RunnableConfig) -> dict:
     model = get_chat_model("router")
     messages = ROUTER_PROMPT.invoke({"user_input": state["user_input"]}).to_messages()
     reply = model.invoke(messages, config)
-    return {"route": parse_route(reply.content)}
+
+    # reply.content is typed as a union (str | content blocks). For a text
+    # model it's always a str; anything else means "no usable tag" -> responder.
+    content = reply.content
+    route = parse_route(content) if isinstance(content, str) else DEFAULT_ROUTE
+    return {"route": route}
