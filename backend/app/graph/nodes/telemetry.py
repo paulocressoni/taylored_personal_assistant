@@ -3,6 +3,16 @@
 Counts come from the RunTelemetry callback handler attached at the invoke
 site (see app.graph.cli). tool_iterations is already maintained by
 tool_exec_node, so this node only fills the field nothing else touches.
+
+# TODO(api-layer): grow this node into the run-to-state bridge for usage
+# telemetry once FastAPI + checkpointing land:
+#   1. Extend RunTelemetry with a totals() method returning
+#      {"llm_calls", "input_tokens", "output_tokens", "reasoning_tokens"}.
+#   2. Add `usage: dict | None` to IPAState.
+#   3. Return {"usage": telemetry.totals()} from this node so the API layer
+#      can include cost in the response and the checkpointer can persist it
+#      across turns for a session-level budget guard.
+# Trigger: when backend/app/api gains a real graph.invoke() endpoint.
 """
 
 from langchain_core.runnables import RunnableConfig
