@@ -7,11 +7,12 @@
 SHELL := /bin/bash
 BACKEND := backend
 ENV ?= dev
+MSG ?=
 
 .PHONY: dev-up test lint cli types
 
 cli:
-	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
+	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli "$(MSG)"
 
 test:
 	cd $(BACKEND) && ENV=$(ENV) uv run pytest
