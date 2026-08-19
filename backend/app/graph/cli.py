@@ -12,6 +12,7 @@ from langchain_core.messages import HumanMessage
 
 from app.graph.graph import build_graph
 from app.graph.state import IPAState
+from app.graph.utils import get_last_message
 
 
 def main() -> None:
@@ -40,7 +41,7 @@ def main() -> None:
     graph = build_graph()
     final = graph.invoke(initial)
 
-    print(final["messages"][-1].content)
+    print(get_last_message(final["messages"]).content)
 
 
 if __name__ == "__main__":
