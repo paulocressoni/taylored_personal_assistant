@@ -9,11 +9,12 @@ without mocking a JSON schema.
 
 import re
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 
 from app.core.llm import get_chat_model
 from app.graph.state import IPAState
+from app.prompts.router import ROUTER_INSTRUCTIONS
 
 VALID_ROUTES = {
     "knowledge",
@@ -27,30 +28,12 @@ VALID_ROUTES = {
 }
 DEFAULT_ROUTE = "responder"
 
-SYSTEM_PROMPT = """You are the intent router for a smart home assistant.
-Read the user's message and pick EXACTLY ONE intent from this list:
-knowledge, time, weather, calendar, music, alarm, clarify, responder.
-
-Respond with ONLY a <route> tag, nothing else.
-
-Examples:
-User: what's 15% of 240
-<route>knowledge</route>
-
-User: what time is it in Tokyo
-<route>time</route>
-
-User: set an alarm for 7am
-<route>alarm</route>
-
-User: hello, how are you?
-<route>responder</route>
-
-Rules:
-- "knowledge" = factual questions or calculations.
-- If unsure, use "responder".
-- Output nothing but the <route> tag.
-"""
+ROUTER_PROMPT = ChatPromptTemplate.from_messages(
+    [
+        ("system", ROUTER_INSTRUCTIONS),
+        ("human", "{user_input}"),
+    ]
+)
 
 
 def parse_route(text: str) -> str:
@@ -66,7 +49,7 @@ def parse_route(text: str) -> str:
 
 
 def router_node(state: IPAState, config: RunnableConfig) -> dict:
-    """Function to route user input to the appropriate intent based on the SYSTEM_PROMPT.
+    """Function to route user input to the appropriate intent based on the ROUTER_PROMPT.
 
     Args:
         state (IPAState): The current state of the IPA, containing user input and other relevant information.
@@ -76,9 +59,6 @@ def router_node(state: IPAState, config: RunnableConfig) -> dict:
         dict: A dictionary containing the routed intent.
     """
     model = get_chat_model("router")
-    prompt = [
-        SystemMessage(content=SYSTEM_PROMPT),
-        HumanMessage(content=state["user_input"]),
-    ]
-    reply = model.invoke(prompt, config)
+    messages = ROUTER_PROMPT.invoke({"user_input": state["user_input"]}).to_messages()
+    reply = model.invoke(messages, config)
     return {"route": parse_route(reply.content)}

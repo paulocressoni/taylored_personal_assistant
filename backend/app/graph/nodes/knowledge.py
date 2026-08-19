@@ -1,9 +1,18 @@
-"""knowledge_node — a specialist bound to the tool registry."""
+"""knowledge_node — a specialist bound to the tool registry.
 
+Unlike router/responder (which build input from state fields via a
+ChatPromptTemplate), this node passes the RAW message history to the model so
+tool calls and results flow through the ReAct loop. The system prompt is
+prepended locally per call — never written into state["messages"], so it
+doesn't leak into the responder or persisted history.
+"""
+
+from langchain_core.messages import SystemMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.core.llm import get_chat_model
 from app.graph.state import IPAState
+from app.prompts.knowledge import KNOWLEDGE_SYSTEM_PROMPT
 from app.tools.registry import TOOLS
 
 
@@ -18,5 +27,6 @@ def knowledge_node(state: IPAState, config: RunnableConfig) -> dict:
         dict: A dictionary containing the response from the knowledge specialist.
     """
     model = get_chat_model("specialist").bind_tools(TOOLS)
-    response = model.invoke(state["messages"], config)
+    messages = [SystemMessage(content=KNOWLEDGE_SYSTEM_PROMPT), *state["messages"]]
+    response = model.invoke(messages, config)
     return {"messages": [response]}

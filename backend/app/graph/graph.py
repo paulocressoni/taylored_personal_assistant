@@ -13,22 +13,35 @@ from app.graph.utils import get_last_message
 # Routes without a specialist yet fall back to the responder.
 ROUTE_MAP = {
     "knowledge": "knowledge",
-    # time / weather / calendar / music / alarm / clarify -> responder (M04 stubs)
+    # TODO: time / weather / calendar / music / alarm / clarify -> responder (M04 stubs)
 }
 
 
 def route_edge(state: IPAState) -> str:
-    """Map the router's decision to a node name. Unknown -> responder."""
+    """
+    Map the router's decision to a node name. Unknown -> responder.
+
+    Args:
+        state (IPAState): The current state of the IPA, including the routed intent.
+
+    Returns:
+        str: The name of the next node to transition to based on the routed intent.
+    """
     route = state.get("route") or DEFAULT_ROUTE
     return ROUTE_MAP.get(route, "responder")
 
 
 def should_continue(state: IPAState) -> str:
     """Decide what happens after the specialist produces a message.
+        - iteration cap hit -> force-exit to responder (budget guardrail)
+        - last message has tool_calls -> run the tool dispatcher
+        - otherwise -> specialist gave a final answer -> responder formats it
 
-    - iteration cap hit -> force-exit to responder (budget guardrail)
-    - last message has tool_calls -> run the tool dispatcher
-    - otherwise -> specialist gave a final answer -> responder formats it
+    Args:
+        state (IPAState): The current state of the IPA, including message history and tool iteration count.
+
+    Returns:
+        str: The next node to transition to, either "tool_exec" or "responder
     """
     if state["tool_iterations"] >= TOOL_ITERATION_CAP:
         return "responder"
