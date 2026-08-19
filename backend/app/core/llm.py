@@ -6,12 +6,21 @@ so business logic never hardcodes a model name — swapping models or providers
 is a one-place change.
 """
 
+from typing import TypedDict
+
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_deepseek import ChatDeepSeek
 
 from app.core.config import settings
 
-ROLE_CONFIG = {
+
+class RoleConfig(TypedDict):
+    model: str
+    temperature: float
+    thinking: bool
+
+
+ROLE_CONFIG: dict[str, RoleConfig] = {
     # thinking: False keeps cheap roles cheap — verified empirically that
     # v4-flash thinks by default, so we must send "disabled" explicitly.
     "router": {"model": "deepseek-v4-flash", "temperature": 0.0, "thinking": False},
