@@ -8,9 +8,9 @@ tool failure can never crash the whole graph.
 
 from langchain_core.messages import SystemMessage, ToolMessage
 
-from app.graph.nodes.knowledge import tools_by_name
 from app.graph.state import IPAState
 from app.graph.utils import get_last_message
+from app.tools.registry import tools_by_name
 
 # Hard cap on ReAct loop iterations. Without this, a tool that keeps saying
 # "I need more information" would spin forever and burn real API budget.
@@ -21,8 +21,10 @@ def tool_exec_node(state: IPAState) -> dict:
     last = get_last_message(state["messages"])
     tool_calls = getattr(last, "tool_calls", None) or []
 
+    iterations = state["tool_iterations"]
     results: list[ToolMessage] = []
     for call in tool_calls:
+        iterations += 1
         name = call["name"]
         args = call.get("args") or {}
         tool = tools_by_name.get(name)
@@ -37,7 +39,6 @@ def tool_exec_node(state: IPAState) -> dict:
 
         results.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
 
-    iterations = state["tool_iterations"] + 1
     out: dict = {"messages": results, "tool_iterations": iterations}
 
     # Cap reached: append a SystemMessage that tells the responder to stop
