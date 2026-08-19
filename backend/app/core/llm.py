@@ -12,9 +12,11 @@ from langchain_deepseek import ChatDeepSeek
 from app.core.config import settings
 
 ROLE_CONFIG = {
-    "router": {"model": "deepseek-v4-flash", "temperature": 0.0},
-    "specialist": {"model": "deepseek-v4-flash", "temperature": 0.0},
-    "responder": {"model": "deepseek-v4-flash", "temperature": 1.3},
+    # thinking: False keeps cheap roles cheap — verified empirically that
+    # v4-flash thinks by default, so we must send "disabled" explicitly.
+    "router": {"model": "deepseek-v4-flash", "temperature": 0.0, "thinking": False},
+    "specialist": {"model": "deepseek-v4-flash", "temperature": 0.0, "thinking": False},
+    "responder": {"model": "deepseek-v4-flash", "temperature": 1.3, "thinking": False},
 }
 
 
@@ -33,6 +35,12 @@ def get_chat_model(role: str) -> BaseChatModel:
         valid = ", ".join(sorted(ROLE_CONFIG))
         raise ValueError(f"Unknown LLM role {role!r}. Valid roles: {valid}") from None
 
+    # Explicit both ways: DeepSeek thinks by default, so "False" must send
+    # "disabled" rather than omit the key — otherwise thinking stays on.
+    extra_body = {
+        "thinking": {"type": "enabled" if role_config["thinking"] else "disabled"}
+    }
+
     return ChatDeepSeek(
         model=role_config["model"],
         temperature=role_config["temperature"],
@@ -41,4 +49,5 @@ def get_chat_model(role: str) -> BaseChatModel:
         max_tokens=None,
         timeout=None,
         max_retries=2,
+        extra_body=extra_body,
     )
