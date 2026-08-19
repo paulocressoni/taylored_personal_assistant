@@ -14,11 +14,12 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 6. [Step 4 — Set up VS Code](#step-4--set-up-vs-code)
 7. [Step 5 — Install pre-commit hooks](#step-5--install-pre-commit-hooks)
 8. [Step 6 — Run the backend](#step-6--run-the-backend)
-9. [Manual path (no uv)](#manual-path-no-uv)
-10. [Daily command cheat sheet](#daily-command-cheat-sheet)
-11. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
-12. [Troubleshooting](#troubleshooting)
-13. [Roadmap](#roadmap)
+9. [LLM provider layer (M02)](#llm-provider-layer-m02)
+10. [Manual path (no uv)](#manual-path-no-uv)
+11. [Daily command cheat sheet](#daily-command-cheat-sheet)
+12. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
+13. [Troubleshooting](#troubleshooting)
+14. [Roadmap](#roadmap)
 
 ---
 
@@ -40,12 +41,20 @@ taylored_personal_assistant/
     ├── .python-version           # Pinned Python version (COMMIT this)
     ├── .env                      # Real secrets — NEVER commit
     ├── .env.example              # Template for .env (COMMIT this)
+    ├── scripts/                  # LLM smoke tests (pytest "integration" marker)
+    │   ├── smoke_01_chat.py
+    │   ├── smoke_02_tools.py
+    │   ├── smoke_03_thinking.py
+    │   ├── smoke_04_tools_plus_thinking.py
+    │   └── smoke_05_multilingual.py
+    ├── tests/                    # Fast unit tests (no network)
+    │   └── test_config.py
     └── app/                      # Importable Python package ("app")
         ├── __init__.py
         └── core/
             ├── __init__.py
             ├── config.py         # pydantic-settings, loads .env
-            └── llm.py            # LLM client factory
+            └── llm.py            # Role-based LLM factory (ROLE_CONFIG)
 ```
 
 **Key concepts:**
@@ -245,19 +254,21 @@ uvx detect-secrets scan --exclude-files '(\.venv/|\.git/|uv\.lock|backend/\.env)
 
 ## Step 6 — Run the backend
 
-Run any script inside the venv without activation:
+`app.core.llm` is a pure factory with no `__main__` — to exercise the DeepSeek API, run one of the smoke scripts in `backend/scripts/` (see [LLM provider layer](#llm-provider-layer-m02)):
 
 ```powershell
 cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
-uv run python -m app.core.llm
+$env:ENV="dev"
+uv run python scripts/smoke_01_chat.py
 ```
-
-> Run Python files as **modules** (`python -m app.core.llm`) rather than scripts (`python app/core/llm.py`) — module form keeps `app` importable and is the pattern that scales once files import each other.
 
 Run tests:
 
 ```powershell
-uv run pytest
+cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
+uv run pytest                  # fast unit suite (smoke tests deselected)
+uv run pytest -m integration   # live DeepSeek API smoke tests
 ```
 
 Run the dev server (once `backend/app/main.py` exists):
@@ -265,6 +276,41 @@ Run the dev server (once `backend/app/main.py` exists):
 ```powershell
 uv run uvicorn app.main:app --reload
 ```
+
+---
+
+## LLM provider layer (M02)
+
+All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Model names, temperatures, and thinking mode live only in `ROLE_CONFIG` — business logic never hardcodes a model name.
+
+| Role | Model | Temperature | Thinking | Use case |
+|---|---|---|---|---|
+| `router` | `deepseek-v4-flash` | 0.0 | off | Intent classification / routing |
+| `specialist` | `deepseek-v4-flash` | 0.0 | off | Deterministic tool calling |
+| `responder` | `deepseek-v4-flash` | 1.3 | off | Conversational replies |
+| `reasoner` *(planned)* | `deepseek-v4-pro` | 0.0 | on | Planning, diagnosis, disambiguation |
+
+**DeepSeek temperature scale** (differs from OpenAI — do not default to 0.7): 0.0 code/math · 1.0 data analysis · 1.3 general conversation · 1.5 creative writing.
+
+### Empirical findings (verified by smoke tests, not docs)
+
+- Thinking mode works on `deepseek-v4-flash` via `extra_body={"thinking": {"type": "enabled"}}` and is **on by default** — so the factory sends `enabled`/`disabled` **explicitly** for every role (a role with thinking off must send `"disabled"`, not merely omit the key).
+- `{"thinking": {"type": "disabled"}}` is honored — verified in both directions.
+- Reasoning tokens are billed as **output tokens** (~90% of output in the smoke test) — the reason thinking stays off for cheap, high-volume roles.
+- Prompt caching works: `usage_metadata.input_token_details.cache_read` reports cached input tokens. Keep stable content (system prompt, tool schemas) **first** in a prompt and volatile content (memory, timestamps, the user message) **last** — cached input is ~50x cheaper than uncached.
+- **`smoke_04` — tools + thinking combined:** works on `deepseek-v4-flash`. In the recorded run the model emitted the tool call (`GetWeather` → `location: Berlin`) *and* brief reasoning (19 reasoning tokens), with empty `content`; `cache_read: 256` showed the tool schema served from cache. The combo is undocumented upstream but functional here.
+
+### Running the smoke tests
+
+```powershell
+cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
+uv run python scripts/smoke_01_chat.py            # standalone, prints usage_metadata
+uv run pytest -m integration                      # all 5 as pytest integration tests
+uv run pytest                                     # fast unit suite (smoke excluded)
+```
+
+Each smoke script verifies one capability: basic chat (`smoke_01`), tool calling (`smoke_02`), thinking mode (`smoke_03`), tools + thinking (`smoke_04`), and multilingual round-trip en/de/pt-BR (`smoke_05`).
 
 ---
 
@@ -374,4 +420,3 @@ git commit                             # pre-commit hooks fire automatically
 | 2. Local deployment & DevOps | Docker image, docker-compose, CI/CD → Mini PC |
 | 3. Observability & memory | Langfuse traces, Qdrant/Chroma vector store |
 | 4. Omni-channel UI | Vite/React frontend, WebSockets, voice via reSpeaker/ESP32 |
-
