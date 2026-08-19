@@ -1,8 +1,9 @@
 """smoke_02_tools.py — does bind_tools() produce a non-empty tool_calls list?"""
 
 import pytest
-from app.core.llm import get_chat_model
 from pydantic import BaseModel, Field
+
+from app.core.llm import get_chat_model
 
 pytestmark = pytest.mark.integration
 

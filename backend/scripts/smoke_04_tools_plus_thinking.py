@@ -6,8 +6,9 @@ the observation, not a pass/fail.
 """
 
 import pytest
-from app.core.llm import get_chat_model
 from pydantic import BaseModel, Field
+
+from app.core.llm import get_chat_model
 
 pytestmark = pytest.mark.integration
 

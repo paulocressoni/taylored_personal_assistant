@@ -5,8 +5,9 @@ must clear it. Per-call extra_body overrides the factory's role default.
 """
 
 import pytest
-from app.core.llm import get_chat_model
 from langchain_core.messages import AIMessage
+
+from app.core.llm import get_chat_model
 
 pytestmark = pytest.mark.integration
 

@@ -5,6 +5,7 @@ Uses settings.supported_languages (["en", "de", "pt-BR"]) as the source of truth
 """
 
 import pytest
+
 from app.core.config import settings
 from app.core.llm import get_chat_model
 

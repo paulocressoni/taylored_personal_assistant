@@ -4,6 +4,7 @@ Empirical goal: print the REAL usage_metadata shape. Don't assume key names.
 """
 
 import pytest
+
 from app.core.llm import get_chat_model
 
 pytestmark = pytest.mark.integration
