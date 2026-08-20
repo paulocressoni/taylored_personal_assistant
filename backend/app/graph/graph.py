@@ -2,6 +2,7 @@
 
 from langgraph.graph import END, START, StateGraph
 
+from app.graph.nodes.detect_lang import detect_lang_node
 from app.graph.nodes.knowledge import knowledge_node
 from app.graph.nodes.responder import responder_node
 from app.graph.nodes.router import DEFAULT_ROUTE, router_node
@@ -54,13 +55,16 @@ def should_continue(state: IPAState) -> str:
 
 def build_graph():
     builder = StateGraph(IPAState)
+    builder.add_node("detect_lang", detect_lang_node)
     builder.add_node("router", router_node)
     builder.add_node("knowledge", knowledge_node)
     builder.add_node("tool_exec", tool_exec_node)
     builder.add_node("responder", responder_node)
     builder.add_node("telemetry", telemetry_node)
 
-    builder.add_edge(START, "router")
+    # Language first: every downstream node reads a resolved state["lang"].
+    builder.add_edge(START, "detect_lang")
+    builder.add_edge("detect_lang", "router")
     builder.add_conditional_edges(
         "router",
         route_edge,
