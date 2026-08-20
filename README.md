@@ -15,11 +15,12 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 7. [Step 5 — Install pre-commit hooks](#step-5--install-pre-commit-hooks)
 8. [Step 6 — Run the backend](#step-6--run-the-backend)
 9. [LLM provider layer (M02)](#llm-provider-layer-m02)
-10. [Manual path (no uv)](#manual-path-no-uv)
-11. [Daily command cheat sheet](#daily-command-cheat-sheet)
-12. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
-13. [Troubleshooting](#troubleshooting)
-14. [Roadmap](#roadmap)
+10. [Language handling (M05)](#language-handling-m05)
+11. [Manual path (no uv)](#manual-path-no-uv)
+12. [Daily command cheat sheet](#daily-command-cheat-sheet)
+13. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
+14. [Troubleshooting](#troubleshooting)
+15. [Roadmap](#roadmap)
 
 ---
 
@@ -39,22 +40,45 @@ taylored_personal_assistant/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
     ├── uv.lock                   # Locked dependency versions (COMMIT this)
     ├── .python-version           # Pinned Python version (COMMIT this)
-    ├── .env                      # Real secrets — NEVER commit
-    ├── .env.example              # Template for .env (COMMIT this)
+    ├── .env.dev / .env.prod      # Real secrets — NEVER commit
+    ├── .env.dev.example          # Template for the env files (COMMIT this)
     ├── scripts/                  # LLM smoke tests (pytest "integration" marker)
     │   ├── smoke_01_chat.py
     │   ├── smoke_02_tools.py
     │   ├── smoke_03_thinking.py
     │   ├── smoke_04_tools_plus_thinking.py
-    │   └── smoke_05_multilingual.py
-    ├── tests/                    # Fast unit tests (no network)
-    │   └── test_config.py
+    │   ├── smoke_05_multilingual.py
+    │   └── smoke_06_multilingual_routing.py
+    ├── tests/                    # Fast unit tests (no network, no LLM)
+    │   ├── test_calculator.py
+    │   ├── test_config.py
+    │   └── test_langdetect.py
     └── app/                      # Importable Python package ("app")
         ├── __init__.py
-        └── core/
-            ├── __init__.py
-            ├── config.py         # pydantic-settings, loads .env
-            └── llm.py            # Role-based LLM factory (ROLE_CONFIG)
+        ├── api/                  # FastAPI layer (future)
+        ├── core/                 # Config, LLM factory, telemetry
+        │   ├── __init__.py
+        │   ├── callbacks.py      # RunTelemetry callback handler
+        │   ├── config.py         # pydantic-settings, loads .env
+        │   └── llm.py            # Role-based LLM factory (ROLE_CONFIG)
+        ├── graph/                # LangGraph state + nodes
+        │   ├── graph.py          # StateGraph builder
+        │   ├── state.py          # IPAState schema
+        │   ├── utils.py
+        │   └── nodes/            # detect_lang, router, knowledge, ...
+        ├── identity/             # (future)
+        ├── language/             # Deterministic language handling (M05)
+        │   ├── __init__.py
+        │   └── detector.py       # lingua detection + fallback chain
+        ├── memory/               # (future)
+        ├── prompts/              # Leaf prompt modules (no app imports)
+        │   ├── knowledge.py
+        │   ├── responder.py
+        │   └── router.py
+        ├── tools/                # Tool registry + calculator
+        │   ├── calculator.py
+        │   └── registry.py
+        └── voice/                # (future)
 ```
 
 **Key concepts:**
@@ -306,11 +330,34 @@ All LLM access goes through the role-based factory in `backend/app/core/llm.py`.
 cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
 $env:ENV="dev"
 uv run python scripts/smoke_01_chat.py            # standalone, prints usage_metadata
-uv run pytest -m integration                      # all 5 as pytest integration tests
+uv run pytest -m integration                      # all 6 as pytest integration tests
 uv run pytest                                     # fast unit suite (smoke excluded)
 ```
 
-Each smoke script verifies one capability: basic chat (`smoke_01`), tool calling (`smoke_02`), thinking mode (`smoke_03`), tools + thinking (`smoke_04`), and multilingual round-trip en/de/pt-BR (`smoke_05`).
+Each smoke script verifies one capability: basic chat (`smoke_01`), tool calling (`smoke_02`), thinking mode (`smoke_03`), tools + thinking (`smoke_04`), multilingual round-trip en/de/pt-BR (`smoke_05`), and multilingual graph routing — detect → route → reply in the right language (`smoke_06`).
+
+---
+
+## Language handling (M05)
+
+Multilingual support for English, German, and Brazilian Portuguese is
+**deterministic and structured** — language is a first-class value in graph
+state (`state["lang"]`), not a side effect of the LLM "happening" to reply in
+the right language.
+
+- **Detection** (`app/language/detector.py`) uses `lingua-language-detector`
+  restricted to `["en", "de", "pt-BR"]` — free, near-instant, offline, and
+  unit-testable (no LLM call, no token spend). A `MIN_CONFIDENCE` threshold
+  guards against unreliable guesses on short text.
+- **Fallback chain** when confidence is low: previous turn's language →
+  the user's stored preference (stub, M13) → `"en"`.
+- **Graph wiring**: `START → detect_lang → router`. The `detect_lang` node
+  resolves the turn's language into `state["lang"]` before routing, so the
+  router, specialists, and responder all read it.
+- **Responder policy**: the system prompt says `Reply in {lang}. Never switch
+  languages unless the user does.` The router prompt carries German and
+  Portuguese few-shot examples so intent routing stays robust for non-English
+  input.
 
 ---
 
@@ -323,7 +370,7 @@ cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e . pytest ruff pre-commit pydantic-settings fastapi uvicorn[standard] langgraph langchain-openai langchain-deepseek
+python -m pip install -e . pytest ruff pre-commit pydantic-settings fastapi uvicorn[standard] langgraph lingua-language-detector langchain-openai langchain-deepseek
 ```
 
 Caveats:
