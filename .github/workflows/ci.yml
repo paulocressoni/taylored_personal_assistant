@@ -6,17 +6,26 @@ on:
     pull_request:
 
 jobs:
+    # Fast, cheap, deterministic — guards every push/PR. NO DEEPSEEK_API_KEY
+    # is configured anywhere: the unit suite is fully mocked.
     backend:
         runs-on: ubuntu-latest
         defaults:
             run:
                 working-directory: backend
         steps:
-            - uses: actions/checkout@v4
-            - uses: astral-sh/setup-uv@v5
+            - uses: actions/checkout@v7.0.1
+
+            - name: Install uv and Python
+              uses: astral-sh/setup-uv@v10.0.1
               with:
                   python-version: "3.12"
-            - run: uv sync
+                  # Cache the venv + downloaded wheels, keyed on the lockfile.
+                  enable-cache: true
+                  cache-dependency-glob: "backend/uv.lock"
+
+            - name: Sync dependencies (from uv.lock)
+              run: uv sync
 
             - name: Lint
               run: uv run ruff check .
@@ -27,9 +36,27 @@ jobs:
             - name: Type check
               run: uv run mypy app
 
-            - name: Tests
+            - name: Unit tests (mocked, no API)
               env:
                   ENV: dev
               run: |
                   cp .env.dev.example .env.dev
-                  uv run pytest
+                  uv run pytest -m "not integration"
+
+    # Secret scanning over the FULL history — a leaked key can't hide in an
+    # old commit. Separate job so it scans the whole monorepo and can't be
+    # skipped when a lint failure aborts the backend job.
+    secret-scan:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read          # for actions/checkout
+            pull-requests: read     # gitleaks lists the PR's commits via the REST API
+        steps:
+            - uses: actions/checkout@v7.0.1
+              with:
+                  fetch-depth: 0 # gitleaks needs the complete git history
+
+            - name: Secret scan (gitleaks)
+              uses: gitleaks/gitleaks-action@v3.0.0
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
