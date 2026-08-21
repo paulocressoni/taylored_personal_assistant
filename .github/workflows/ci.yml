@@ -48,6 +48,9 @@ jobs:
     # skipped when a lint failure aborts the backend job.
     secret-scan:
         runs-on: ubuntu-latest
+        permissions:
+            contents: read          # for actions/checkout
+            pull-requests: read     # gitleaks lists the PR's commits via the REST API
         steps:
             - uses: actions/checkout@v7.0.1
               with:
