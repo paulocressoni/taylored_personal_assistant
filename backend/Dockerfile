@@ -3,7 +3,7 @@
 FROM python:3.12-slim AS builder
 
 # The official way to get uv into the image (no separate install step).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.12.5 /uv /bin/uv
 
 WORKDIR /app
 
