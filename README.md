@@ -14,13 +14,15 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 6. [Step 4 — Set up VS Code](#step-4--set-up-vs-code)
 7. [Step 5 — Install pre-commit hooks](#step-5--install-pre-commit-hooks)
 8. [Step 6 — Run the backend](#step-6--run-the-backend)
-9. [LLM provider layer (M02)](#llm-provider-layer-m02)
-10. [Language handling (M05)](#language-handling-m05)
-11. [Manual path (no uv)](#manual-path-no-uv)
-12. [Daily command cheat sheet](#daily-command-cheat-sheet)
-13. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
-14. [Troubleshooting](#troubleshooting)
-15. [Roadmap](#roadmap)
+9. [Docker (M07) — containerized backend](#docker-m07--containerized-backend)
+10. [Docker cheat sheet](#docker-cheat-sheet)
+11. [LLM provider layer (M02)](#llm-provider-layer-m02)
+12. [Language handling (M05)](#language-handling-m05)
+13. [Manual path (no uv)](#manual-path-no-uv)
+14. [Daily command cheat sheet](#daily-command-cheat-sheet)
+15. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
+16. [Troubleshooting](#troubleshooting)
+17. [Roadmap](#roadmap)
 
 ---
 
@@ -42,6 +44,8 @@ taylored_personal_assistant/
     ├── .python-version           # Pinned Python version (COMMIT this)
     ├── .env.dev / .env.prod      # Real secrets — NEVER commit
     ├── .env.dev.example          # Template for the env files (COMMIT this)
+    ├── Dockerfile                # Multi-stage image build (M07)
+    ├── .dockerignore             # Keeps the build context lean (M07)
     ├── scripts/                  # LLM smoke tests (pytest "integration" marker)
     │   ├── smoke_01_chat.py
     │   ├── smoke_02_tools.py
@@ -55,6 +59,7 @@ taylored_personal_assistant/
     │   └── test_langdetect.py
     └── app/                      # Importable Python package ("app")
         ├── __init__.py
+        ├── main.py               # FastAPI entrypoint + /health (M07)
         ├── api/                  # FastAPI layer (future)
         ├── core/                 # Config, LLM factory, telemetry
         │   ├── __init__.py
@@ -90,6 +95,9 @@ taylored_personal_assistant/
 | `uv` | Package manager: manages Python, venv, deps, and the lockfile |
 | `uv.lock` | Locked, reproducible dependency graph — commit it, never edit by hand |
 | `.venv` | Local virtual environment — created by `uv`, gitignored |
+| `Dockerfile` | Multi-stage build: `builder` (uv + deps) → slim `runtime` (venv + code) |
+| `.dockerignore` | Excludes `.venv`, caches, `.git` from the Docker build context |
+| Image vs container | **Image** = immutable blueprint; **container** = a running instance of it |
 
 > The `app` package is installed **editable** into the venv (thanks to `[build-system]` + `[tool.setuptools.packages.find]` in `pyproject.toml`). That is why `from app.core...` imports work from **any** directory — no `PYTHONPATH` hacks needed.
 
@@ -102,6 +110,7 @@ taylored_personal_assistant/
 | Git | any recent | Git for Windows |
 | `uv` | 0.12+ | Manages Python + venv + deps |
 | Python | 3.12 | Managed by `uv` (auto-downloaded if missing) |
+| Docker | any recent | For the containerized backend (M07) — assumed installed, no setup steps here |
 | VS Code | any recent | With the extensions listed in [Step 4](#step-4--set-up-vs-code) |
 
 ---
@@ -295,11 +304,62 @@ uv run pytest                  # fast unit suite (smoke tests deselected)
 uv run pytest -m integration   # live DeepSeek API smoke tests
 ```
 
-Run the dev server (once `backend/app/main.py` exists):
+Run the dev server:
 
 ```powershell
 uv run uvicorn app.main:app --reload
 ```
+
+---
+
+## Docker (M07) — containerized backend
+
+The backend ships as a **multi-stage Docker image**: a `builder` stage installs dependencies with `uv`, and a slim `runtime` stage copies only the finished venv + source — no build tooling ends up in the final image. See the [Docker cheat sheet](docs/docker-cheatsheet.md) for the full command reference.
+
+### What's in the repo
+
+| File | Purpose |
+|---|---|
+| `backend/Dockerfile` | Multi-stage build: `builder` (uv + deps) → slim `runtime` (venv + code) |
+| `backend/.dockerignore` | Excludes `.venv`, caches, `.git`, `node_modules` from the build context |
+| `backend/app/main.py` | FastAPI entrypoint exposing `GET /health` |
+
+### Build the image
+
+```powershell
+cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant
+docker build -t assistant-backend backend/
+```
+
+The build context is `backend/`. Dependency manifests (`pyproject.toml`, `uv.lock`) are copied **before** the app source, so the heavy `uv sync` layer stays cached — code-only edits rebuild in seconds (only `COPY app/ ./app/` re-runs).
+
+### Run it
+
+> The container listens on 8000 **inside its own network**. To reach it from your host, publish the port with `-p 8000:8000` (host port → container port). Without it, `localhost:8000` on your machine finds nothing — the healthcheck still passes because it runs *inside* the container.
+
+```powershell
+docker run -d --name assistant-backend -p 8000:8000 assistant-backend
+docker ps                   # PORTS: 0.0.0.0:8000->8000/tcp ; STATUS: (healthy)
+docker logs assistant-backend
+```
+
+Check the health endpoint (on Windows, `curl` is aliased — use `curl.exe`):
+
+```powershell
+curl.exe http://localhost:8000/health     # -> {"status":"ok"}
+```
+
+### Stop, remove, rebuild
+
+```powershell
+docker stop assistant-backend
+docker rm assistant-backend
+
+docker build -t assistant-backend backend/                # after code changes
+docker run -d --name assistant-backend -p 8000:8000 assistant-backend
+```
+
+> Containers are **ephemeral** — anything written inside is lost when the container is removed. Persistent data will live in **volumes** (M08, Compose).
 
 ---
 
