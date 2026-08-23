@@ -1,0 +1,181 @@
+# infra/compose/docker-compose.langfuse.yml  (v4)
+# Self-hosted Langfuse v4 for LOCAL DEV observability (M08).
+# Based on the official v4 compose in langfuse/langfuse.
+#
+# Architecture:
+#   langfuse-web     : UI + ingestion API (host port 3000)
+#   langfuse-worker  : background jobs (picks events from S3 -> ClickHouse)
+#   postgres         : transactional metadata (users, projects, sessions)
+#   clickhouse       : OLAP store for traces/spans/generations
+#   redis            : queue + cache
+#   minio            : S3-compatible object storage (raw events + media)
+#
+# THE RULE (M08 #4): inside Compose, containers reach each other by SERVICE
+# NAME, never "localhost". All *_HOST / *_URL below use service names.
+
+name: langfuse-dev
+
+services:
+  langfuse-web:
+    image: docker.langfuse.com/langfuse/langfuse:4
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy   # READY, not just started
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "3000:3000"                  # host:container — the ONE port that matters
+    environment: &langfuse_env
+      # --- transactional DB (Postgres) ---
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:?set in infra/compose/.env}@postgres:5432/postgres
+      SALT: ${SALT:?set in infra/compose/.env}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:?set in infra/compose/.env}
+      # --- queue / cache (Redis) ---
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_AUTH: ${REDIS_AUTH:?set in infra/compose/.env}
+      # --- traces DB (ClickHouse) ---
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in infra/compose/.env}
+      CLICKHOUSE_CLUSTER_ENABLED: "false"
+      # --- object storage (MinIO) — v4 splits event vs media buckets ---
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in infra/compose/.env}
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_EVENT_UPLOAD_PREFIX: events/
+      LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
+      LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:?set in infra/compose/.env}
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+      LANGFUSE_S3_MEDIA_UPLOAD_PREFIX: media/
+      # --- the app talking to itself: M08 #4 in action ---
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+      LANGFUSE_WEB_HOST: http://langfuse-web:3000
+      LANGFUSE_WORKER_HOST: http://langfuse-worker:3030
+      LANGFUSE_INGESTION_HOST: http://langfuse-web:3000
+      # --- auth (browser-facing, so localhost IS correct here) ---
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:?set in infra/compose/.env}
+      # --- runtime ---
+      NODE_ENV: production
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      # --- headless init: auto-create org + project + admin user ---
+      # Runs once on first boot ("create if not exists"). Do NOT double-quote
+      # the values (Langfuse docs troubleshooting: quoted values break it).
+      LANGFUSE_INIT_ORG_ID: dev-org
+      LANGFUSE_INIT_ORG_NAME: Dev Org
+      LANGFUSE_INIT_PROJECT_ID: dev-project
+      LANGFUSE_INIT_PROJECT_NAME: Dev Project
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?set in infra/compose/.env}
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?set in infra/compose/.env}
+      LANGFUSE_INIT_USER_EMAIL: dev@localhost.local
+      LANGFUSE_INIT_USER_NAME: Dev Admin
+      LANGFUSE_INIT_USER_PASSWORD: ${LANGFUSE_INIT_USER_PASSWORD:?set in infra/compose/.env}
+    healthcheck:
+      # Tolerant: a 200 OR 404 proves the server is up; only 5xx/refused = not ready.
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/public/health').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  langfuse-worker:
+    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      <<: *langfuse_env
+      PORT: "3030"
+    # No healthcheck: background consumer; --wait treats it as healthy when running.
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in infra/compose/.env}
+      POSTGRES_DB: postgres
+      TZ: UTC          # Langfuse REQUIRES UTC on Postgres AND ClickHouse
+      PGTZ: UTC
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    restart: unless-stopped
+    user: "101:101"    # official image UID/GID — avoids volume permission errors
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in infra/compose/.env}
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 1s
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_AUTH:?set in infra/compose/.env}", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+  minio:
+    image: cgr.dev/chainguard/minio@sha256:ab73368025bb948190c734b619d2bdf25e4da600d7f6aa3453818c449e52be86
+    restart: unless-stopped
+    entrypoint: sh
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set in infra/compose/.env}
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 1s
+      timeout: 5s
+      retries: 5
+      start_period: 1s
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  clickhouse_logs:
+  redis_data:
+  minio_data:

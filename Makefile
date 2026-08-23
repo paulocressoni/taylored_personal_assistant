@@ -26,3 +26,16 @@ types:
 
 dev-up:
 	cd $(BACKEND) && ENV=$(ENV) uv run uvicorn app.main:app --reload
+
+# --- Langfuse observability stack (M08) ---
+ENV_FILE := infra/compose/.env
+COMPOSE := docker compose -f infra/compose/docker-compose.langfuse.yml --env-file $(ENV_FILE)
+
+langfuse-up:
+    $(COMPOSE) up -d --wait
+
+langfuse-down:
+    $(COMPOSE) down
+
+langfuse-logs:
+    $(COMPOSE) logs -f
