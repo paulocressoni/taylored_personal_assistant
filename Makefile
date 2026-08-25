@@ -9,10 +9,13 @@ BACKEND := backend
 ENV ?= dev
 MSG ?=
 
-.PHONY: dev-up test lint cli types
+.PHONY: dev-up test lint cli types langfuse-up langfuse-down langfuse-logs config
+
+config:
+	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
 
 cli:
-	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli "$(MSG)"
+	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.graph.cli "$(MSG)"
 
 test:
 	cd $(BACKEND) && ENV=$(ENV) uv run pytest
@@ -32,10 +35,10 @@ ENV_FILE := infra/compose/.env
 COMPOSE := docker compose -f infra/compose/docker-compose.langfuse.yml --env-file $(ENV_FILE)
 
 langfuse-up:
-    $(COMPOSE) up -d --wait
+	$(COMPOSE) up -d --wait
 
 langfuse-down:
-    $(COMPOSE) down
+	$(COMPOSE) down
 
 langfuse-logs:
-    $(COMPOSE) logs -f
+	$(COMPOSE) logs -f
