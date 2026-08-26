@@ -60,7 +60,8 @@ def test_router_node_extracts_route_from_fake_reply(patch_llm) -> None:
 
     result = router_node(make_state(user_input="Is it sunny tomorrow?"), config=None)
 
-    assert result == {"route": "weather"}
+    assert result["route"] == "weather"
+    assert result["llm_calls"] == 1  # llm_call now reports the call count
     assert len(fake.calls) == 1  # exactly one model call was made
 
 
@@ -70,4 +71,5 @@ def test_router_node_no_tag_falls_back_to_default(patch_llm) -> None:
 
     result = router_node(make_state(user_input="hi"), config=None)
 
-    assert result == {"route": DEFAULT_ROUTE}
+    assert result["route"] == DEFAULT_ROUTE
+    assert result["llm_calls"] == 1  # llm_call now reports the call count
