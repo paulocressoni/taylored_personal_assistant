@@ -43,11 +43,29 @@ class Settings(BaseSettings):
     default_timezone: str = "Europe/Berlin"
     supported_languages: list[str] = ["en", "de", "pt-BR"]
 
+    # --- Observability (Langfuse) ---
+    # Deliberately OPTIONAL and best-effort: a down or unconfigured
+    # observability stack must NEVER block the assistant. The validator
+    # below does NOT require these — only DeepSeek stays fail-fast.
+    langfuse_enabled: bool = False
+    langfuse_public_key: SecretStr = SecretStr("")
+    langfuse_secret_key: SecretStr = SecretStr("")
+    # v4 SDK env var name is LANGFUSE_BASE_URL (LANGFUSE_HOST is deprecated).
+    langfuse_base_url: str = "http://localhost:3000"
+
     # Check if DeepSeek API key is available
     @property
     def has_deepseek(self) -> bool:
         # SecretStr holds the real value in .get_secret_value(); str() masks it.
         return bool(self.deepseek_api_key.get_secret_value())
+
+    @property
+    def langfuse_ready(self) -> bool:
+        """True only when observability is switched on AND fully keyed."""
+        return self.langfuse_enabled and bool(
+            self.langfuse_public_key.get_secret_value()
+            and self.langfuse_secret_key.get_secret_value()
+        )
 
     @model_validator(mode="after")
     def _fail_fast_on_missing_required(self) -> "Settings":

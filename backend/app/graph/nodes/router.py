@@ -12,7 +12,7 @@ import re
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 
-from app.core.llm import get_chat_model
+from app.core.llm import get_chat_model, llm_call
 from app.graph.state import IPAState
 from app.prompts.router import ROUTER_INSTRUCTIONS
 
@@ -60,10 +60,12 @@ def router_node(state: IPAState, config: RunnableConfig) -> dict:
     """
     model = get_chat_model("router")
     messages = ROUTER_PROMPT.invoke({"user_input": state["user_input"]}).to_messages()
-    reply = model.invoke(messages, config)
+    llm_result = llm_call(state, model, messages, config)
+    response = llm_result["response"]  # Extract the response from the llm_call result
+    llm_calls = llm_result["llm_calls"]  # Extract the LLM call count
 
     # reply.content is typed as a union (str | content blocks). For a text
     # model it's always a str; anything else means "no usable tag" -> responder.
-    content = reply.content
+    content = response.content
     route = parse_route(content) if isinstance(content, str) else DEFAULT_ROUTE
-    return {"route": route}
+    return {"route": route, "llm_calls": llm_calls}

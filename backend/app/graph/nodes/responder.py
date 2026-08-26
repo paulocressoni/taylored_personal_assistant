@@ -9,7 +9,7 @@ terminal, so a template is the right shape here.
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 
-from app.core.llm import get_chat_model
+from app.core.llm import get_chat_model, llm_call
 from app.graph.state import IPAState
 from app.prompts.responder import RESPONDER_SYSTEM_PROMPT
 
@@ -41,5 +41,7 @@ def responder_node(state: IPAState, config: RunnableConfig) -> dict:
             "messages": state["messages"],
         }
     ).to_messages()
-    response = model.invoke(messages, config)
-    return {"messages": [response]}
+    llm_response = llm_call(state, model, messages, config)
+    response = llm_response["response"]  # Extract the response from the llm_call result
+    llm_calls = llm_response["llm_calls"]  # Extract the LLM call count
+    return {"messages": [response], "llm_calls": llm_calls}

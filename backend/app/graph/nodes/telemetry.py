@@ -1,8 +1,9 @@
-"""telemetry_node — write the per-run LLM-call count into the final state.
+"""telemetry_node — write per-run usage into state AND the Langfuse trace.
 
 Counts come from the RunTelemetry callback handler attached at the invoke
-site (see app.graph.cli). tool_iterations is already maintained by
-tool_exec_node, so this node only fills the field nothing else touches.
+site (see app.graph.cli). This node runs LAST, so it's also the right place
+to push route/lang/tool metadata onto the Langfuse trace via update_trace
+before the root chain ends and flushes.
 
 # TODO(api-layer): grow this node into the run-to-state bridge for usage
 # telemetry once FastAPI + checkpointing land:
@@ -15,17 +16,22 @@ tool_exec_node, so this node only fills the field nothing else touches.
 # Trigger: when backend/app/api gains a real graph.invoke() endpoint.
 """
 
-from langchain_core.runnables import RunnableConfig
+# from langchain_core.runnables import RunnableConfig
 
-from app.graph.state import IPAState
+# from app.core.observability import enrich_trace
+# from app.graph.state import IPAState
 
 
-def telemetry_node(state: IPAState, config: RunnableConfig) -> dict:
-    # The counter instance travels inside config["configurable"], set at the
-    # invoke site (see app.graph.cli). Reading it with .get() keeps this node
-    # harmless if it ever runs without the counter attached (e.g. a bare
-    # graph.invoke in a test): we fall back to whatever llm_calls already
-    # holds instead of raising KeyError mid-graph.
-    telemetry = config.get("configurable", {}).get("run_telemetry")
-    llm_calls = telemetry.llm_calls if telemetry is not None else state["llm_calls"]
-    return {"llm_calls": llm_calls}
+# def telemetry_node(state: IPAState, config: RunnableConfig) -> dict:
+#     # The counter instance travels inside config["configurable"], set at the
+#     # invoke site (see app.graph.cli). Reading it with .get() keeps this node
+#     # harmless if it ever runs without the counter attached (e.g. a bare
+#     # graph.invoke in a test): we fall back to whatever llm_calls already
+#     # holds instead of raising KeyError mid-graph.
+#     telemetry = config.get("configurable", {}).get("run_telemetry")
+#     llm_calls = telemetry.llm_calls if telemetry is not None else state["llm_calls"]
+
+#     # Stamp route/lang/tools onto the trace before it flushes.
+#     enrich_trace({**state, "llm_calls": llm_calls})
+
+#     return {"llm_calls": llm_calls}

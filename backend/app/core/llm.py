@@ -6,12 +6,16 @@ so business logic never hardcodes a model name — swapping models or providers
 is a one-place change.
 """
 
-from typing import TypedDict
+from collections.abc import Callable
+from functools import wraps
+from typing import Any, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langchain_deepseek import ChatDeepSeek
 
 from app.core.config import settings
+from app.graph.state import IPAState
 
 
 class RoleConfig(TypedDict):
@@ -60,3 +64,50 @@ def get_chat_model(role: str) -> BaseChatModel:
         max_retries=2,
         extra_body=extra_body,
     )
+
+
+def llm_increase_call_count(
+    func: Callable[
+        [IPAState, BaseChatModel, list[Any], RunnableConfig], dict[str, Any]
+    ],
+):
+    """
+    Decorator to increase the LLM call count in the state after invoking the model.
+    """
+
+    @wraps(func)
+    def wrapper(
+        _state: IPAState,
+        model: BaseChatModel,
+        messages: list[Any],
+        config: RunnableConfig,
+    ) -> dict[str, Any]:
+        # Call the original function and get the result
+        result = func(_state, model, messages, config)
+
+        # Increase the LLM call count in the state
+        result["llm_calls"] = _state.get("llm_calls", 0) + 1
+        return result
+
+    return wrapper
+
+
+@llm_increase_call_count
+def llm_call(
+    _state: IPAState, model: BaseChatModel, messages: list[Any], config: RunnableConfig
+) -> dict[str, Any]:
+    """Invoke the given model with the provided messages and update state.
+
+    Args:
+        _state (IPAState): The current state of the IPA.
+        model (BaseChatModel): The chat model to invoke.
+        messages (list[Any]): The list of messages to send to the model.
+        config (RunnableConfig): The configuration for the runnable.
+
+    Returns:
+        dict[str, Any]: A dictionary containing the model's response and updated state.
+    """
+
+    # Invoke the model with the provided messages and configuration
+    response = model.invoke(messages, config)
+    return {"response": response}
