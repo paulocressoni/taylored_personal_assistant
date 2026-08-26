@@ -61,6 +61,8 @@ def main() -> None:
     if langfuse is not None:
         callbacks.append(langfuse)
 
+    # TODO: implement pre-warm at boot for get_chat_model when serving the agent
+
     graph = build_graph()
     final = graph.invoke(
         initial,

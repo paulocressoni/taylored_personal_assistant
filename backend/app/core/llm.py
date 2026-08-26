@@ -7,7 +7,7 @@ is a one-place change.
 """
 
 from collections.abc import Callable
-from functools import wraps
+from functools import cache, wraps
 from typing import Any, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -33,10 +33,11 @@ ROLE_CONFIG: dict[str, RoleConfig] = {
 }
 
 
+@cache
 def get_chat_model(role: str) -> BaseChatModel:
     """Return a configured chat model for the given role.
 
-    A fresh instance is created per call — models are stateless, so this is
+    A cached instance is created per call — models are stateless, so this is
     cheap and keeps callers free of shared mutable state.
 
     Raises:
