@@ -23,3 +23,4 @@ class IPAState(TypedDict):
     pending_action: dict | None
     llm_calls: int
     tool_iterations: int
+    tools_called: Annotated[list[str], operator.add]

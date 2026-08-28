@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug graph CLI",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "app.graph.cli",
+            "cwd": "${workspaceFolder}/backend",
+            "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+            "args": ["capital of France?"],
+            "env": { "ENV": "dev" }
+        }
+    ]
+}

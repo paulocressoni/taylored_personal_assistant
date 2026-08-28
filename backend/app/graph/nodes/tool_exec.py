@@ -39,7 +39,13 @@ def tool_exec_node(state: IPAState) -> dict:
 
         results.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
 
-    out: dict = {"messages": results, "tool_iterations": iterations}
+    # Hand the tool names to the reducer so observability can
+    # report which tools actually ran this turn.
+    out: dict = {
+        "messages": results,
+        "tool_iterations": iterations,
+        "tools_called": [call["name"] for call in tool_calls],
+    }
 
     # Cap reached: append a SystemMessage that tells the responder to stop
     # and explain that the tool loop was cut off — the "force-exit with an
