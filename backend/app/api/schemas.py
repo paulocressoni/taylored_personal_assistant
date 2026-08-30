@@ -1,0 +1,42 @@
+"""Pydantic v2 request/response models for the HTTP API (M09).
+
+Two jobs:
+  1. VALIDATION at the boundary — FastAPI parses incoming JSON into these
+     and returns 422 for bad input BEFORE our code runs.
+  2. DOCUMENTATION — the /docs page renders these as the request/response
+     contract, so a consumer can read the API without reading code.
+
+Pydantic v2 notes:
+  - Field(...) with min_length/max_length does the validation.
+  - `str | None = None` makes device_id optional (defaults to None).
+  - Declaring a return type on the route (response_model) makes FastAPI
+    SERIALIZE our object and document it — we never hand-roll JSON.
+"""
+
+from pydantic import BaseModel, Field
+
+
+class ChatRequest(BaseModel):
+    """Body of POST /chat and the JSON envelope sent over /ws/chat."""
+
+    session_id: str = Field(
+        min_length=1,
+        description="Stable id that groups turns into one conversation.",
+    )
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+        description="The user's turn, plain text.",
+    )
+    device_id: str | None = Field(
+        default=None,
+        description="Which device this turn came from (optional).",
+    )
+
+
+class ChatResponse(BaseModel):
+    """Body of the POST /chat reply."""
+
+    reply: str = Field(description="The assistant's final answer.")
+    lang: str | None = Field(description="Resolved language tag, e.g. 'pt-BR'.")
+    route: str | None = Field(description="Routed intent, e.g. 'knowledge'.")

@@ -31,6 +31,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 # Healthcheck to ensure the application is running
+# TODO: One improvement: add --start-period=15s so a slow cold start isn't flagged as a crash.
 HEALTHCHECK --interval=30s CMD curl -f http://localhost:8000/health || exit 1
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

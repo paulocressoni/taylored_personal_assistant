@@ -15,14 +15,15 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 7. [Step 5 — Install pre-commit hooks](#step-5--install-pre-commit-hooks)
 8. [Step 6 — Run the backend](#step-6--run-the-backend)
 9. [Docker (M07) — containerized backend](#docker-m07--containerized-backend)
-10. [Docker cheat sheet](#docker-cheat-sheet)
-11. [LLM provider layer (M02)](#llm-provider-layer-m02)
-12. [Language handling (M05)](#language-handling-m05)
-13. [Manual path (no uv)](#manual-path-no-uv)
-14. [Daily command cheat sheet](#daily-command-cheat-sheet)
-15. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
-16. [Troubleshooting](#troubleshooting)
-17. [Roadmap](#roadmap)
+10. [Observability (M08) — self-hosted Langfuse](#observability-m08--self-hosted-langfuse)
+11. [HTTP + WebSocket API (M09)](#http--websocket-api-m09)
+12. [LLM provider layer (M02)](#llm-provider-layer-m02)
+13. [Language handling (M05)](#language-handling-m05)
+14. [Manual path (no uv)](#manual-path-no-uv)
+15. [Daily command cheat sheet](#daily-command-cheat-sheet)
+16. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
+17. [Troubleshooting](#troubleshooting)
+18. [Roadmap](#roadmap)
 
 ---
 
@@ -33,11 +34,21 @@ taylored_personal_assistant/
 ├── .github/
 │   └── copilot-instructions.md   # Project constraints for AI tooling
 ├── .vscode/
-│   └── settings.json             # Interpreter, formatter, test config
+│   ├── settings.json             # Interpreter, formatter, test config
+│   └── launch.json               # Debug config: "Debug graph CLI" (M08)
 ├── .pre-commit-config.yaml       # Git hooks (lint, format, secrets)
 ├── .secrets.baseline             # Detect-secrets allowlist (COMMIT this)
 ├── .gitignore
+├── Makefile                      # Dev workflow: dev-up, test, langfuse-* (M08)
 ├── README.md
+├── docs/
+│   ├── docker-cheatsheet.md      # Docker command reference (M07)
+│   ├── observability.md          # Self-hosted Langfuse guide (M08)
+│   └── api.md                    # HTTP + WebSocket API reference (M09)
+├── infra/
+│   └── compose/
+│       ├── docker-compose.langfuse.yml   # 6-service Langfuse stack (M08)
+│       └── .env.example                  # Compose secrets template (M08)
 └── backend/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
     ├── uv.lock                   # Locked dependency versions (COMMIT this)
@@ -46,26 +57,33 @@ taylored_personal_assistant/
     ├── .env.dev.example          # Template for the env files (COMMIT this)
     ├── Dockerfile                # Multi-stage image build (M07)
     ├── .dockerignore             # Keeps the build context lean (M07)
-    ├── scripts/                  # LLM smoke tests (pytest "integration" marker)
+    ├── scripts/                  # Smoke tests + probe clients
     │   ├── smoke_01_chat.py
     │   ├── smoke_02_tools.py
     │   ├── smoke_03_thinking.py
     │   ├── smoke_04_tools_plus_thinking.py
     │   ├── smoke_05_multilingual.py
-    │   └── smoke_06_multilingual_routing.py
+    │   ├── smoke_06_multilingual_routing.py
+    │   ├── smoke_07_langfuse.py  # M08: a CLI run becomes a Langfuse trace
+    │   └── ws_probe.py           # M09: WS client to watch token streaming
     ├── tests/                    # Fast unit tests (no network, no LLM)
     │   ├── test_calculator.py
     │   ├── test_config.py
-    │   └── test_langdetect.py
+    │   ├── test_langdetect.py
+    │   └── test_api.py           # M09: HTTP/WS tests with a fake graph
     └── app/                      # Importable Python package ("app")
         ├── __init__.py
-        ├── main.py               # FastAPI entrypoint + /health (M07)
-        ├── api/                  # FastAPI layer (future)
-        ├── core/                 # Config, LLM factory, telemetry
+        ├── main.py               # FastAPI app + lifespan (M09)
+        ├── api/                  # FastAPI serving layer (M09)
+        │   ├── routes.py         # /health, POST /chat, WS /ws/chat
+        │   ├── schemas.py        # ChatRequest / ChatResponse (Pydantic v2)
+        │   └── deps.py           # get_graph + state/config builders
+        ├── core/                 # Config, LLM factory, telemetry, observability
         │   ├── __init__.py
         │   ├── callbacks.py      # RunTelemetry callback handler
         │   ├── config.py         # pydantic-settings, loads .env
-        │   └── llm.py            # Role-based LLM factory (ROLE_CONFIG)
+        │   ├── llm.py            # Role-based LLM factory (ROLE_CONFIG)
+        │   └── observability.py  # Langfuse v4 wiring (M08)
         ├── graph/                # LangGraph state + nodes
         │   ├── graph.py          # StateGraph builder
         │   ├── state.py          # IPAState schema
@@ -97,6 +115,8 @@ taylored_personal_assistant/
 | `.venv` | Local virtual environment — created by `uv`, gitignored |
 | `Dockerfile` | Multi-stage build: `builder` (uv + deps) → slim `runtime` (venv + code) |
 | `.dockerignore` | Excludes `.venv`, caches, `.git` from the Docker build context |
+| `infra/compose` | Docker Compose files for local infrastructure (Langfuse stack, M08) |
+| `docs/` | Topic guides: Docker (M07), Langfuse (M08), API (M09) |
 | Image vs container | **Image** = immutable blueprint; **container** = a running instance of it |
 
 > The `app` package is installed **editable** into the venv (thanks to `[build-system]` + `[tool.setuptools.packages.find]` in `pyproject.toml`). That is why `from app.core...` imports work from **any** directory — no `PYTHONPATH` hacks needed.
@@ -151,7 +171,7 @@ The version is already pinned in `backend/.python-version`, so `uv` will always 
 ### 2b. Create the venv and install dependencies
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 uv sync
 ```
 
@@ -181,25 +201,41 @@ Expected output ends with `...\backend\app\core\config.py`. If it fails, jump to
 
 Secrets are loaded through **pydantic-settings** (`backend/app/core/config.py`), which reads them from your environment and from `.env`.
 
-### 3a. Create your local `.env`
+### 3a. Create your local `.env.dev` (and `.env.prod` for prod)
+
+The app loads **`.env.{ENV}`**, where `ENV` is `dev` or `prod` (set in the OS environment
+before the process starts — `make dev-up` sets it for you). The committed templates are
+`.env.dev.example` / `.env.prod.example`.
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
-Copy-Item .env.example .env
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+Copy-Item .env.dev.example .env.dev
 ```
 
-Then open `backend/.env` and replace the placeholders with real keys:
+Then open `backend/.env.dev` and replace the placeholders with real keys:
 
 ```ini
+ENV=dev
 DEEPSEEK_API_KEY=sk-your-real-key
-OPENAI_API_KEY=sk-your-real-key
+DEFAULT_TIMEZONE=Europe/Berlin
+SUPPORTED_LANGUAGES=["en","de","pt-BR"]
+
+# --- Observability: Langfuse (M08) — optional, best-effort ---
+LANGFUSE_ENABLED=true
+LANGFUSE_PUBLIC_KEY=pk-lf-your-real-key
+LANGFUSE_SECRET_KEY=sk-lf-your-real-key
+LANGFUSE_BASE_URL=http://localhost:3000
 ```
+
+> Langfuse keys are **optional**: if `LANGFUSE_ENABLED` is false or the keys are missing,
+> the app runs exactly as before (no observability). Only `DEEPSEEK_API_KEY` is fail-fast.
+> See [docs/observability.md](docs/observability.md).
 
 **Rules:**
 
-- `.env` is gitignored — real keys never enter the repo. ✅
-- `.env.example` is committed — it's the template with `REPLACE_ME` placeholders. ✅
-- Precedence: real environment variables **override** `.env`, which overrides defaults in `config.py`.
+- `.env.dev` / `.env.prod` are gitignored — real keys never enter the repo. ✅
+- `.env.dev.example` / `.env.prod.example` are committed — templates with `REPLACE_ME` placeholders. ✅
+- Precedence: real environment variables **override** `.env.{ENV}`, which overrides defaults in `config.py`.
 - Never hardcode keys in source code, never `print()` them, and never use interactive `getpass` prompts at import time (they break servers/CI/Docker).
 
 ### 3b. Reference keys from code
@@ -255,7 +291,7 @@ Pre-commit runs linting, formatting, and secret scanning on every commit. The co
 ### 5a. Install the git hook
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 uv run pre-commit install
 ```
 
@@ -277,7 +313,7 @@ The first run downloads hook environments (a minute or two). It runs:
 The baseline is the allowlist of already-known secrets; it only trips on **new** ones. Regenerate it if you rotate a key:
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
 uvx detect-secrets scan --exclude-files '(\.venv/|\.git/|uv\.lock|backend/\.env)' > .secrets.baseline
 ```
 
@@ -290,7 +326,7 @@ uvx detect-secrets scan --exclude-files '(\.venv/|\.git/|uv\.lock|backend/\.env)
 `app.core.llm` is a pure factory with no `__main__` — to exercise the DeepSeek API, run one of the smoke scripts in `backend/scripts/` (see [LLM provider layer](#llm-provider-layer-m02)):
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 $env:ENV="dev"
 uv run python scripts/smoke_01_chat.py
 ```
@@ -298,17 +334,22 @@ uv run python scripts/smoke_01_chat.py
 Run tests:
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 $env:ENV="dev"
-uv run pytest                  # fast unit suite (smoke tests deselected)
-uv run pytest -m integration   # live DeepSeek API smoke tests
+uv run pytest                        # fast unit suite (smoke tests deselected)
+uv run pytest -m integration         # live DeepSeek API smoke tests
+uv run pytest tests/test_api.py      # HTTP + WebSocket API tests (fake graph, no network)
 ```
 
-Run the dev server:
+Run the dev server (HTTP + WebSocket API, M09):
 
 ```powershell
-uv run uvicorn app.main:app --reload
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant   # from the repo root
+make dev-up                  # ENV=dev uv run uvicorn app.main:app --reload
 ```
+
+Then: `curl.exe http://localhost:8000/health` → `{"status":"ok"}`, or open the interactive
+docs at `http://localhost:8000/docs`. Full reference in [docs/api.md](docs/api.md).
 
 ---
 
@@ -327,7 +368,7 @@ The backend ships as a **multi-stage Docker image**: a `builder` stage installs 
 ### Build the image
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
 docker build -t assistant-backend backend/
 ```
 
@@ -360,6 +401,76 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 ```
 
 > Containers are **ephemeral** — anything written inside is lost when the container is removed. Persistent data will live in **volumes** (M08, Compose).
+>
+> M08 note: this image runs the **assistant** only. Observability (self-hosted Langfuse)
+> is a **separate** Compose stack — see [Observability (M08)](#observability-m08--self-hosted-langfuse).
+
+---
+
+## Observability (M08) — self-hosted Langfuse
+
+M08 adds **self-hosted Langfuse v4** for local-dev observability: every graph run becomes
+a trace — spans for `detect_lang` / `router` / `knowledge` / `responder`, LLM generations
+with token counts, and session grouping. The stack lives in
+`infra/compose/docker-compose.langfuse.yml` (6 services: `langfuse-web`,
+`langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`).
+
+**Best-effort by design**: if Langfuse is off or misconfigured, the assistant runs
+identically — only `DEEPSEEK_API_KEY` is fail-fast. The SDK wiring lives in
+`backend/app/core/observability.py` and is threaded through every run via
+`config["metadata"]` + the Langfuse callback handler.
+
+Quick start (full guide: [docs/observability.md](docs/observability.md)):
+
+```powershell
+cd infra/compose
+Copy-Item .env.example .env        # fill in secrets (openssl rand -hex 32)
+cd ../..
+make langfuse-up                   # docker compose up -d --wait
+# backend/.env.dev: LANGFUSE_ENABLED=true + pk-lf-* / sk-lf-* keys (see .env.dev.example)
+cd backend
+ENV=dev uv run python -m scripts.smoke_07_langfuse   # verify a trace lands
+# open http://localhost:3000 -> Traces -> newest run
+```
+
+Makefile targets: `make langfuse-up`, `make langfuse-down`, `make langfuse-logs`.
+Runtime settings live in `backend/app/core/config.py` (`langfuse_*`).
+
+---
+
+## HTTP + WebSocket API (M09)
+
+M09 adds the FastAPI serving layer. The app boots once, compiles the LangGraph graph in a
+**lifespan** and stores it on `app.state.graph` (never recompiled per request), pre-warms
+the cached chat models, and flushes Langfuse on shutdown. Routes live in `backend/app/api/`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/health` | Liveness probe (used by the Docker `HEALTHCHECK`) |
+| `POST` | `/chat` | One-shot: run the graph, return `{reply, lang, route}` |
+| `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame |
+
+Quick start (full reference: [docs/api.md](docs/api.md)):
+
+```powershell
+make dev-up                          # repo root; uvicorn --reload on :8000
+curl.exe http://localhost:8000/health
+curl.exe -X POST http://localhost:8000/chat `
+  -H "Content-Type: application/json" `
+  -d '{"session_id":"s1","message":"hello"}'
+# WS streaming — from backend/:
+uv run python scripts/ws_probe.py "tell me a short joke"
+```
+
+- Input/Output are validated by **Pydantic v2** at the boundary (`schemas.py`) — bad input
+  returns `422` before your code runs.
+- `POST /chat` runs the sync `graph.invoke` in `asyncio.to_thread` so the event loop stays
+  free; `WS /ws/chat` streams `astream_events(version="v2")`, filtering
+  `on_chat_model_stream` events for the `responder` node only.
+- Each role now carries a per-model `timeout` / `max_tokens` / `max_retries` budget in
+  `ROLE_CONFIG` (`app/core/llm.py`).
+- Tests (`backend/tests/test_api.py`) exercise both endpoints with a duck-typed
+  `FakeGraph` — no DeepSeek, no network.
 
 ---
 
@@ -367,12 +478,15 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 
 All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Model names, temperatures, and thinking mode live only in `ROLE_CONFIG` — business logic never hardcodes a model name.
 
-| Role | Model | Temperature | Thinking | Use case |
-|---|---|---|---|---|
-| `router` | `deepseek-v4-flash` | 0.0 | off | Intent classification / routing |
-| `specialist` | `deepseek-v4-flash` | 0.0 | off | Deterministic tool calling |
-| `responder` | `deepseek-v4-flash` | 1.3 | off | Conversational replies |
-| `reasoner` *(planned)* | `deepseek-v4-pro` | 0.0 | on | Planning, diagnosis, disambiguation |
+| Role | Model | Temperature | Thinking | Timeout (s) | Max tokens | Max retries | Use case |
+|---|---|---|---|---|---|---|---|
+| `router` | `deepseek-v4-flash` | 0.0 | off | 10 | 1024 | 2 | Intent classification / routing |
+| `specialist` | `deepseek-v4-flash` | 0.0 | off | 10 | 4096 | 2 | Deterministic tool calling |
+| `responder` | `deepseek-v4-flash` | 1.3 | off | 10 | 1024 | 2 | Conversational replies |
+| `reasoner` *(planned)* | `deepseek-v4-pro` | 0.0 | on | — | — | — | Planning, diagnosis, disambiguation |
+
+> Each role carries a per-call `timeout`, `max_tokens` budget, and `max_retries` (M09) so a
+> slow or hung upstream can never block a thread forever.
 
 **DeepSeek temperature scale** (differs from OpenAI — do not default to 0.7): 0.0 code/math · 1.0 data analysis · 1.3 general conversation · 1.5 creative writing.
 
@@ -387,7 +501,7 @@ All LLM access goes through the role-based factory in `backend/app/core/llm.py`.
 ### Running the smoke tests
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 $env:ENV="dev"
 uv run python scripts/smoke_01_chat.py            # standalone, prints usage_metadata
 uv run pytest -m integration                      # all 6 as pytest integration tests
@@ -426,11 +540,11 @@ the right language.
 Prefer plain Python? The same setup, manually:
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -e . pytest ruff pre-commit pydantic-settings fastapi uvicorn[standard] langgraph lingua-language-detector langchain-openai langchain-deepseek
+python -m pip install -e . pytest ruff pre-commit pydantic-settings fastapi uvicorn[standard] langgraph lingua-language-detector langchain-openai langchain-deepseek langfuse
 ```
 
 Caveats:
@@ -455,6 +569,9 @@ Run everything from `backend/` unless noted.
 | Lint + fix | `uv run ruff check --fix .` |
 | Format | `uv run ruff format .` |
 | Run tests | `uv run pytest` |
+| Run the API dev server | `make dev-up` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |
+| Stream a WS chat | `uv run python scripts/ws_probe.py "<message>"` |
+| Langfuse stack up / down / logs | `make langfuse-up` · `make langfuse-down` · `make langfuse-logs` |
 | Run pre-commit on everything | `uv run pre-commit run --all-files` |
 | Update hook versions | `uv run pre-commit autoupdate` |
 
@@ -477,7 +594,7 @@ The good news: with `uv` there is **no "activate the venv" ritual** — `uv run`
 ### After pulling new changes (`git pull`)
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 uv sync                    # sync deps to the new uv.lock
 uv run pytest              # make sure everything still passes
 ```
@@ -501,11 +618,11 @@ uv run ruff format .                # format everything
 ### Daily development loop
 
 ```powershell
-cd C:\Users\paulo\Documents\Workspace\taylored_personal_assistant\backend
-uv run uvicorn app.main:app --reload   # dev server (once app/main.py exists)
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
+make dev-up                            # API dev server with --reload (M09)
 # ... edit code ...
-uv run pytest                          # run tests
-uv run ruff check --fix .              # lint + autofix
+cd backend && uv run pytest            # run tests
+cd backend && uv run ruff check --fix .   # lint + autofix
 git add .
 git commit                             # pre-commit hooks fire automatically
 ```
@@ -521,9 +638,9 @@ git commit                             # pre-commit hooks fire automatically
 
 ## Roadmap
 
-| Phase | Scope |
-|---|---|
-| 1. Core graph & API | LangGraph agent, FastAPI endpoints, pytest suite *(in progress)* |
-| 2. Local deployment & DevOps | Docker image, docker-compose, CI/CD → Mini PC |
-| 3. Observability & memory | Langfuse traces, Qdrant/Chroma vector store |
-| 4. Omni-channel UI | Vite/React frontend, WebSockets, voice via reSpeaker/ESP32 |
+| Phase | Scope | Status |
+|---|---|---|
+| 1. Core graph & API | LangGraph agent (M02–M06), FastAPI endpoints + WS streaming (M09), pytest suite | ✅ core done |
+| 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Docker done; compose/CI in progress |
+| 3. Observability & memory | Self-hosted Langfuse traces (M08), Qdrant/Chroma vector store | Langfuse done; vector memory future |
+| 4. Omni-channel UI | Vite/React frontend, WebSockets, voice via reSpeaker/ESP32 | future |

@@ -22,14 +22,40 @@ class RoleConfig(TypedDict):
     model: str
     temperature: float
     thinking: bool
+    timeout: float
+    max_tokens: int | None
+    max_retries: int
 
 
+# TODO: Should we store these values in a config file or environment variables
+# instead of hardcoding them here?
 ROLE_CONFIG: dict[str, RoleConfig] = {
     # thinking: False keeps cheap roles cheap — verified empirically that
     # v4-flash thinks by default, so we must send "disabled" explicitly.
-    "router": {"model": "deepseek-v4-flash", "temperature": 0.0, "thinking": False},
-    "specialist": {"model": "deepseek-v4-flash", "temperature": 0.0, "thinking": False},
-    "responder": {"model": "deepseek-v4-flash", "temperature": 1.3, "thinking": False},
+    "router": {
+        "model": "deepseek-v4-flash",
+        "temperature": 0.0,
+        "thinking": False,
+        "timeout": 10.0,
+        "max_tokens": 1024,
+        "max_retries": 2,
+    },
+    "specialist": {
+        "model": "deepseek-v4-flash",
+        "temperature": 0.0,
+        "thinking": False,
+        "timeout": 10.0,
+        "max_tokens": 4096,
+        "max_retries": 2,
+    },
+    "responder": {
+        "model": "deepseek-v4-flash",
+        "temperature": 1.3,
+        "thinking": False,
+        "timeout": 10.0,
+        "max_tokens": 1024,
+        "max_retries": 2,
+    },
 }
 
 
@@ -60,9 +86,9 @@ def get_chat_model(role: str) -> BaseChatModel:
         temperature=role_config["temperature"],
         # api_key is already a SecretStr; ChatDeepSeek accepts it directly.
         api_key=settings.deepseek_api_key,
-        max_tokens=None,
-        timeout=None,
-        max_retries=2,
+        max_tokens=role_config["max_tokens"],
+        timeout=role_config["timeout"],
+        max_retries=role_config["max_retries"],
         extra_body=extra_body,
     )
 
