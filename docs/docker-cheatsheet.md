@@ -92,7 +92,7 @@ HEALTHCHECK --interval=30s CMD curl -f http://localhost:8000/health || exit 1
 
 Containers are ephemeral: `docker rm` deletes the writable layer. Anything that must survive container death goes in a **volume** or **bind mount**.
 
-## Networks (preview — M08)
+## Networks
 
 | Command | Purpose |
 |---|---|
@@ -104,6 +104,38 @@ Containers are ephemeral: `docker rm` deletes the writable layer. Anything that 
 
 Containers also have their **own** `localhost`. To reach a service from your host, publish its port with `-p <host>:<container>` (e.g. `-p 8000:8000`); otherwise `localhost:<port>` on your machine finds nothing even though the container is healthy.
 Inside a compose network, services reach each other **by service name** — never by `localhost`.
+
+## Compose & the self-hosted Langfuse stack (M08)
+
+`infra/compose/docker-compose.langfuse.yml` runs a 6-service Langfuse v4 stack for local-dev
+observability (`langfuse-web`, `langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`).
+Managed from the repo root via the Makefile:
+
+| Command | Purpose |
+|---|---|
+| `make langfuse-up` | Bring up the stack (`docker compose up -d --wait`) |
+| `make langfuse-down` | Stop the stack |
+| `make langfuse-logs` | Tail logs |
+
+The same commands as plain Compose (what the Makefile wraps):
+
+```powershell
+docker compose -f infra/compose/docker-compose.langfuse.yml --env-file infra/compose/.env up -d
+docker compose -f infra/compose/docker-compose.langfuse.yml ps
+docker compose -f infra/compose/docker-compose.langfuse.yml logs -f
+```
+
+- **Secrets** come from `infra/compose/.env` (copy from `.env.example`; generate
+  `SALT` / `ENCRYPTION_KEY` / `NEXTAUTH_SECRET` with `openssl rand -hex 32`).
+- Compose's `.env` parser treats `#` as a comment **only at line start** — keep comments
+  on their own lines.
+- The **UI is published on host port 3000**: `http://localhost:3000`.
+- Inside the stack, services talk to each other **by service name** (`postgres`,
+  `clickhouse`, …) — never `localhost`. Only browser-facing URLs use `localhost`.
+- **Volumes** (`postgres_data`, `clickhouse_data`, `clickhouse_logs`, `redis_data`,
+  `minio_data`) persist the stack's data across restarts.
+
+Full observability guide: [observability.md](observability.md).
 
 ## Cleanup
 
