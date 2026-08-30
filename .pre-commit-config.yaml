@@ -8,12 +8,15 @@ repos:
       - id: check-merge-conflict
       - id: detect-private-key
 
+  # Backend: Python lint + format (explicitly scoped to backend/)
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.4
     hooks:
       - id: ruff
         args: [--fix]
+        files: ^backend/.*\.py$
       - id: ruff-format
+        files: ^backend/.*\.py$
 
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
@@ -25,3 +28,19 @@ repos:
     rev: v3.29.0
     hooks:
       - id: commitizen
+
+  # Frontend: JS/TS lint + format (uses the project's own node_modules)
+  - repo: local
+    hooks:
+      - id: frontend-lint
+        name: frontend eslint
+        entry: bash -c 'cd frontend && npx eslint --fix .'
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx)$
+        pass_filenames: false
+      - id: frontend-format
+        name: frontend prettier
+        entry: bash -c 'cd frontend && npx prettier --write .'
+        language: system
+        files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|html)$
+        pass_filenames: false

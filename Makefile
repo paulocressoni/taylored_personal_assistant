@@ -22,7 +22,9 @@ test:
 
 lint:
 	cd $(BACKEND) && uv run ruff check .
-	cd $(BACKEND) && uv run ruff format --check .
+    cd $(BACKEND) && uv run ruff format --check .
+    cd frontend && npm run lint
+    cd frontend && npx prettier --check .
 
 types:
 	cd $(BACKEND) && uv run mypy app
