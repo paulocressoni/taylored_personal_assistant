@@ -1,7 +1,7 @@
 # HTTP + WebSocket API (M09)
 
 Reference for the FastAPI serving layer added in M09. This is the bridge between the
-LangGraph backend and any client (CLI, future frontend, voice devices).
+LangGraph backend and any client (CLI, React frontend (M10), voice devices).
 
 ## What M09 added
 
@@ -111,6 +111,18 @@ Try it with the bundled probe client (it prints tokens as they arrive):
 cd backend
 uv run python scripts/ws_probe.py "tell me a short joke"
 ```
+
+### Consumed by the frontend (M10)
+
+The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
+
+- `frontend/src/api/types.ts` is **generated** from this schema — `cd frontend && npm run
+  types` (requires the backend on `:8000`). Commit it so the frontend contract can't
+  silently drift.
+- The WebSocket **frame types are hand-written** in `frontend/src/api/ws.ts`, because
+  OpenAPI documents HTTP only — it does not describe WS traffic.
+- The frontend sends the same `ChatRequest` envelope and reads `token` / `done` / `status`
+  / `error` frames through the Vite dev proxy (no CORS involved).
 
 ## Architecture notes
 
