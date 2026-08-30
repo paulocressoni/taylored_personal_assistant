@@ -24,14 +24,26 @@ async def main() -> None:
     async with websockets.connect(uri) as ws:
         await ws.send(json.dumps({"session_id": "probe-1", "message": message}))
         while True:
+            # Wait for events from the server and print them to stdout.
             event = json.loads(await ws.recv())
-            if event["type"] == "token":
+
+            # Print status updates
+            if event["type"] == "status":
+                print(event["detail"], end="", flush=True)
+                print()  # newline after the status line
+
+            # Print token chunks
+            elif event["type"] == "token":
                 print(event["content"], end="", flush=True)
+
+            # Print the final "done" event and exit
             elif event["type"] == "done":
                 print()
                 print("--- done ---")
                 print(json.dumps(event, ensure_ascii=False))
                 break
+
+            # Handle any error events and exit
             elif event["type"] == "error":
                 print("--- error ---", event["detail"])
                 break
