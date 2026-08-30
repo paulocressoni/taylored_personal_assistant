@@ -32,12 +32,11 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+# TODO: Is Depends(get_graph) the right way to get the graph here?
+# Or is request.app.state.graph better?
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     """One-shot request/response: run the graph, return the final answer.
-
-    The compiled graph is read from app.state.graph (set by the lifespan),
-    not via Depends(...) in the signature, per review feedback.
 
     Args:
         request: FastAPI Request object, which has a reference to the app.
@@ -47,6 +46,7 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         A ChatResponse object containing the assistant's reply, resolved language,
         and routed intent.
     """
+    # TODO: should I use get_graph instead?
     graph = request.app.state.graph
 
     initial = build_initial_state(
@@ -58,6 +58,9 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
     config = build_run_config(payload.session_id, channel="api")
 
     # Run the graph in a thread to avoid blocking the event loop.
+    # TODO: add a route-level safety net in chat() using asyncio.timeout(90) around
+    # the to_thread call and map TimeoutError to a 503. This is the single most
+    # valuable production habit for LLM serving.
     final = await asyncio.to_thread(graph.invoke, initial, config=config)
 
     last = get_last_message(final["messages"])
@@ -67,6 +70,12 @@ async def chat(request: Request, payload: ChatRequest) -> ChatResponse:
         lang=final.get("lang"),
         route=final.get("route"),
     )
+
+
+# TODO: Add a per-request deadline: use asyncio.timeout(...) in the WS handler too
+# (not just POST /chat), and on timeout send {"type": "error", "detail": "timeout"}
+# then close with code 1013 ("try again later") instead of 1011. Read what
+# code 1011 vs 1013 mean to clients — that's the "correct" part.
 
 
 @router.websocket("/ws/chat")
@@ -88,6 +97,8 @@ async def chat_ws(websocket: WebSocket) -> None:
     try:
         # Receive the initial JSON payload from the client and validate it against
         # the ChatRequest schema.
+        # TODO: One improvement you could make: send {"type": "error", "detail": "invalid payload"}
+        # back before returning, so a misbehaving client learns why it got closed.
         raw = await websocket.receive_json()
         payload = ChatRequest.model_validate(raw)
     except (WebSocketDisconnect, ValueError):
@@ -106,9 +117,12 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     try:
         # Stream events from the graph and send them to the client in real-time.
+        # TODO: What does v2 means? Is it lib related or has anything to do with my code release version?
         async for event in graph.astream_events(initial, config=config, version="v2"):
             kind = event["event"]
 
+            # TODO: Where does on_chat_model_stream come from? Is it a langchain event
+            # or something I defined in my code?
             if kind == "on_chat_model_stream":
                 node = event.get("metadata", {}).get("langgraph_node")
                 if node == "responder":
@@ -121,20 +135,37 @@ async def chat_ws(websocket: WebSocket) -> None:
                                 {"type": "token", "content": text}
                             )
 
+            # TODO: Add a "thinking" frame: for on_chat_model_stream events where
+            # langgraph_node == "router", send {"type": "status", "detail": "classifying intent..."}
+            # (don't leak the raw tokens — just a status). Re-run ws_probe.py and watch the
+            # ordering of status → token → done.
+
             if (
                 kind == "on_chain_end"
                 and event.get("name") == "LangGraph"
                 and not event.get("parent_ids")
             ):
                 final_state = event["data"]["output"]
+
+    # We only catch WebSocketDisconnect here because it indicates that the client has disconnected.
     except WebSocketDisconnect:
         return
 
     reply = "".join(streamed)
     # If the graph didn't produce any tokens but did produce a final state,
     # extract the last message from the final state to form the reply.
+
     if not reply and final_state is not None:
         reply = _content_to_str(get_last_message(final_state["messages"]).content)
+
+    # TODO: The fallback if not reply and final_state is not None handles the case where
+    # the graph produced a final state but zero tokens (e.g., a model returned empty).
+    # But there's no branch for partial tokens + a later failure — the done frame would
+    # carry an incomplete reply. Consider tracking whether the run ended cleanly.
+
+    # TODO: Your handler reads only one incoming message, runs the graph, then closes.
+    # That's fine for "one turn per connection," but a chat UI usually keeps the
+    # socket open for multi-turn. Just be deliberate about which model you're building.
 
     try:
         # Send a final JSON message indicating the end of the conversation, along with
