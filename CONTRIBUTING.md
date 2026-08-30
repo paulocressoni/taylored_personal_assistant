@@ -24,6 +24,10 @@ Examples:
 Messages are validated by the commit-msg hook (commitizen). Install hooks:
     cd backend && uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 
+The pre-commit config also lints/formats the frontend (ESLint + Prettier via `local`
+hooks). Those hooks need `frontend/node_modules` installed (`cd frontend && npm ci`) and a
+POSIX shell (`bash`) — use Git Bash on Windows.
+
 ## Version bump mapping (SemVer)
 - fix:  -> PATCH  (1.2.3 -> 1.2.4)
 - feat: -> MINOR  (1.2.3 -> 1.3.0)

@@ -1,0 +1,8 @@
+@import 'tailwindcss';
+
+/* Make the app fill the whole viewport height. */
+html,
+body,
+#root {
+  height: 100%;
+}

@@ -12,10 +12,13 @@ jobs:
         runs-on: ubuntu-latest
         defaults:
             run:
+                # Working directory is the backend/ subdir, so uv commands can be run directly.
                 working-directory: backend
         steps:
+            # Checkout the repo
             - uses: actions/checkout@v7.0.1
 
+            # Install uv and Python
             - name: Install uv and Python
               uses: astral-sh/setup-uv@v10.0.1
               with:
@@ -24,24 +27,63 @@ jobs:
                   enable-cache: true
                   cache-dependency-glob: "backend/uv.lock"
 
+            # Install dependencies (from lockfile)
             - name: Sync dependencies (from uv.lock)
               run: uv sync
 
+            # Lint + format + type-check + unit tests (mocked, no API)
             - name: Lint
               run: uv run ruff check .
 
+            # Format check
             - name: Format check
               run: uv run ruff format --check .
 
+            # Type check
             - name: Type check
               run: uv run mypy app
 
+            # Unit tests (mocked, no API)
             - name: Unit tests (mocked, no API)
               env:
                   ENV: dev
               run: |
                   cp .env.dev.example .env.dev
                   uv run pytest -m "not integration"
+
+    # Frontend: type-check + lint + format + build. Mirrors the backend job.
+    frontend:
+        runs-on: ubuntu-latest
+        defaults:
+            run:
+                # Working directory is the frontend/ subdir, so npm commands can be run directly.
+                working-directory: frontend
+        steps:
+            - uses: actions/checkout@v7.0.1
+
+            # Install Node + dependencies (from lockfile) + lint + format + type-check + build
+            - name: Install Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version-file: frontend/.nvmrc
+                  cache: npm
+                  cache-dependency-path: frontend/package-lock.json
+
+            # Install dependencies (from lockfile)
+            - name: Install dependencies (from lockfile)
+              run: npm ci # ci here means clean install, not continuous integration
+
+            # Lint + format + type-check + build
+            - name: Lint
+              run: npm run lint
+
+            # Format check
+            - name: Format check
+              run: npm run format:check
+
+            # Type check
+            - name: Type check + build
+              run: npm run build
 
     # Secret scanning over the FULL history — a leaked key can't hide in an
     # old commit. Separate job so it scans the whole monorepo and can't be
@@ -56,6 +98,7 @@ jobs:
               with:
                   fetch-depth: 0 # gitleaks needs the complete git history
 
+            # Secret scan (gitleaks)
             - name: Secret scan (gitleaks)
               uses: gitleaks/gitleaks-action@v3.0.0
               env:

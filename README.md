@@ -1,6 +1,6 @@
 # taylored_personal_assistant
 
-A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGraph agentic backend, with a TypeScript frontend to be added later. The LLM (DeepSeek via API) is hosted remotely; this repo owns the orchestration, device integrations, API gateway, and deployment.
+A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGraph agentic backend and a React + TypeScript chat frontend (M10). The LLM (DeepSeek via API) is hosted remotely; this repo owns the orchestration, device integrations, API gateway, UI, and deployment.
 
 ---
 
@@ -14,16 +14,18 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 6. [Step 4 — Set up VS Code](#step-4--set-up-vs-code)
 7. [Step 5 — Install pre-commit hooks](#step-5--install-pre-commit-hooks)
 8. [Step 6 — Run the backend](#step-6--run-the-backend)
-9. [Docker (M07) — containerized backend](#docker-m07--containerized-backend)
-10. [Observability (M08) — self-hosted Langfuse](#observability-m08--self-hosted-langfuse)
-11. [HTTP + WebSocket API (M09)](#http--websocket-api-m09)
-12. [LLM provider layer (M02)](#llm-provider-layer-m02)
-13. [Language handling (M05)](#language-handling-m05)
-14. [Manual path (no uv)](#manual-path-no-uv)
-15. [Daily command cheat sheet](#daily-command-cheat-sheet)
-16. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
-17. [Troubleshooting](#troubleshooting)
-18. [Roadmap](#roadmap)
+9. [Step 7 — Run the frontend](#step-7--run-the-frontend)
+10. [Docker (M07) — containerized backend](#docker-m07--containerized-backend)
+11. [Observability (M08) — self-hosted Langfuse](#observability-m08--self-hosted-langfuse)
+12. [HTTP + WebSocket API (M09)](#http--websocket-api-m09)
+13. [React frontend (M10) — chat UI](#react-frontend-m10--chat-ui)
+14. [LLM provider layer (M02)](#llm-provider-layer-m02)
+15. [Language handling (M05)](#language-handling-m05)
+16. [Manual path (no uv)](#manual-path-no-uv)
+17. [Daily command cheat sheet](#daily-command-cheat-sheet)
+18. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
+19. [Troubleshooting](#troubleshooting)
+20. [Roadmap](#roadmap)
 
 ---
 
@@ -44,12 +46,13 @@ taylored_personal_assistant/
 ├── docs/
 │   ├── docker-cheatsheet.md      # Docker command reference (M07)
 │   ├── observability.md          # Self-hosted Langfuse guide (M08)
-│   └── api.md                    # HTTP + WebSocket API reference (M09)
+│   ├── api.md                    # HTTP + WebSocket API reference (M09)
+│   └── frontend.md               # React chat UI guide (M10)
 ├── infra/
 │   └── compose/
 │       ├── docker-compose.langfuse.yml   # 6-service Langfuse stack (M08)
 │       └── .env.example                  # Compose secrets template (M08)
-└── backend/
+├── backend/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
     ├── uv.lock                   # Locked dependency versions (COMMIT this)
     ├── .python-version           # Pinned Python version (COMMIT this)
@@ -102,6 +105,32 @@ taylored_personal_assistant/
         │   ├── calculator.py
         │   └── registry.py
         └── voice/                # (future)
+└── frontend/                    # React + TypeScript chat UI (M10)
+    ├── package.json             # Manifest + npm scripts (dev, build, lint, types, format)
+    ├── package-lock.json        # Locked deps (COMMIT this — npm ci uses it)
+    ├── .nvmrc                   # Pinned Node version (24.19.0)
+    ├── vite.config.ts           # Vite + Tailwind plugin + dev proxy → :8000
+    ├── eslint.config.js         # ESLint flat config (lint, not format)
+    ├── .prettierrc.json         # Prettier style (format)
+    ├── index.html               # Page shell
+    ├── tsconfig*.json           # TypeScript project references
+    └── src/
+        ├── main.tsx             # React root + <StrictMode>
+        ├── App.tsx              # Layout: header + message list + input
+        ├── index.css            # Tailwind v4 entry (@import "tailwindcss")
+        ├── api/
+        │   ├── types.ts         # GENERATED from OpenAPI (npm run types) — commit it
+        │   └── ws.ts            # Hand-written WebSocket frame types
+        ├── lib/
+        │   └── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
+        ├── hooks/
+        │   ├── useChatStream.ts # WS streaming + StrictMode-safe cleanup
+        │   └── useAlarmSound.ts # Web Audio stub (wired up in M17)
+        └── components/
+            ├── MessageList.tsx
+            ├── MessageInput.tsx
+            ├── TypingIndicator.tsx
+            └── LanguageBadge.tsx
 ```
 
 **Key concepts:**
@@ -113,6 +142,9 @@ taylored_personal_assistant/
 | `uv` | Package manager: manages Python, venv, deps, and the lockfile |
 | `uv.lock` | Locked, reproducible dependency graph — commit it, never edit by hand |
 | `.venv` | Local virtual environment — created by `uv`, gitignored |
+| `npm` | JS package manager: manages frontend deps + `package-lock.json` |
+| `node_modules` | Frontend deps — created by `npm install`/`npm ci`, gitignored |
+| `package-lock.json` | Locked frontend deps — commit it, never edit by hand |
 | `Dockerfile` | Multi-stage build: `builder` (uv + deps) → slim `runtime` (venv + code) |
 | `.dockerignore` | Excludes `.venv`, caches, `.git` from the Docker build context |
 | `infra/compose` | Docker Compose files for local infrastructure (Langfuse stack, M08) |
@@ -130,6 +162,8 @@ taylored_personal_assistant/
 | Git | any recent | Git for Windows |
 | `uv` | 0.12+ | Manages Python + venv + deps |
 | Python | 3.12 | Managed by `uv` (auto-downloaded if missing) |
+| Node.js | 24 (LTS) | Runs the frontend; pinned in `frontend/.nvmrc` |
+| npm | 11 | Bundled with Node — frontend package manager |
 | Docker | any recent | For the containerized backend (M07) — assumed installed, no setup steps here |
 | VS Code | any recent | With the extensions listed in [Step 4](#step-4--set-up-vs-code) |
 
@@ -261,10 +295,16 @@ api_key = settings.deepseek_api_key   # typed, loaded from env/.env
 | Python Debugger | `ms-python.debugpy` | Breakpoints / debugging |
 | Even Better TOML | `tamasfe.even-better-toml` | Schema-aware `pyproject.toml` editing |
 | Docker | `ms-azuretools.vscode-docker` | For `deploy/` work later |
+| ESLint | `dbaeumer.vscode-eslint` | Frontend linting (wires the project's ESLint) |
+| Prettier | `esbenp.prettier-vscode` | Frontend formatter (format-on-save) |
+| Tailwind CSS IntelliSense | `bradlc.vscode-tailwindcss` | Tailwind class autocomplete + hover docs |
+| ES7+ React snippets | `dsznajder.es7-react-js-snippets` | JSX/component snippets |
+| Error Lens | `usernamehw.errorlens` | Inline errors/warnings at the line |
 
-### 4b. Confirm the interpreter selection
+### 4b. Confirm the interpreter / formatter selection
 
-The repo ships `.vscode/settings.json` which pins the interpreter and formatter:
+The repo ships `.vscode/settings.json` which pins the interpreters and formatters for
+both layers (Ruff for Python, Prettier for JS/TS/CSS/HTML/JSON, format-on-save enabled):
 
 ```json
 {
@@ -274,9 +314,21 @@ The repo ships `.vscode/settings.json` which pins the interpreter and formatter:
     "editor.formatOnSave": true
   },
   "python.testing.pytestEnabled": true,
-  "python.testing.pytestArgs": ["backend/tests"]
+  "python.testing.pytestArgs": ["backend/tests"],
+
+  "[javascript]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[javascriptreact]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[typescript]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[typescriptreact]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[css]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[html]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[json]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true },
+  "[jsonc]": { "editor.defaultFormatter": "esbenp.prettier-vscode", "editor.formatOnSave": true }
 }
 ```
+
+> **Why `[typescriptreact]`?** In VS Code, `.tsx` has its own language ID distinct from
+> `.ts` — without it, Prettier would never format your React components.
 
 To verify in the UI: `Ctrl+Shift+P` → **"Python: Select Interpreter"** → it should show the `backend` venv (Python 3.12). The status bar (bottom-left) displays the active interpreter.
 
@@ -292,10 +344,11 @@ Pre-commit runs linting, formatting, and secret scanning on every commit. The co
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
-uv run pre-commit install
+uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
 > `pre-commit` is a **dev dependency** in `pyproject.toml`, so `uv sync` already installed it into the venv.
+> The `--hook-type commit-msg` activates the Commitizen conventional-commit check.
 
 ### 5b. Run it once against everything
 
@@ -304,7 +357,8 @@ uv run pre-commit run --all-files
 ```
 
 The first run downloads hook environments (a minute or two). It runs:
-- `ruff` + `ruff-format` — lint and auto-format Python (may rewrite files — re-stage and commit again)
+- `ruff` + `ruff-format` — lint and auto-format Python, scoped to `backend/` (may rewrite files — re-stage and commit again)
+- `eslint` + `prettier` — lint and auto-format the frontend (`.ts`/`.tsx`/`.js`/`.jsx`/`.css`/`.html`/`.json`). These `local` hooks need `frontend/node_modules` (`cd frontend && npm ci`) and a POSIX shell (Git Bash) on Windows.
 - `detect-secrets` — blocks new API keys/tokens; compares against `.secrets.baseline`
 - hygiene checks — trailing whitespace, YAML validity, merge-conflict markers, private keys
 
@@ -350,6 +404,49 @@ make dev-up                  # ENV=dev uv run uvicorn app.main:app --reload
 
 Then: `curl.exe http://localhost:8000/health` → `{"status":"ok"}`, or open the interactive
 docs at `http://localhost:8000/docs`. Full reference in [docs/api.md](docs/api.md).
+
+---
+
+## Step 7 — Run the frontend
+
+The React chat UI (M10) runs on the Vite dev server at `:5173` and talks to the backend
+on `:8000` through a **dev proxy** — the browser never needs to know the backend URL.
+
+### 7a. Install Node (one-time)
+
+```powershell
+winget install OpenJS.NodeJS.LTS        # or the installer from nodejs.org
+node --version                          # v24.x — pinned in frontend/.nvmrc
+```
+
+**Open a new terminal** after installing — the PATH only refreshes in new sessions.
+
+### 7b. Install frontend dependencies
+
+```powershell
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\frontend
+npm install
+```
+
+This creates `frontend/node_modules` from `package.json` + `package-lock.json` — the JS
+equivalent of `uv sync`.
+
+### 7c. Generate the API types (backend must be running)
+
+```powershell
+npm run types    # openapi-typescript http://localhost:8000/openapi.json -o src/api/types.ts
+```
+
+Regenerate whenever the backend schemas change, and commit the output (`src/api/types.ts`).
+
+### 7d. Run the dev server
+
+```powershell
+npm run dev      # Vite on http://localhost:5173
+```
+
+Open `http://localhost:5173`, type a message, and watch tokens stream in. The backend must
+be running first (`make dev-up` in another terminal). Full guide: [docs/frontend.md](docs/frontend.md).
 
 ---
 
@@ -474,6 +571,42 @@ uv run python scripts/ws_probe.py "tell me a short joke"
 
 ---
 
+## React frontend (M10) — chat UI
+
+M10 adds a real browser chat UI with **token-by-token streaming** over the `/ws/chat`
+WebSocket. Stack: **Vite** (build tool — Create React App is deprecated), **React 19
+function components + hooks**, **TypeScript**, **Tailwind CSS v4** (utility classes via
+the `@tailwindcss/vite` plugin, no config file). The frontend lives in `frontend/`; the
+dev server on `:5173` proxies `/ws` to the backend on `:8000`, so there's no CORS and no
+hardcoded backend URL in client code.
+
+Key pieces:
+
+- **`hooks/useChatStream.ts`** — the core hook. Each `sendMessage()` opens a fresh
+  `WebSocket` to `/ws/chat` (the backend runs one turn then closes), sends a
+  `ChatRequest` envelope, and appends `token` frames to the last assistant message as
+  they arrive. Its `useEffect` cleanup closes any in-flight socket — correct under
+  React 18/19 `StrictMode`, which deliberately double-invokes effects in dev.
+- **Components** — `MessageList` (bubbles + auto-scroll), `MessageInput` (Enter to send,
+  disabled while streaming), `TypingIndicator` (bouncing dots), `LanguageBadge` (shows
+  the response language from the `done` frame: `en` / `de` / `pt-BR`).
+- **`lib/deviceId.ts`** — a UUID persisted in `localStorage`, sent as `device_id` with
+  every message. Looks unused now, but **M17 (alarms) needs it** to know which browser
+  tab/device to ring later.
+- **`hooks/useAlarmSound.ts`** — a Web Audio API stub (`play` / `stop`) scaffolded but
+  **not wired up**; M17 connects it.
+- **Contracts can't drift** — `npm run types` generates `src/api/types.ts` directly from
+  the backend's OpenAPI schema (commit it). The WS frame types are hand-written in
+  `src/api/ws.ts` because OpenAPI doesn't describe WebSocket traffic.
+- **Tooling** — Prettier is the frontend formatter (`.prettierrc.json`, format-on-save in
+  `.vscode/settings.json`); pre-commit runs ESLint + Prettier via `local` hooks; CI has a
+  `frontend` job (`npm ci` → lint → format check → `tsc -b` + Vite build); Node is pinned
+  via `frontend/.nvmrc` and `engines` in `package.json`.
+
+Full file map, walkthrough, and troubleshooting: [docs/frontend.md](docs/frontend.md).
+
+---
+
 ## LLM provider layer (M02)
 
 All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Model names, temperatures, and thinking mode live only in `ROLE_CONFIG` — business logic never hardcodes a model name.
@@ -571,6 +704,11 @@ Run everything from `backend/` unless noted.
 | Run tests | `uv run pytest` |
 | Run the API dev server | `make dev-up` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |
 | Stream a WS chat | `uv run python scripts/ws_probe.py "<message>"` |
+| Run the frontend dev server | `cd frontend && npm run dev` (repo root → :5173) |
+| Frontend lint | `cd frontend && npm run lint` |
+| Frontend format (write / check) | `cd frontend && npm run format` · `npm run format:check` |
+| Regenerate API types | `cd frontend && npm run types` (backend on :8000) |
+| Install frontend deps (locked) | `cd frontend && npm ci` |
 | Langfuse stack up / down / logs | `make langfuse-up` · `make langfuse-down` · `make langfuse-logs` |
 | Run pre-commit on everything | `uv run pre-commit run --all-files` |
 | Update hook versions | `uv run pre-commit autoupdate` |
@@ -588,6 +726,7 @@ The good news: with `uv` there is **no "activate the venv" ritual** — `uv run`
 | Fresh clone or after `git pull` | `uv sync` | Installs deps to match `uv.lock` — the #1 "it worked before, not now" fix |
 | Pre-commit not firing on commit | `uv run pre-commit install` | Re-installs the git hook (once per clone; needed again after some checkouts) |
 | Sanity-check the environment | `uv run python -c "import app.core.config; print(app.core.config.__file__)"` | Confirms venv + editable install in one line |
+| Fresh clone / after `git pull` (frontend) | `cd frontend && npm ci` | Installs locked frontend deps to match `package-lock.json` |
 
 > You do **not** need to run `uv run pre-commit install` every session — only after a fresh clone or if hooks silently stop firing.
 
@@ -611,8 +750,10 @@ uv sync                    # apply the change to the venv
 
 ```powershell
 uv run pre-commit run --all-files   # optional full check (hooks also fire on commit)
-uv run ruff check .                 # lint everything
-uv run ruff format .                # format everything
+uv run ruff check .                 # lint backend
+uv run ruff format .                # format backend
+cd frontend && npm run lint         # lint frontend
+cd frontend && npm run format:check # check frontend formatting
 ```
 
 ### Daily development loop
@@ -633,6 +774,7 @@ git commit                             # pre-commit hooks fire automatically
 1. Always run `uv` commands from `backend/` (or use `--project backend`).
 2. Always use `uv run` / `uv add` — never bare `pip install`.
 3. Never commit `.env`; always commit `uv.lock`, `.python-version`, `.env.example`, and `.secrets.baseline`.
+4. Frontend: never commit `node_modules`; always commit `package-lock.json`, `src/api/types.ts`, and `.nvmrc`; use `npm ci` for reproducible installs.
 
 ---
 
@@ -641,6 +783,6 @@ git commit                             # pre-commit hooks fire automatically
 | Phase | Scope | Status |
 |---|---|---|
 | 1. Core graph & API | LangGraph agent (M02–M06), FastAPI endpoints + WS streaming (M09), pytest suite | ✅ core done |
-| 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Docker done; compose/CI in progress |
+| 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Docker + CI done; compose/CD in progress |
 | 3. Observability & memory | Self-hosted Langfuse traces (M08), Qdrant/Chroma vector store | Langfuse done; vector memory future |
-| 4. Omni-channel UI | Vite/React frontend, WebSockets, voice via reSpeaker/ESP32 | future |
+| 4. Omni-channel UI | Vite/React chat UI with WS streaming (M10), voice via reSpeaker/ESP32 | chat UI done; voice future |
