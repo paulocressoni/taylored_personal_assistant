@@ -11,7 +11,7 @@
 
 * The backend must be written entirely in Python.
 * The agentic core, orchestration, and state management must use LangGraph.
-* Ensure all agent workflows leverage LangGraph's state sharing, persistence, and cyclical graph capabilities to handle complex home automation reasoning. [1, 2, 3, 4] 
+* Ensure all agent workflows leverage LangGraph's state sharing, persistence, and cyclical graph capabilities to handle complex home automation reasoning. [1, 2, 3, 4]
 
 ## 4. Repository Structure & Deployment
 
