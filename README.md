@@ -1,6 +1,6 @@
 # taylored_personal_assistant
 
-A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGraph agentic backend and a React + TypeScript chat frontend (M10). The LLM (DeepSeek via API) is hosted remotely; this repo owns the orchestration, device integrations, API gateway, UI, and deployment.
+A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGraph agentic backend and a React + TypeScript chat frontend (M10, M11). The LLM (DeepSeek via API) is hosted remotely; this repo owns the orchestration, device integrations, API gateway, UI, and deployment. Since M11, every conversation has **persistent memory**: the backend checkpoints each session's history in SQLite, and the frontend lets you create, switch between, and delete multiple conversations.
 
 ---
 
@@ -73,14 +73,14 @@ taylored_personal_assistant/
     │   ├── test_calculator.py
     │   ├── test_config.py
     │   ├── test_langdetect.py
-    │   └── test_api.py           # M09: HTTP/WS tests with a fake graph
+    │   └── test_api.py           # M09/M11: HTTP/WS tests with fakes (graph + checkpointer)
     └── app/                      # Importable Python package ("app")
         ├── __init__.py
-        ├── main.py               # FastAPI app + lifespan (M09)
-        ├── api/                  # FastAPI serving layer (M09)
-        │   ├── routes.py         # /health, POST /chat, WS /ws/chat
-        │   ├── schemas.py        # ChatRequest / ChatResponse (Pydantic v2)
-        │   └── deps.py           # get_graph + state/config builders
+        ├── main.py               # FastAPI app + lifespan (M09, M11)
+        ├── api/                  # FastAPI serving layer (M09, M11)
+        │   ├── routes.py         # /health, /chat, /ws/chat, /sessions/... (M09/M11)
+        │   ├── schemas.py        # ChatRequest / ChatResponse / history schemas
+        │   └── deps.py           # get_graph + get_checkpointer + config builders
         ├── core/                 # Config, LLM factory, telemetry, observability
         │   ├── __init__.py
         │   ├── callbacks.py      # RunTelemetry callback handler
@@ -88,8 +88,9 @@ taylored_personal_assistant/
         │   ├── llm.py            # Role-based LLM factory (ROLE_CONFIG)
         │   └── observability.py  # Langfuse v4 wiring (M08)
         ├── graph/                # LangGraph state + nodes
-        │   ├── graph.py          # StateGraph builder
+        │   ├── graph.py          # StateGraph builder (checkpointer-aware, M11)
         │   ├── state.py          # IPAState schema
+        │   ├── checkpointer.py   # AsyncSqliteSaver open/setup (M11)
         │   ├── utils.py
         │   └── nodes/            # detect_lang, router, knowledge, ...
         ├── identity/             # (future)
@@ -105,8 +106,8 @@ taylored_personal_assistant/
         │   ├── calculator.py
         │   └── registry.py
         └── voice/                # (future)
-└── frontend/                    # React + TypeScript chat UI (M10)
-    ├── package.json             # Manifest + npm scripts (dev, build, lint, types, format)
+└── frontend/                    # React + TypeScript chat UI (M10, M11)
+    ├── package.json             # Manifest + npm scripts (dev, build, test, lint, types, format)
     ├── package-lock.json        # Locked deps (COMMIT this — npm ci uses it)
     ├── .nvmrc                   # Pinned Node version (24.19.0)
     ├── vite.config.ts           # Vite + Tailwind plugin + dev proxy → :8000
@@ -116,17 +117,21 @@ taylored_personal_assistant/
     ├── tsconfig*.json           # TypeScript project references
     └── src/
         ├── main.tsx             # React root + <StrictMode>
-        ├── App.tsx              # Layout: header + message list + input
+        ├── App.tsx              # Layout: session sidebar + chat column (M11)
         ├── index.css            # Tailwind v4 entry (@import "tailwindcss")
         ├── api/
         │   ├── types.ts         # GENERATED from OpenAPI (npm run types) — commit it
         │   └── ws.ts            # Hand-written WebSocket frame types
         ├── lib/
-        │   └── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
+        │   ├── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
+        │   ├── sessions.ts      # Session registry in localStorage (M11)
+        │   ├── history.ts       # Pure message-history mapping (M11, unit-tested)
+        │   └── __tests__/       # Vitest unit tests (sessions, history)
         ├── hooks/
-        │   ├── useChatStream.ts # WS streaming + StrictMode-safe cleanup
+        │   ├── useChatStream.ts # WS streaming + sessions + history loading (M10/M11)
         │   └── useAlarmSound.ts # Web Audio stub (wired up in M17)
         └── components/
+            ├── SessionList.tsx  # Session sidebar: new / switch / delete (M11)
             ├── MessageList.tsx
             ├── MessageInput.tsx
             ├── TypingIndicator.tsx
@@ -148,7 +153,7 @@ taylored_personal_assistant/
 | `Dockerfile` | Multi-stage build: `builder` (uv + deps) → slim `runtime` (venv + code) |
 | `.dockerignore` | Excludes `.venv`, caches, `.git` from the Docker build context |
 | `infra/compose` | Docker Compose files for local infrastructure (Langfuse stack, M08) |
-| `docs/` | Topic guides: Docker (M07), Langfuse (M08), API (M09) |
+| `docs/` | Topic guides: Docker (M07), Langfuse (M08), API (M09/M11), frontend (M10/M11) |
 | Image vs container | **Image** = immutable blueprint; **container** = a running instance of it |
 
 > The `app` package is installed **editable** into the venv (thanks to `[build-system]` + `[tool.setuptools.packages.find]` in `pyproject.toml`). That is why `from app.core...` imports work from **any** directory — no `PYTHONPATH` hacks needed.
@@ -546,6 +551,8 @@ the cached chat models, and flushes Langfuse on shutdown. Routes live in `backen
 | `GET` | `/health` | Liveness probe (used by the Docker `HEALTHCHECK`) |
 | `POST` | `/chat` | One-shot: run the graph, return `{reply, lang, route}` |
 | `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame |
+| `GET` | `/sessions/{id}/history` | Read a conversation's persisted messages (M11) |
+| `DELETE` | `/sessions/{id}` | Delete a conversation from the checkpointer (M11) |
 
 Quick start (full reference: [docs/api.md](docs/api.md)):
 
@@ -561,13 +568,16 @@ uv run python scripts/ws_probe.py "tell me a short joke"
 
 - Input/Output are validated by **Pydantic v2** at the boundary (`schemas.py`) — bad input
   returns `422` before your code runs.
-- `POST /chat` runs the sync `graph.invoke` in `asyncio.to_thread` so the event loop stays
-  free; `WS /ws/chat` streams `astream_events(version="v2")`, filtering
-  `on_chat_model_stream` events for the `responder` node only.
+- `POST /chat` runs `graph.ainvoke` (async, matching the M11 `AsyncSqliteSaver`); `WS
+  /ws/chat` streams `astream_events(version="v2")`, filtering `on_chat_model_stream`
+  events for the `responder` node only.
+- **M11 checkpointing:** the graph is compiled with a SQLite checkpointer
+  (`app/graph/checkpointer.py`). Every run stamps `config["configurable"]["thread_id"]`
+  from `session_id`, so turns sharing an id are merged into one conversation history.
 - Each role now carries a per-model `timeout` / `max_tokens` / `max_retries` budget in
   `ROLE_CONFIG` (`app/core/llm.py`).
-- Tests (`backend/tests/test_api.py`) exercise both endpoints with a duck-typed
-  `FakeGraph` — no DeepSeek, no network.
+- Tests (`backend/tests/test_api.py`) exercise the endpoints with duck-typed `FakeGraph`
+  + `FakeCheckpointer` — no DeepSeek, no network, no real SQLite.
 
 ---
 
@@ -587,9 +597,10 @@ Key pieces:
   `ChatRequest` envelope, and appends `token` frames to the last assistant message as
   they arrive. Its `useEffect` cleanup closes any in-flight socket — correct under
   React 18/19 `StrictMode`, which deliberately double-invokes effects in dev.
-- **Components** — `MessageList` (bubbles + auto-scroll), `MessageInput` (Enter to send,
-  disabled while streaming), `TypingIndicator` (bouncing dots), `LanguageBadge` (shows
-  the response language from the `done` frame: `en` / `de` / `pt-BR`).
+- **Components** — `SessionList` (session sidebar: new/switch/delete), `MessageList`
+  (bubbles + auto-scroll), `MessageInput` (Enter to send, disabled while streaming),
+  `TypingIndicator` (bouncing dots), `LanguageBadge` (shows the response language from
+  the `done` frame: `en` / `de` / `pt-BR`).
 - **`lib/deviceId.ts`** — a UUID persisted in `localStorage`, sent as `device_id` with
   every message. Looks unused now, but **M17 (alarms) needs it** to know which browser
   tab/device to ring later.
@@ -598,6 +609,13 @@ Key pieces:
 - **Contracts can't drift** — `npm run types` generates `src/api/types.ts` directly from
   the backend's OpenAPI schema (commit it). The WS frame types are hand-written in
   `src/api/ws.ts` because OpenAPI doesn't describe WebSocket traffic.
+- **Sessions (M11)** — a session registry in `localStorage` (`lib/sessions.ts`) with a
+  sidebar to create, switch, and delete conversations. Each session is a distinct
+  `thread_id`, so conversations keep independent checkpointed memory; switching loads a
+  session's history via `GET /sessions/{id}/history`; deleting also calls
+  `DELETE /sessions/{id}` to erase the server checkpoint.
+- **Unit tests (M11)** — Vitest + jsdom (`npm run test`) covering the pure logic in
+  `lib/sessions.ts` and `lib/history.ts`.
 - **Tooling** — Prettier is the frontend formatter (`.prettierrc.json`, format-on-save in
   `.vscode/settings.json`); pre-commit runs ESLint + Prettier via `local` hooks; CI has a
   `frontend` job (`npm ci` → lint → format check → `tsc -b` + Vite build); Node is pinned
@@ -786,3 +804,4 @@ git commit                             # pre-commit hooks fire automatically
 | 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Docker + CI done; compose/CD in progress |
 | 3. Observability & memory | Self-hosted Langfuse traces (M08), Qdrant/Chroma vector store | Langfuse done; vector memory future |
 | 4. Omni-channel UI | Vite/React chat UI with WS streaming (M10), voice via reSpeaker/ESP32 | chat UI done; voice future |
+| 5. Session memory | LangGraph SQLite checkpointing (M11) + frontend multi-session sidebar | ✅ done |
