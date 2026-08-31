@@ -28,7 +28,12 @@ from app.api.deps import (
     get_checkpointer,
     get_graph,
 )
-from app.api.schemas import ChatRequest, ChatResponse, SessionHistoryResponse
+from app.api.schemas import (
+    ChatRequest,
+    ChatResponse,
+    HistoryMessage,
+    SessionHistoryResponse,
+)
 from app.graph.utils import get_last_message
 
 logger = logging.getLogger(__name__)
@@ -128,7 +133,7 @@ async def get_session_history(
     messages = state.get("messages", [])
     return SessionHistoryResponse(
         session_id=session_id,
-        messages=[_message_to_dict(m) for m in messages],
+        messages=[_message_to_history(m) for m in messages],
     )
 
 
@@ -317,13 +322,13 @@ def _content_to_str(content: Any) -> str:
     return "".join(parts)
 
 
-def _message_to_dict(message: BaseMessage) -> dict[str, str]:
-    """Flatten a BaseMessage into the JSON shape the schema documents.
+def _message_to_history(message: BaseMessage) -> HistoryMessage:
+    """Flatten a BaseMessage into a HistoryMessage for the API response.
 
     Args:
         message: Any LangChain message (human/ai/tool/system).
 
     Returns:
-        A dict with "role" (message.type) and flattened text content.
+        A HistoryMessage with "role" (message.type) and flattened text content.
     """
-    return {"role": message.type, "content": _content_to_str(message.content)}
+    return HistoryMessage(role=message.type, content=_content_to_str(message.content))
