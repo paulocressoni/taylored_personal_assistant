@@ -11,6 +11,9 @@ export default defineConfig({
       // "ws: true" is required so the proxy handles the WebSocket upgrade.
       '/ws': { target: 'http://localhost:8000', ws: true },
       '/openapi.json': 'http://localhost:8000',
+      // so DELETE /sessions/{id} from the browser reaches the
+      // backend through the same dev-server origin (no CORS needed).
+      '/sessions': 'http://localhost:8000',
     },
   },
 })

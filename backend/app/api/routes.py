@@ -132,6 +132,29 @@ async def get_session_history(
     )
 
 
+@router.delete("/sessions/{session_id}")
+async def delete_session(
+    session_id: str,
+    checkpointer: Any = Depends(get_checkpointer),  # noqa: B008
+) -> dict[str, Any]:
+    """Delete a conversation and all its checkpoints.
+
+    Calls ``checkpointer.adelete_thread``, which removes every checkpoint AND
+    pending write for that thread_id from the SQLite store. Deleting a thread
+    that never existed is a harmless no-op (zero rows removed), so we don't
+    bother returning a 404.
+
+    Args:
+        session_id: The thread_id of the conversation to delete.
+        checkpointer: The app-wide AsyncSqliteSaver (from startup).
+
+    Returns:
+        A small confirmation dict for the client.
+    """
+    await checkpointer.adelete_thread(session_id)
+    return {"session_id": session_id, "deleted": True}
+
+
 @router.websocket("/ws/chat")
 async def chat_ws(websocket: WebSocket) -> None:
     """Token streaming over WebSocket via graph.astream_events(version="v2").
