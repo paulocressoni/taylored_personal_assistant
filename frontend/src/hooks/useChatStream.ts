@@ -1,10 +1,11 @@
 // frontend/src/hooks/useChatStream.ts
-// (REPLACE the whole file — M11 Phase 1 adds multi-session support)
+// (REPLACE the whole file — M11 Phase 3 + history.ts refactor)
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../api/types'
 import type { WsFrame } from '../api/ws'
 import { getDeviceId } from '../lib/deviceId'
+import { historyToChatMessages, type ChatMessage, type SessionHistory } from '../lib/history'
 import {
   createSession,
   getActiveSessionId,
@@ -14,32 +15,13 @@ import {
   type Session,
 } from '../lib/sessions'
 
+// Re-export so components can keep importing ChatMessage from the hook
+// (MessageList does). The type itself now lives in lib/history.ts so the
+// pure history-mapping logic can be unit-tested in isolation.
+export type { ChatMessage } from '../lib/history'
+
 // The generated type for backend's ChatRequest pydantic model.
 type ChatRequest = components['schemas']['ChatRequest']
-
-export type ChatMessage = {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-}
-
-// Shape of GET /sessions/{id}/history (mirrors backend SessionHistoryResponse).
-type HistoryMessage = { role: string; content: string }
-type SessionHistory = { session_id: string; messages: HistoryMessage[] }
-
-// Convert persisted backend messages into the bubbles the chat view renders.
-// human -> user bubble, ai -> assistant bubble. tool/system messages are
-// internal bookkeeping (tool results, system instructions) and are dropped —
-// an empty array means "nothing to render" and flatMap removes it entirely.
-function historyToChatMessages(m: HistoryMessage): ChatMessage[] {
-  if (m.role === 'human') {
-    return [{ id: crypto.randomUUID(), role: 'user', content: m.content }]
-  }
-  if (m.role === 'ai') {
-    return [{ id: crypto.randomUUID(), role: 'assistant', content: m.content }]
-  }
-  return []
-}
 
 function wsUrl(): string {
   // Relative to the Vite dev server, which proxies /ws/chat to the backend.
