@@ -1,5 +1,8 @@
 """Graph builder — assemble nodes into a compiled StateGraph."""
 
+from typing import Any
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.graph.nodes.detect_lang import detect_lang_node
@@ -52,7 +55,18 @@ def should_continue(state: IPAState) -> str:
     return "responder"
 
 
-def build_graph():
+def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> Any:
+    """Assemble the nodes into a compiled, optionally check-pointed graph.
+
+    Args:
+        checkpointer: Optional LangGraph BaseCheckpointSaver. When given, the
+            compiled graph persists its state to that store after every step
+            and reloads it on the next run with the same thread_id (M11).
+            When None, the graph is stateless (CLI / tests).
+
+    Returns:
+        The compiled StateGraph, ready to invoke/ainvoke.
+    """
     builder = StateGraph(IPAState)
     builder.add_node("detect_lang", detect_lang_node)
     builder.add_node("router", router_node)
@@ -76,4 +90,4 @@ def build_graph():
     builder.add_edge("tool_exec", "knowledge")
     builder.add_edge("responder", END)
 
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)

@@ -1,4 +1,4 @@
-"""HTTP + WebSocket endpoints for the assistant (M09 review).
+"""HTTP + WebSocket endpoints for the assistant (M09, checkpointing in M11).
 
 Error-handling policy:
   - WebSocketDisconnect is the only exception we catch in the streaming loop.
@@ -20,10 +20,15 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessageChunk, BaseMessage
 
-from app.api.deps import build_initial_state, build_run_config, get_graph
-from app.api.schemas import ChatRequest, ChatResponse
+from app.api.deps import (
+    build_initial_state,
+    build_run_config,
+    get_checkpointer,
+    get_graph,
+)
+from app.api.schemas import ChatRequest, ChatResponse, SessionHistoryResponse
 from app.graph.utils import get_last_message
 
 logger = logging.getLogger(__name__)
@@ -48,13 +53,19 @@ async def chat(
 ) -> ChatResponse:
     """One-shot request/response: run the graph, return the final answer.
 
+    M11: we call ``graph.ainvoke`` (async), matching the async checkpointer.
+    LangGraph runs the sync node code in a thread executor internally, so the
+    event loop is not blocked. Because ``build_run_config`` stamps the
+    session's thread_id into the config, this turn is MERGED into the saved
+    history for that session instead of starting from scratch.
+
     Args:
         payload: The request body containing the chat message and session ID.
         graph: The graph instance to use for processing the request.
 
     Returns:
-        A ChatResponse object containing the assistant's reply, resolved language,
-        and routed intent.
+        A ChatResponse object containing the assistant's reply, resolved
+        language, and routed intent.
     """
     initial = build_initial_state(
         user_input=payload.message,
@@ -64,11 +75,13 @@ async def chat(
     )
     config = build_run_config(payload.session_id, channel="api")
 
-    # Run the graph in a thread to avoid blocking the event loop,
-    # with a hard deadline so a hung model can't hold a thread forever.
+    # Run with a hard deadline so a hung model can't hold a request forever.
     try:
         async with asyncio.timeout(90):
-            final = await asyncio.to_thread(graph.invoke, initial, config=config)
+            # The graph.ainvoke method runs the graph with the initial state and configuration.
+            # it must wait for the async graph to complete and return the final state (async
+            # like the checkpointer).
+            final = await graph.ainvoke(initial, config=config)
     except TimeoutError:
         raise HTTPException(
             status_code=503,
@@ -81,6 +94,41 @@ async def chat(
         reply=_content_to_str(last.content),
         lang=final.get("lang"),
         route=final.get("route"),
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/history",
+    response_model=SessionHistoryResponse,
+)
+async def get_session_history(
+    session_id: str,
+    checkpointer: Any = Depends(get_checkpointer),  # noqa: B008
+) -> SessionHistoryResponse:
+    """Return every persisted message for a session, oldest first.
+
+    Reads the LATEST checkpoint for the thread straight from SQLite. This is
+    a debugging/inspection endpoint — the chat routes never call it; they use
+    the same checkpointer implicitly through graph.ainvoke/astream_events.
+
+    Args:
+        session_id: The thread_id that ties turns into one conversation.
+        checkpointer: The app-wide AsyncSqliteSaver (from startup).
+
+    Returns:
+        The session's full message history (empty if the session never ran).
+    """
+    checkpoint_tuple = await checkpointer.aget_tuple(
+        {"configurable": {"thread_id": session_id}}
+    )
+    if checkpoint_tuple is None:
+        return SessionHistoryResponse(session_id=session_id, messages=[])
+
+    state = checkpoint_tuple.checkpoint["channel_values"]
+    messages = state.get("messages", [])
+    return SessionHistoryResponse(
+        session_id=session_id,
+        messages=[_message_to_dict(m) for m in messages],
     )
 
 
@@ -129,6 +177,7 @@ async def chat_ws(websocket: WebSocket) -> None:
         channel="api",
         device_id=payload.device_id,
     )
+    # Build the run configuration with the session ID and channel for telemetry and checkpointing.
     config = build_run_config(payload.session_id, channel="api")
 
     streamed: list[str] = []
@@ -207,11 +256,6 @@ async def chat_ws(websocket: WebSocket) -> None:
     if not reply and final_state is not None:
         reply = _content_to_str(get_last_message(final_state["messages"]).content)
 
-    # TODO: Your handler reads only one incoming message, runs the graph, then closes.
-    # That's fine for "one turn per connection," but a chat UI usually keeps the
-    # socket open for multi-turn. Just be deliberate about which model you're building.
-    # Suggestion: defer this TODO until persistence exists.
-
     try:
         # Send a final JSON message indicating the end of the conversation, along with
         # the assistant's reply, resolved language, routed intent, and completion status.
@@ -248,3 +292,15 @@ def _content_to_str(content: Any) -> str:
         elif isinstance(block, dict) and block.get("type") == "text":
             parts.append(block.get("text", ""))
     return "".join(parts)
+
+
+def _message_to_dict(message: BaseMessage) -> dict[str, str]:
+    """Flatten a BaseMessage into the JSON shape the schema documents.
+
+    Args:
+        message: Any LangChain message (human/ai/tool/system).
+
+    Returns:
+        A dict with "role" (message.type) and flattened text content.
+    """
+    return {"role": message.type, "content": _content_to_str(message.content)}

@@ -1,9 +1,10 @@
-"""FastAPI app for the containerized backend (M09).
+"""FastAPI app for the containerized backend (M09, checkpointing in M11).
 
 The lifespan context manager replaces the old @app.on_event("startup"):
-it compiles the LangGraph graph ONCE at boot and stores it on app.state.
-Every request reads that same compiled instance via Depends(get_graph) -
-or request.app.state.graph - we never recompile per-request.
+it compiles the LangGraph graph ONCE at boot, opens the conversation
+checkpointer, and stores both on app.state. Every request reads those same
+instances via Depends(get_graph) / Depends(get_checkpointer) - or
+request.app.state.graph - we never recompile (or reopen the DB) per-request.
 """
 
 import logging
@@ -14,6 +15,7 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.core.llm import ROLE_CONFIG, get_chat_model
 from app.core.observability import flush
+from app.graph.checkpointer import open_checkpointer
 from app.graph.graph import build_graph
 
 logger = logging.getLogger(__name__)
@@ -29,19 +31,24 @@ async def lifespan(app: FastAPI):
         None. The function manages the startup and shutdown lifecycle of the app.
     """
     # --- startup ---------------------------------------------------------
-    # Compilation instantiates the langchain runnables and edges. Doing it
-    # once here instead of per-request removes both latency and churn.
-    app.state.graph = build_graph()
+    # open_checkpointer() is an ASYNC CONTEXT MANAGER: entering it opens the
+    # SQLite connection and yields the saver; exiting it closes the connection.
+    # We keep that context open for the WHOLE app lifetime, so the single
+    # saver instance is alive for every request and is closed at shutdown.
+    async with open_checkpointer() as checkpointer:
+        app.state.checkpointer = checkpointer
+        app.state.graph = build_graph(checkpointer=checkpointer)
 
-    # Pre-warm the @cache'd chat models (they're created lazily inside the
-    # nodes). The FIRST request now skips the one-time model construction.
-    for role in ROLE_CONFIG:
-        get_chat_model(role)
+        # Pre-warm the @cache'd chat models (they're created lazily inside the
+        # nodes). The FIRST request now skips the one-time model construction.
+        for role in ROLE_CONFIG:
+            get_chat_model(role)
 
-    logger.info("graph compiled and chat models pre-warmed")
-    yield
+        logger.info("graph compiled, checkpointer open, chat models pre-warmed")
+        yield
     # --- shutdown ---------------------------------------------------------
-    # Best-effort: flush any queued Langfuse events before the process ends.
+    # The `async with` above already closed the SQLite connection. Now flush
+    # any queued Langfuse events best-effort before the process ends.
     flush()
 
 
