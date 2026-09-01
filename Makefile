@@ -8,6 +8,11 @@ SHELL := /bin/bash
 BACKEND := backend
 ENV ?= dev
 MSG ?=
+# --- App version for image tags (single source: backend/app/_version.py) ---
+# Compose interpolates ${APP_VERSION} when building/tagging. `latest` is the
+# fallback for raw `docker compose` runs that bypass make.
+APP_VERSION := $(shell sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
+export APP_VERSION
 
 .PHONY: dev-up dev-up-light dev-down dev-logs dev-ps dev-local test lint cli types config
 

@@ -28,6 +28,7 @@ services:
   backend:
     build:
       context: ../../backend
+    image: taylored-assistant-backend:${APP_VERSION:-latest}
     restart: unless-stopped
     environment:
       # app/core/config.py requires ENV=dev|prod. The overlays set the
@@ -47,6 +48,7 @@ services:
   frontend:
     build:
       context: ../../frontend
+    image: taylored-assistant-frontend:${APP_VERSION:-latest}
     restart: unless-stopped
     depends_on:
       backend:
