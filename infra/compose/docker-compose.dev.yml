@@ -1,0 +1,59 @@
+# infra/compose/docker-compose.dev.yml  (M12)
+# ------------------------------------------------------------------
+# DEV overlay ON TOP of base.yml. Contains ONLY dev differences:
+#   - bind mounts  : live code, no rebuild on every edit
+#   - --reload     : uvicorn restarts on every .py change
+#   - vite dev     : frontend HMR
+#   - ports        : open services to the host browser
+#
+# Merge semantics in action:
+#   - `command:`       overrides base (scalar wins)
+#   - `environment:`   merges per key (LANGFUSE_BASE_URL overridden)
+#   - `ports:`/`volumes:` concatenate with base
+# ------------------------------------------------------------------
+
+services:
+  backend:
+    # python -m uvicorn keeps cwd (/app) on sys.path — the verified-safe
+    # invocation in this project. --reload-dir scopes the watcher to the
+    # mounted source only (so the venv isn't watched).
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
+    environment:
+      ENV: dev
+      # Override the HOST-oriented URL from backend/.env.dev: inside the
+      # Compose network the SDK must reach Langfuse by SERVICE NAME.
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+    env_file:
+      # Real secrets (DEEPSEEK_API_KEY, Langfuse keys) come from the
+      # git-ignored backend/.env.dev, injected as container env vars.
+      - ../../backend/.env.dev
+    volumes:
+      # Bind-mount ONLY app/ so the image's /app/.venv (Linux) is NOT
+      # shadowed by the host's Windows .venv. uvicorn --reload watches
+      # /app/app and restarts on every .py edit.
+      - ../../backend/app:/app/app
+    ports:
+      - "8000:8000"
+
+  frontend:
+    command: npm run dev
+    environment:
+      # The vite proxy (vite.config.ts) forwards /ws, /openapi.json,
+      # /sessions, /health to this target. Inside the container it must
+      # be the backend SERVICE NAME, not localhost.
+      BACKEND_URL: http://backend:8000
+    volumes:
+      # Full source so Vite serves index.html, public/, src/ live...
+      - ../../frontend:/app
+      # ...but MASK node_modules with an anonymous volume: the image's
+      # (Linux) node_modules is copied in on first start; the host's
+      # (Windows) node_modules must NOT shadow it.
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+
+  langfuse-web:
+    # Only the browser-facing UI port is opened in dev. All other
+    # Langfuse services stay internal (no host port needed).
+    ports:
+      - "3000:3000"

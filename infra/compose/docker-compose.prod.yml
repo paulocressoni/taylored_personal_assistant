@@ -1,0 +1,13 @@
+# infra/compose/docker-compose.prod.yml  (M12, sketch only)
+# Demonstrates the overlay pattern for prod. NOTE: real prod packaging
+# = frontend static assets bundled INTO the Python backend (repo's
+# "unified package" goal) — a future milestone. This is a placeholder.
+
+services:
+  backend:
+    environment:
+      ENV: prod
+    env_file:
+      - ../../backend/.env.prod
+    ports:
+      - "8000:8000"
