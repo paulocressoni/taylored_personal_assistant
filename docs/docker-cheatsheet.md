@@ -213,6 +213,41 @@ docker system prune -a --volumes -f   # remove all unused images/volumes/network
 
 > On Linux/macOS use `$(docker ps -aq)` instead of PowerShell's `(docker ps -aq)`.
 
+## Network stuck — "Resource is still in use"
+
+If `docker compose ... down` (or a manual `docker network rm`) reports:
+
+```
+! Network taylored-assistant_default Resource is still in use
+```
+
+…or the longer form:
+
+```
+network taylored-assistant_default has active endpoints (name:"taylored-assistant-postgres-1", ...)
+```
+
+…it means at least one container is **still attached** to the project's default network.
+A network can only be deleted when **zero** containers (running or stopped) are connected
+to it — the attached containers are the network's "endpoints".
+
+> **Observed quirk (Compose v5.4.0):** `docker compose down` can skip the container-removal
+> step entirely and jump straight to `Network ... Removing`, so it never frees the network —
+> even though `docker compose ps` still lists the containers. If `down` keeps failing with
+> this message, don't loop on it; remove the containers directly:
+
+```powershell
+# 1. Stop + remove every project container (force = the reliable fallback)
+docker rm -f (docker ps -a -q -f name=taylored-assistant)
+
+# 2. The network is now free — delete it (or `docker network prune -f` for all unused)
+docker network rm taylored-assistant_default
+```
+
+- `docker rm` **never** deletes named volumes — `postgres_data`, `clickhouse_data`, etc.
+  survive, so the next `up` reuses them.
+- To also wipe the volumes: `docker compose ... down -v` (after the containers are gone).
+
 ## Common gotchas
 - **`curl: (7) Failed to connect to localhost:8000`** → the container is fine, but its port isn't published; re-run with `-p 8000:8000` (the healthcheck passes even when the host can't reach it, because it runs inside the container).
 
