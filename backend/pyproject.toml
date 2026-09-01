@@ -1,6 +1,6 @@
 [project]
 name = "backend"
-version = "0.1.0"
+version = "0.2.0"
 description = "Smart home assistant backend"
 requires-python = ">=3.12"
 dependencies = [
@@ -48,3 +48,14 @@ python_files = ["test_*.py", "smoke_*.py"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
+
+# Commitizen configuration for versioning and changelog generation
+# TODO: Uncomment the following lines to enable Commitizen for version management
+# after a couple of manual releases. This will allow for automatic version bumping
+# and changelog generation based on commit messages.
+# [tool.commitizen]
+# version = "0.2.0"
+# version_files = [
+#   "backend/app/_version.py",
+#   "frontend/package.json",
+# ]

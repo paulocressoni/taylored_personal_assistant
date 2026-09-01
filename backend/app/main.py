@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app._version import __version__
 from app.api.routes import router
 from app.core.llm import ROLE_CONFIG, get_chat_model
 from app.core.observability import flush
@@ -54,7 +55,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Taylored Personal Assistant",
-    version="0.9.0",
+    version=__version__,
     lifespan=lifespan,
 )
 app.include_router(router)
