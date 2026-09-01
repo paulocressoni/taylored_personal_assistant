@@ -9,7 +9,7 @@ BACKEND := backend
 ENV ?= dev
 MSG ?=
 
-.PHONY: dev-up test lint cli types langfuse-up langfuse-down langfuse-logs config
+.PHONY: dev-up dev-up-light dev-down dev-logs dev-ps dev-local test lint cli types config
 
 config:
 	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
@@ -22,25 +22,38 @@ test:
 
 lint:
 	cd $(BACKEND) && uv run ruff check .
-    cd $(BACKEND) && uv run ruff format --check .
-    cd frontend && npm run lint
-    cd frontend && npx prettier --check .
+	cd $(BACKEND) && uv run ruff format --check .
+	cd frontend && npm run lint
+	cd frontend && npx prettier --check .
 
 types:
 	cd $(BACKEND) && uv run mypy app
 
-dev-up:
+# --- Local (non-Docker) uvicorn — the pre-M12 quick dev loop ---
+dev-local:
 	cd $(BACKEND) && ENV=$(ENV) uv run uvicorn app.main:app --reload
 
-# --- Langfuse observability stack (M08) ---
-ENV_FILE := infra/compose/.env
-COMPOSE := docker compose -f infra/compose/docker-compose.langfuse.yml --env-file $(ENV_FILE)
+# --- Full local dev stack (M12): Compose OVERLAYS ---
+# base.yml + dev.yml are merged by Compose; --env-file feeds the
+# ${VAR:?...} secrets used by the Langfuse services (infra/compose/.env).
+COMPOSE_DIR := infra/compose
+ENV_FILE := $(COMPOSE_DIR)/.env
+COMPOSE := docker compose -f $(COMPOSE_DIR)/docker-compose.base.yml -f $(COMPOSE_DIR)/docker-compose.dev.yml --env-file $(ENV_FILE)
 
-langfuse-up:
-	$(COMPOSE) up -d --wait
+# THE M12 command: whole stack (backend + frontend + Langfuse + DBs).
+# `--profile observability` enables the optional Langfuse services.
+dev-up:
+	$(COMPOSE) --profile observability up --build -d --wait
 
-langfuse-down:
+# Same stack WITHOUT Langfuse (lighter/faster; observability skipped).
+dev-up-light:
+	$(COMPOSE) up --build -d --wait
+
+dev-down:
 	$(COMPOSE) down
 
-langfuse-logs:
+dev-logs:
 	$(COMPOSE) logs -f
+
+dev-ps:
+	$(COMPOSE) ps
