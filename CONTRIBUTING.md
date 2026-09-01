@@ -33,6 +33,23 @@ POSIX shell (`bash`) — use Git Bash on Windows.
 - feat: -> MINOR  (1.2.3 -> 1.3.0)
 - feat! / BREAKING CHANGE: -> MAJOR (1.2.3 -> 2.0.0)
 
+## Releasing a new version (M12)
+
+The app version is stored in exactly ONE place — `backend/pyproject.toml`
+(`[project].version`) — and exposed at runtime via `backend/app/_version.py`
+(`__version__`), which `app/main.py` and the `/health` endpoint read.
+`frontend/package.json` mirrors it for display only (the UI footer reads the real
+value from `/health`, so it can't drift). The git tag is the release identifier;
+Compose image tags are derived from `_version.py` via the Makefile's `APP_VERSION`.
+
+Release steps:
+1. Bump `version` in `backend/pyproject.toml` AND `__version__` in
+   `backend/app/_version.py` (and `frontend/package.json` for display),
+   e.g. 0.1.0 -> 0.2.0.
+2. Commit with a conventional message, then tag:
+   `git tag -a v0.2.0 -m "Release v0.2.0 - <summary>"`.
+3. Push the branch and the tag (`git push origin <branch>` + `git push origin v0.2.0`).
+
 ## Workflow
 1. git checkout -b feat/your-feature
 2. Commit with conventional messages (hook enforces).
