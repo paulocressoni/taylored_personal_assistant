@@ -1,7 +1,8 @@
-# HTTP + WebSocket API (M09)
+# HTTP + WebSocket API (M09, M11)
 
-Reference for the FastAPI serving layer added in M09. This is the bridge between the
-LangGraph backend and any client (CLI, React frontend (M10), voice devices).
+Reference for the FastAPI serving layer added in M09 and extended in M11 (checkpointing).
+This is the bridge between the LangGraph backend and any client (CLI, React frontend
+(M10/M11), voice devices).
 
 ## What M09 added
 
@@ -14,6 +15,19 @@ LangGraph backend and any client (CLI, React frontend (M10), voice devices).
 - Pydantic v2 request/response schemas (`backend/app/api/schemas.py`).
 - Dependency helpers (`backend/app/api/deps.py`) + HTTP-layer tests with a **fake graph**
   (`backend/tests/test_api.py`) — no network, no DeepSeek key.
+
+## What M11 added
+
+- **Conversation checkpointing**: the graph is compiled with a SQLite-backed checkpointer
+  (`AsyncSqliteSaver`, `backend/app/graph/checkpointer.py`) created once in the lifespan
+  and stored on `app.state.checkpointer`. Every run carries
+  `config["configurable"]["thread_id"] = session_id`, so turns sharing a `session_id`
+  merge into one persisted history — HTTP is stateless, the checkpointer is the memory.
+- `GET /sessions/{id}/history` — inspect a conversation's persisted messages.
+- `DELETE /sessions/{id}` — erase a conversation (runs `checkpointer.adelete_thread`).
+- `POST /chat` switched from sync `graph.invoke` to `graph.ainvoke` (required by the
+  async checkpointer).
+- `get_checkpointer` dependency + `thread_id` added to `build_run_config` in `deps.py`.
 
 ## Running the server
 
@@ -44,6 +58,8 @@ Interactive docs (generated from the Pydantic schemas): `http://localhost:8000/d
 | `GET` | `/health` | Liveness probe for the Docker HEALTHCHECK | `{"status": "ok"}` |
 | `POST` | `/chat` | One-shot: run the graph, return the final answer | `ChatResponse` JSON |
 | `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame | `token` frames + `done` |
+| `GET` | `/sessions/{id}/history` | Read a conversation's persisted messages (M11) | `SessionHistoryResponse` |
+| `DELETE` | `/sessions/{id}` | Delete a conversation's checkpoints (M11) | `{"session_id", "deleted"}` |
 
 ## POST /chat
 
@@ -59,7 +75,7 @@ Request body — `ChatRequest`:
 
 | Field | Type | Rules |
 |---|---|---|
-| `session_id` | `str` | required, min 1 char — groups turns for telemetry (Langfuse session) |
+| `session_id` | `str` | required, min 1 char — the `thread_id`: turns sharing it merge into ONE conversation (M11) |
 | `message` | `str` | required, 1–4000 chars — empty/too-long returns **422** before the route runs |
 | `device_id` | `str \| null` | optional — which device the turn came from |
 
@@ -84,9 +100,12 @@ curl.exe -X POST http://localhost:8000/chat `
 ```
 
 **How it works:** Pydantic validates the body at the boundary (a 422 is returned without
-your code running). The route then runs the compiled graph via `asyncio.to_thread`
-(`graph.invoke` is synchronous/blocking — it would stall the event loop if called
-directly), and finally returns the last message plus `lang` / `route` from the final state.
+your code running). The route then runs the compiled graph via `await graph.ainvoke(...)`
+(async, matching the M11 `AsyncSqliteSaver` — LangGraph runs the sync node code in a
+thread executor internally). `build_run_config` stamps
+`config["configurable"]["thread_id"] = session_id`, so this turn is **merged into the
+saved history** for that session instead of starting from scratch. Finally it returns the
+last message plus `lang` / `route` from the final state.
 
 ## WS /ws/chat
 
@@ -112,6 +131,46 @@ cd backend
 uv run python scripts/ws_probe.py "tell me a short joke"
 ```
 
+## Sessions & checkpointing (M11)
+
+HTTP is stateless: each request is independent. The **checkpointer** is the server-side
+store that gives conversations memory. It's a SQLite database (`backend/checkpoints.db`,
+created at startup) keyed by `thread_id`. Same `thread_id` → same conversation.
+
+### Why `thread_id` lives in `config`, not the state
+
+- The **state** is *what the graph remembers* (`messages`, `lang`, `route`, ...).
+- The **`thread_id`** is *which conversation this turn belongs to* — it's in
+  `config["configurable"]["thread_id"]`, never in `IPAState`.
+- Reducers (`Annotated[list, operator.add]` on `messages`) make history accumulate: each
+  new turn's messages are appended to the saved ones, so the model sees the whole
+  conversation.
+
+### GET /sessions/{session_id}/history
+
+```powershell
+curl.exe http://localhost:8000/sessions/demo/history
+```
+
+Returns `SessionHistoryResponse` — `{"session_id": "...", "messages": [...]}` oldest
+first, or `"messages": []` if the session never ran. Debugging/inspection only; the chat
+routes read the same store implicitly.
+
+### DELETE /sessions/{session_id}
+
+```powershell
+curl.exe -X DELETE http://localhost:8000/sessions/demo
+```
+
+Runs `checkpointer.adelete_thread(id)`, deleting every checkpoint + pending write for that
+thread — the conversation is truly gone. Idempotent: deleting an unknown id is a harmless
+no-op (`{"session_id": ..., "deleted": true}`).
+
+### Resetting everything in dev
+
+Stop the server and delete `backend/checkpoints.db*` (the DB uses WAL mode, so also the
+`-wal` / `-shm` files). It's recreated empty on next startup.
+
 ### Consumed by the frontend (M10)
 
 The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
@@ -123,18 +182,23 @@ The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
   OpenAPI documents HTTP only — it does not describe WS traffic.
 - The frontend sends the same `ChatRequest` envelope and reads `token` / `done` / `status`
   / `error` frames through the Vite dev proxy (no CORS involved).
+- Since M11 the frontend also calls `GET /sessions/{id}/history` (load a conversation) and
+  `DELETE /sessions/{id}` (delete it); the Vite proxy forwards `/sessions` too.
 
 ## Architecture notes
 
 - **Compile once, reuse forever:** the lifespan builds the graph at boot
-  (`app.state.graph = build_graph()`) and pre-warms each role's cached model. The
-  compiled graph is stateless — all per-run data lives in the `IPAState` passed to
-  `invoke`, so sharing it across concurrent requests is safe.
+  (`app.state.graph = build_graph(checkpointer=...)`) and pre-warms each role's cached
+  model. Sharing the compiled graph across concurrent requests is safe — per-run data
+  lives in `IPAState`, and conversation memory lives in the checkpointer (keyed by
+  `thread_id`), not in the graph.
 - **`app/api/deps.py`:**
   - `get_graph(request)` — reads `request.app.state.graph` (what tests swap).
+  - `get_checkpointer(request)` — reads `request.app.state.checkpointer` (M11).
   - `build_initial_state(...)` — seeds the 12-field `IPAState` with a `HumanMessage`.
-  - `build_run_config(...)` — threads `RunTelemetry` + the Langfuse handler through the
-    run via `config["callbacks"]` / `config["configurable"]` / `config["metadata"]`.
+  - `build_run_config(...)` — stamps `config["configurable"]["thread_id"] = session_id`
+    (M11) and threads `RunTelemetry` + the Langfuse handler via `config["callbacks"]` /
+    `config["configurable"]` / `config["metadata"]`.
 - **`Depends` vs `app.state`:** routes currently read `request.app.state.graph` directly
   (so tests swap `app.state.graph`). The alternative — declaring `Depends(get_graph)` —
   would additionally enable `app.dependency_overrides`. Both reach the same object.

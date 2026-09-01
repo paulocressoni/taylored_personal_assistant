@@ -61,7 +61,7 @@ jobs:
         steps:
             - uses: actions/checkout@v7.0.1
 
-            # Install Node + dependencies (from lockfile) + lint + format + type-check + build
+            # Install Node + dependencies (from lockfile) + lint + format + type-check + unit tests + build
             - name: Install Node
               uses: actions/setup-node@v4
               with:
@@ -80,6 +80,10 @@ jobs:
             # Format check
             - name: Format check
               run: npm run format:check
+
+            # Unit tests (Vitest + jsdom — pure logic, no backend, no network)
+            - name: Unit tests (no backend)
+              run: npm run test
 
             # Type check
             - name: Type check + build

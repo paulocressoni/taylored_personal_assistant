@@ -1,9 +1,9 @@
-# React frontend — chat UI (M10)
+# React frontend — chat UI (M10, M11)
 
-Guide for the browser chat UI added in M10. It streams the assistant's reply
-**token-by-token** over the `/ws/chat` WebSocket, talks to the FastAPI backend on
-`:8000` through a Vite dev proxy, and pins the API contract to the backend's OpenAPI
-schema so the two can't silently drift apart.
+Guide for the browser chat UI added in M10 and extended in M11 (multi-session support +
+unit tests). It streams the assistant's reply **token-by-token** over the `/ws/chat`
+WebSocket, talks to the FastAPI backend on `:8000` through a Vite dev proxy, and pins the
+API contract to the backend's OpenAPI schema so the two can't silently drift apart.
 
 ## What M10 added
 
@@ -18,6 +18,18 @@ schema so the two can't silently drift apart.
 - Tooling: ESLint (lint) + Prettier (format), pre-commit `local` hooks, a `frontend` CI
   job, and Node pinned via `frontend/.nvmrc` + `engines` in `package.json`.
 
+## What M11 added
+
+- **Multi-session support**: a `SessionList` sidebar to create, switch between, and delete
+  conversations. Each is a distinct `session_id`/`thread_id`, so they keep independent
+  checkpointed memory.
+- **History loading**: switching sessions (or refreshing the tab) restores the
+  conversation from `GET /sessions/{id}/history`.
+- **True delete**: the ✕ button also calls `DELETE /sessions/{id}` so the server
+  checkpoint is erased, not just hidden.
+- **First unit tests**: Vitest + jsdom covering the pure logic in `lib/sessions.ts` and
+  `lib/history.ts` (`npm run test`).
+
 ## File map
 
 ```
@@ -25,24 +37,28 @@ frontend/
 ├── package.json             # Manifest + npm scripts (dev, build, lint, types, format)
 ├── package-lock.json        # Locked deps (COMMIT this — npm ci uses it)
 ├── .nvmrc                   # Pinned Node version (24.19.0)
-├── vite.config.ts           # Vite + Tailwind plugin + dev proxy → :8000
+├── vite.config.ts           # Vite + Tailwind + dev proxy (/ws, /sessions) + Vitest config
 ├── eslint.config.js         # ESLint flat config (lint, not format)
 ├── .prettierrc.json         # Prettier style (format)
 ├── index.html               # Page shell
 ├── tsconfig*.json           # TypeScript project references
 └── src/
     ├── main.tsx             # React root + <StrictMode>
-    ├── App.tsx              # Layout: header + message list + input
+    ├── App.tsx              # Layout: session sidebar + chat column (M11)
     ├── index.css            # Tailwind v4 entry (@import "tailwindcss")
     ├── api/
     │   ├── types.ts         # GENERATED from OpenAPI (npm run types) — commit it
     │   └── ws.ts            # Hand-written WebSocket frame types
     ├── lib/
-    │   └── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
+    │   ├── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
+    │   ├── sessions.ts      # Session registry in localStorage (M11)
+    │   ├── history.ts       # Pure message-history mapping (M11)
+    │   └── __tests__/       # Vitest unit tests (sessions.test.ts, history.test.ts)
     ├── hooks/
-    │   ├── useChatStream.ts # WS streaming + StrictMode-safe cleanup
+    │   ├── useChatStream.ts # WS streaming + sessions + history loading (M10/M11)
     │   └── useAlarmSound.ts # Web Audio stub (wired up in M17)
     └── components/
+        ├── SessionList.tsx  # Session sidebar: new / switch / delete (M11)
         ├── MessageList.tsx
         ├── MessageInput.tsx
         ├── TypingIndicator.tsx
@@ -69,10 +85,11 @@ frontend/
 
 4. Open `http://localhost:5173` and chat. Tokens stream in visibly, one at a time.
 
-The Vite dev server proxies `/ws` (and `/openapi.json`) to `http://localhost:8000`
-(`vite.config.ts`). That's why the browser only ever talks to `:5173` — no CORS, no
-hardcoded backend URL. WebSockets aren't subject to CORS anyway, but the proxy is the
-pattern that will also serve the built app from the backend later (single unified package).
+The Vite dev server proxies `/ws`, `/openapi.json`, and `/sessions` (M11) to
+`http://localhost:8000` (`vite.config.ts`). That's why the browser only ever talks to
+`:5173` — no CORS, no hardcoded backend URL. WebSockets aren't subject to CORS anyway, but
+the proxy is the pattern that will also serve the built app from the backend later (single
+unified package).
 
 ## How streaming works (the mental model)
 
@@ -81,7 +98,8 @@ pattern that will also serve the built app from the backend later (single unifie
 - So `useChatStream.sendMessage()` **opens a fresh `WebSocket` per message**:
   1. appends the user message + an empty assistant message,
   2. opens `ws://<host>/ws/chat`, sends the `ChatRequest` envelope (including
-     `device_id` from `lib/deviceId.ts`),
+     `device_id` from `lib/deviceId.ts` and the real `session_id` of the active
+     conversation — M11),
   3. each `token` frame appends its `content` to the last assistant message,
   4. `done` fills in the final reply / language / route and closes the socket.
 - Every `token` updates state → React re-renders → the bubble grows live. That's the
@@ -107,6 +125,46 @@ here.
 - OpenAPI documents **HTTP only** — it does not describe WebSocket traffic. The WS frame
   types (`token` / `status` / `done` / `error`) are therefore **hand-written** in
   `src/api/ws.ts`, mirroring exactly what `backend/app/api/routes.py` sends.
+
+## Sessions (M11) — multiple conversations
+
+The `session_id` in `ChatRequest` is the LangGraph `thread_id`: turns sharing it are one
+conversation on the server (checkpointed history); a new id starts a fresh one.
+
+- **`lib/sessions.ts`** is a localStorage registry: `ipa.sessions` (the list of
+  `{id, name, createdAt}`) and `ipa.active_session_id` (which one is open). It replaces
+  the old hardcoded `'default'`.
+- **`components/SessionList.tsx`** is a controlled sidebar: `+ New chat` (calls
+  `createSession()` → fresh id → fresh server memory), click-to-switch (active row
+  highlighted), and a per-row ✕ delete.
+- **History reloads on switch**: `useChatStream` has a `useEffect` keyed on
+  `activeSessionId` that fetches `GET /sessions/{id}/history` and renders the past
+  messages (via the pure mapper in `lib/history.ts`). It also runs on first mount, so a
+  refreshed tab restores the active conversation.
+- **Delete is two steps** (in `deleteSession`): `DELETE /sessions/{id}` erases the server
+  checkpoint (`adelete_thread`), then `removeSession()` unlinks it in localStorage.
+- **Refresh-safety:** because the ids live in localStorage and the history lives in the
+  checkpointer, refreshing the tab keeps your conversations AND their memory.
+
+## Unit tests (Vitest)
+
+M11 adds the first frontend tests: **Vitest** (the Vite-native runner) + **jsdom** (a
+browser-like environment so `localStorage` exists). Config lives in `vite.config.ts`
+(`import { defineConfig } from 'vitest/config'`); run with `npm run test` (watch mode:
+`npx vitest`).
+
+- `src/lib/__tests__/sessions.test.ts` — the localStorage registry: first-use default,
+  auto-naming, active-session switching, and the delete/fallback edge cases.
+- `src/lib/__tests__/history.test.ts` — the pure `historyToChatMessages` mapper: human →
+  user, ai → assistant, tool/system dropped.
+
+Only **pure logic** is tested so far, mirroring the backend's philosophy (cheap, fast
+unit tests for pure functions; fakes/mocks only when the payoff justifies it). The
+`useChatStream` hook (fetch + WebSocket) and the components are deliberately deferred.
+
+The mapper was extracted from the hook into `lib/history.ts` (and `ChatMessage` is
+re-exported from the hook so `MessageList` keeps importing it unchanged) precisely to
+make this logic unit-testable without React.
 
 ## deviceId (reserved for M17)
 

@@ -1,4 +1,4 @@
-"""Request plumbing: the compiled graph + how to seed one run (M09).
+"""Request plumbing: the compiled graph + how to seed one run (M09, M11).
 
 get_graph is the star — a FastAPI *dependency*. Because it is a plain
 function with a `request` parameter, tests can replace the real graph with a
@@ -32,6 +32,21 @@ def get_graph(request: Request) -> Any:
         returns an IPAState.
     """
     return request.app.state.graph
+
+
+def get_checkpointer(request: Request) -> Any:
+    """Return the process-wide AsyncSqliteSaver created at startup (M11).
+
+    Same trick as get_graph: we read it off request.app.state — NOT a module
+    global — so tests can swap it for a fake via app.state.checkpointer.
+
+    Args:
+        request: FastAPI Request object, which has a reference to the app.
+
+    Returns:
+        The AsyncSqliteSaver instance (or a test fake).
+    """
+    return request.app.state.checkpointer
 
 
 def build_initial_state(
@@ -73,12 +88,18 @@ def build_initial_state(
 def build_run_config(session_id: str, channel: str) -> dict[str, Any]:
     """Thread per-run telemetry + Langfuse through the graph, like the CLI.
 
+    M11: ``configurable.thread_id`` is the KEY that ties every turn of one
+    conversation together. It lives in ``config`` (NOT in IPAState), so
+    LangGraph looks up the checkpoint for that thread before the run, merges
+    the new turn into the saved history via the reducers, and writes the new
+    state back afterwards. Same session_id -> same thread -> same memory.
+
     One RunTelemetry per request (never reused across turns). Langfuse stays
     best-effort: new_langfuse_handler() returns None when it's disabled, and
     we simply don't attach it.
 
     Args:
-        session_id: The ID of the user's session.
+        session_id: The ID of the user's session (becomes the thread_id).
         channel: The channel through which the request was received.
 
     Returns:
@@ -91,6 +112,9 @@ def build_run_config(session_id: str, channel: str) -> dict[str, Any]:
         callbacks.append(langfuse)
     return {
         "callbacks": callbacks,
-        "configurable": {"run_telemetry": telemetry},
+        "configurable": {
+            "thread_id": session_id,
+            "run_telemetry": telemetry,
+        },
         "metadata": langfuse_metadata(session_id=session_id, channel=channel),
     }

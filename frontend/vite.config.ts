@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
@@ -11,6 +11,14 @@ export default defineConfig({
       // "ws: true" is required so the proxy handles the WebSocket upgrade.
       '/ws': { target: 'http://localhost:8000', ws: true },
       '/openapi.json': 'http://localhost:8000',
+      // DELETE /sessions/{id} from the browser reaches the
+      // backend through the same dev-server origin (no CORS needed).
+      '/sessions': 'http://localhost:8000',
     },
+  },
+  // Vitest config (frontend unit tests). We use 'vitest/config' above so Vite
+  // and Vitest share the exact same settings — no duplicated config.
+  test: {
+    environment: 'jsdom', // browser-like globals (localStorage, etc.)
   },
 })

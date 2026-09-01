@@ -40,3 +40,21 @@ class ChatResponse(BaseModel):
     reply: str = Field(description="The assistant's final answer.")
     lang: str | None = Field(description="Resolved language tag, e.g. 'pt-BR'.")
     route: str | None = Field(description="Routed intent, e.g. 'knowledge'.")
+
+
+class HistoryMessage(BaseModel):
+    """One persisted message in a session's history."""
+
+    role: str = Field(
+        description="Message type: 'human', 'ai', 'tool' or 'system'.",
+    )
+    content: str = Field(description="Flattened text of the message.")
+
+
+class SessionHistoryResponse(BaseModel):
+    """Body of GET /sessions/{id}/history."""
+
+    session_id: str = Field(description="The thread_id this history belongs to.")
+    messages: list[HistoryMessage] = Field(
+        description="All persisted messages for the session, oldest first.",
+    )
