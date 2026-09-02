@@ -6,11 +6,15 @@ Every exception from a tool is captured and turned into a ToolMessage so a
 tool failure can never crash the whole graph.
 """
 
+import logging
+
 from langchain_core.messages import SystemMessage, ToolMessage
 
 from app.graph.state import IPAState
 from app.graph.utils import get_last_message
 from app.tools.registry import tools_by_name
+
+logger = logging.getLogger(__name__)
 
 # Hard cap on ReAct loop iterations. Without this, a tool that keeps saying
 # "I need more information" would spin forever and burn real API budget.
@@ -35,6 +39,13 @@ def tool_exec_node(state: IPAState) -> dict:
             try:
                 content = tool.invoke(args)
             except Exception as exc:  # noqa: BLE001 - tool boundary: never crash the graph
+                logger.warning(
+                    "tool %r failed with args %r: %s: %s",
+                    name,
+                    args,
+                    type(exc).__name__,
+                    exc,
+                )
                 content = f"Tool error: {type(exc).__name__}: {exc}"
 
         results.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
