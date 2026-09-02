@@ -16,6 +16,7 @@ def main() -> None:
     print(f"default_timezone   : {settings.default_timezone}")
     print(f"supported_languages: {', '.join(settings.supported_languages)}")
     print(f"deepseek_api_key   : {'<set>' if settings.has_deepseek else '<MISSING>'}")
+    print(f"assistant_api_key  : {'<set>' if settings.has_assistant else '<MISSING>'}")
 
 
 if __name__ == "__main__":

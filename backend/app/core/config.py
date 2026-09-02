@@ -71,6 +71,11 @@ class Settings(BaseSettings):
         return bool(self.deepseek_api_key.get_secret_value())
 
     @property
+    def has_assistant(self) -> bool:
+        """Check if the shared API key is available."""
+        return bool(self.assistant_api_key.get_secret_value())
+
+    @property
     def langfuse_ready(self) -> bool:
         """True only when observability is switched on AND fully keyed."""
         return self.langfuse_enabled and bool(
