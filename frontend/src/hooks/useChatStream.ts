@@ -23,10 +23,25 @@ export type { ChatMessage } from '../lib/history'
 // The generated type for backend's ChatRequest pydantic model.
 type ChatRequest = components['schemas']['ChatRequest']
 
+// The backend requires a shared API key. Read once from Vite env and
+// send it two ways: X-API-Key on the session HTTP calls, ?api_key= on the
+// WebSocket (browsers can't set headers on a WS handshake).
+function apiKey(): string {
+  return import.meta.env.VITE_API_KEY ?? ''
+}
+
+// Auth header object for the session HTTP calls. Return type is annotated on
+// purpose: without it, the `{}` branch of the ternary would infer as
+// `{ 'X-API-Key'?: undefined }`, which fails fetch's HeadersInit check.
+function authHeaders(): HeadersInit {
+  const key = apiKey()
+  return key ? { 'X-API-Key': key } : {}
+}
+
 function wsUrl(): string {
   // Relative to the Vite dev server, which proxies /ws/chat to the backend.
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}/ws/chat`
+  return `${proto}//${location.host}/ws/chat?api_key=${encodeURIComponent(apiKey())}`
 }
 
 export function useChatStream() {
@@ -86,7 +101,9 @@ export function useChatStream() {
 
     async function loadHistory() {
       try {
-        const res = await fetch(`/sessions/${encodeURIComponent(activeSessionId)}/history`)
+        const res = await fetch(`/sessions/${encodeURIComponent(activeSessionId)}/history`, {
+          headers: authHeaders(),
+        })
         if (!res.ok) throw new Error(`history request failed: ${res.status}`)
         const data = (await res.json()) as SessionHistory
         if (!cancelled) setMessages(data.messages.flatMap(historyToChatMessages))
@@ -137,7 +154,10 @@ export function useChatStream() {
       // NETWORK errors — an HTTP error status won't throw — so we still
       // unlink the session locally either way (deliberate fail-open).
       try {
-        await fetch(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        await fetch(`/sessions/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        })
       } catch {
         console.error('failed to delete session on the backend', id)
       }
