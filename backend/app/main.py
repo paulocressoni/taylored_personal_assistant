@@ -11,9 +11,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app._version import __version__
 from app.api.routes import router
+from app.core.config import settings
 from app.core.llm import ROLE_CONFIG, get_chat_model
 from app.core.observability import flush
 from app.graph.checkpointer import open_checkpointer
@@ -58,4 +60,21 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+# Explicit CORS policy (never implicit). The stock dev UI is same-origin via
+# the Vite proxy, so the default allowlist is empty = the browser blocks any
+# cross-origin caller. Set CORS_ORIGINS in the environment to permit specific
+# origins (a future non-proxied web client / dashboard). allow_credentials is
+# off because we authenticate with a header (BE-01), not cookies; a wildcard
+# origin must never be combined with credentials.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register the API router with the FastAPI application. All routes defined in
+# the router will be available under the root path of the application.
 app.include_router(router)

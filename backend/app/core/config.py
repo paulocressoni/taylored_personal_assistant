@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     default_timezone: str = "Europe/Berlin"
     supported_languages: list[str] = ["en", "de", "pt-BR"]
 
+    # Browser origins allowed to call this API directly (e.g. CORS_ORIGINS=
+    # '["http://localhost:5173"]'). Empty by default = same-origin only: the
+    # stock dev UI talks to :5173 and the Vite proxy forwards, so it needs no
+    # CORS headers. Never use a wildcard with credentials.
+    cors_origins: list[str] = []
+
     # --- Observability (Langfuse) ---
     # Deliberately OPTIONAL and best-effort: a down or unconfigured
     # observability stack must NEVER block the assistant. The validator
