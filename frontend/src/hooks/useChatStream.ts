@@ -62,9 +62,14 @@ export function useChatStream() {
 
   // Reset the on-screen chat to an empty conversation. Also closes any
   // in-flight stream so tokens from the OLD session can't write into the new
-  // view (the socket's 'close' handler turns isStreaming back off).
+  // view. We clear the ref and flip isStreaming off HERE rather than waiting
+  // for the socket's 'close' event: when the socket is still CONNECTING,
+  // close() doesn't reliably fire 'close' synchronously, which would leave the
+  // UI stuck streaming on a quick session switch.
   const resetChat = useCallback(() => {
     socketRef.current?.close()
+    socketRef.current = null
+    setIsStreaming(false)
     setMessages([])
     setError(null)
     setStatus(null)
