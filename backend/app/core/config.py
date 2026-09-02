@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     env: Literal["dev", "prod"] = "dev"
     deepseek_api_key: SecretStr = SecretStr("")
 
+    # Shared API key clients must present (X-API-Key header on HTTP,
+    # ?api_key= query param on WebSocket). Required, fail-fast like the
+    # DeepSeek key, so auth can never silently be off.
+    assistant_api_key: SecretStr = SecretStr("")
+
     # Deterministic settings with sane defaults (NOT vector memory)
     default_timezone: str = "Europe/Berlin"
     supported_languages: list[str] = ["en", "de", "pt-BR"]
@@ -75,10 +80,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _fail_fast_on_missing_required(self) -> "Settings":
+        """Fail fast on missing required settings."""
         if not self.deepseek_api_key.get_secret_value():
             raise ValueError(
                 "DEEPSEEK_API_KEY is required but was not found. "
                 f"Add it to .env.{_APP_ENV} or set the DEEPSEEK_API_KEY env var."
+            )
+        if not self.assistant_api_key.get_secret_value():
+            raise ValueError(
+                "ASSISTANT_API_KEY is required but was not found. "
+                f"Add it to .env.{_APP_ENV} or set the ASSISTANT_API_KEY env var."
             )
         return self
 
