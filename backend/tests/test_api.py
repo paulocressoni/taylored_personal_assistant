@@ -11,7 +11,12 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from app._version import __version__
+from app.core.config import settings
 from app.main import app
+
+# Every request must present the shared API key. It's required
+# fail-fast, so the value always exists once ENV is set.
+API_KEY = settings.assistant_api_key.get_secret_value()
 
 
 class FakeGraph:
@@ -88,18 +93,26 @@ def test_health(client):
 
 
 def test_chat_returns_reply_lang_route(client):
-    r = client.post("/chat", json={"session_id": "s1", "message": "hello"})
+    r = client.post(
+        "/chat",
+        json={"session_id": "s1", "message": "hello"},
+        headers={"X-API-Key": API_KEY},
+    )
     assert r.status_code == 200
     assert r.json() == {"reply": "fake reply", "lang": "en", "route": "responder"}
 
 
 def test_chat_rejects_empty_message(client):
-    r = client.post("/chat", json={"session_id": "s1", "message": ""})
+    r = client.post(
+        "/chat",
+        json={"session_id": "s1", "message": ""},
+        headers={"X-API-Key": API_KEY},
+    )
     assert r.status_code == 422  # pydantic validation at the boundary
 
 
 def test_ws_streams_tokens_then_done(client):
-    with client.websocket_connect("/ws/chat") as ws:
+    with client.websocket_connect(f"/ws/chat?api_key={API_KEY}") as ws:
         ws.send_json({"session_id": "s1", "message": "hi"})
         token = ws.receive_json()
         assert token == {"type": "token", "content": "fake reply"}
@@ -113,7 +126,7 @@ def test_ws_streams_tokens_then_done(client):
 
 
 def test_session_history_empty_for_unknown_session(client):
-    r = client.get("/sessions/never-seen/history")
+    r = client.get("/sessions/never-seen/history", headers={"X-API-Key": API_KEY})
     assert r.status_code == 200
     assert r.json() == {"session_id": "never-seen", "messages": []}
 
@@ -123,7 +136,7 @@ def test_session_history_returns_persisted_messages(client):
         "s1",
         [HumanMessage(content="hello"), AIMessage(content="hi there!")],
     )
-    r = client.get("/sessions/s1/history")
+    r = client.get("/sessions/s1/history", headers={"X-API-Key": API_KEY})
     assert r.status_code == 200
     body = r.json()
     assert body["session_id"] == "s1"
@@ -131,3 +144,27 @@ def test_session_history_returns_persisted_messages(client):
         {"role": "human", "content": "hello"},
         {"role": "ai", "content": "hi there!"},
     ]
+
+
+# --- BE-01: auth ---------------------------------------------------------
+
+
+def test_chat_requires_api_key(client):
+    r = client.post("/chat", json={"session_id": "s1", "message": "hello"})
+    assert r.status_code == 401
+
+
+def test_history_requires_api_key(client):
+    r = client.get("/sessions/s1/history")
+    assert r.status_code == 401
+
+
+def test_ws_requires_api_key(client):
+    from fastapi import WebSocketDisconnect
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect("/ws/chat") as ws,
+    ):
+        ws.receive_json()
+    assert exc_info.value.code == 1008
