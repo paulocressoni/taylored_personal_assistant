@@ -19,19 +19,26 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
+# Create a dedicated non-root user (least privilege): the process must not
+# run as root so a compromise inside the container isn't root in it.
+RUN useradd --create-home --shell /usr/sbin/nologin appuser
+
 # Copy the finished virtualenv from the builder (no reinstall).
 COPY --from=builder /app/.venv /app/.venv
 
-# Copy ONLY the application source (this is the layer that changes often).
-COPY app/ ./app/
+# Copy ONLY the application source, owned by the app user. The checkpointer
+# writes checkpoints.db into the CWD (/app), so /app must be writable too.
+COPY --chown=appuser:appuser app/ ./app/
+RUN chown appuser:appuser /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Install curl for healthcheck and clean up apt cache to reduce image size
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
+USER appuser
+
 # Healthcheck to ensure the application is running
-# TODO: One improvement: add --start-period=15s so a slow cold start isn't flagged as a crash.
 HEALTHCHECK --interval=30s CMD curl -f http://localhost:8000/health || exit 1
 
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
