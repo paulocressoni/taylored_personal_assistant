@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     # --- Observability (Langfuse) ---
     # Deliberately OPTIONAL and best-effort: a down or unconfigured
     # observability stack must NEVER block the assistant. The validator
-    # below does NOT require these — only DeepSeek stays fail-fast.
+    # below does NOT require these — only DeepSeek and the assistant API key stay fail-fast.
     langfuse_enabled: bool = False
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
