@@ -22,6 +22,7 @@ from fastapi import (
 )
 from langchain_core.messages import AIMessageChunk, BaseMessage
 
+from app._version import __version__
 from app.api.deps import (
     build_initial_state,
     build_run_config,
@@ -46,9 +47,9 @@ def health() -> dict[str, str]:
     """Liveness probe for the Docker HEALTHCHECK.
 
     Returns:
-        A dictionary indicating the health status.
+        A dictionary with the health status and the running app version.
     """
-    return {"status": "ok"}
+    return {"status": "ok", "version": __version__}
 
 
 @router.post("/chat", response_model=ChatResponse)

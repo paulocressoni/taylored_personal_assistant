@@ -1,7 +1,8 @@
 """smoke_07_langfuse.py — M08 proof: a CLI run becomes a Langfuse trace.
 
-Requires the local Langfuse stack (make langfuse-up) and LANGFUSE_* keys in
-.env.dev. Skips when observability is off so the fast suite stays green.
+Requires the local Langfuse stack (make dev-up, or the observability profile)
+and LANGFUSE_* keys in .env.dev. Skips when observability is off so the fast
+suite stays green.
 
 Run:    ENV=dev uv run python -m scripts.smoke_07_langfuse
 Verify: open http://localhost:3000 -> Traces -> newest run -> expect a

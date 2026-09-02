@@ -105,35 +105,85 @@ Containers are ephemeral: `docker rm` deletes the writable layer. Anything that 
 Containers also have their **own** `localhost`. To reach a service from your host, publish its port with `-p <host>:<container>` (e.g. `-p 8000:8000`); otherwise `localhost:<port>` on your machine finds nothing even though the container is healthy.
 Inside a compose network, services reach each other **by service name** — never by `localhost`.
 
-## Compose & the self-hosted Langfuse stack (M08)
+## Compose — the full local dev stack (M12)
 
-`infra/compose/docker-compose.langfuse.yml` runs a 6-service Langfuse v4 stack for local-dev
-observability (`langfuse-web`, `langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`).
-Managed from the repo root via the Makefile:
+M12 replaced the M08 "observability only" compose file with **one stack for the whole app**
+(backend + frontend + Langfuse + DBs), built from **compose file overlays**:
 
-| Command | Purpose |
+| File | Role |
 |---|---|
-| `make langfuse-up` | Bring up the stack (`docker compose up -d --wait`) |
-| `make langfuse-down` | Stop the stack |
-| `make langfuse-logs` | Tail logs |
+| `infra/compose/docker-compose.base.yml` | **Base** — every service in every environment (backend, frontend, the M08 Langfuse stack). No host ports here. |
+| `infra/compose/docker-compose.dev.yml` | **Dev overlay** — bind mounts for hot reload, `uvicorn --reload`, the Vite dev server, and the host ports (8000 / 5173 / 3000). |
+| `infra/compose/docker-compose.prod.yml` | **Prod overlay** (sketch) — the pattern to follow for release builds. |
 
-The same commands as plain Compose (what the Makefile wraps):
+**How overlays merge** (Compose `-f` rules): later files **override** scalars
+(`command`, …), `environment` maps merge per key, and `ports` / `volumes` lists
+**concatenate** (never replaced).
+
+**Profiles:** all six Langfuse services are tagged `profiles: ["observability"]`. Pass
+`--profile observability` to include them; omit it for a lightweight stack. The backend
+depends on `langfuse-web` with `required: false`, so it starts fine without them.
+
+**Image tags:** each service builds and tags `taylored-assistant-<service>:${APP_VERSION:-latest}`.
+`APP_VERSION` is derived from `backend/app/_version.py` by the Makefile (`make dev-up`);
+unset → falls back to `latest`.
+
+### One command (Linux / macOS — `make`, repo root)
+
+| Target | Purpose |
+|---|---|
+| `make dev-up` | **Full stack** incl. Langfuse (`up --build -d --wait`) |
+| `make dev-up-light` | Same stack **without** Langfuse (faster, less RAM) |
+| `make dev-down` | Stop the stack (volumes kept) |
+| `make dev-logs` | Tail all logs (`-f`) |
+| `make dev-ps` | Show running services |
+| `make dev-local` | Pre-M12 loop: local uvicorn, no Docker |
+
+### The same commands in PowerShell (Windows)
 
 ```powershell
-docker compose -f infra/compose/docker-compose.langfuse.yml --env-file infra/compose/.env up -d
-docker compose -f infra/compose/docker-compose.langfuse.yml ps
-docker compose -f infra/compose/docker-compose.langfuse.yml logs -f
+# Full stack incl. Langfuse (the M12 command)
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+
+# Lightweight stack without Langfuse
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env up --build -d --wait
+
+# Status / logs / stop
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down
 ```
 
+Shortcut — set once per terminal, then plain `docker compose` works:
+
+```powershell
+$env:COMPOSE_FILE = "infra/compose/docker-compose.base.yml;infra/compose/docker-compose.dev.yml"
+$env:COMPOSE_ENV_FILES = "infra/compose/.env"
+docker compose --profile observability up --build -d --wait
+```
+
+### What you should see
+
+| URL | What |
+|---|---|
+| `http://localhost:5173` | Chat UI (Vite dev server, HMR) |
+| `http://localhost:8000/health` | Backend → `{"status":"ok","version":"0.2.0"}` |
+| `http://localhost:8000/docs` | FastAPI interactive docs |
+| `http://localhost:3000` | Langfuse UI (observability profile only) |
+
 - **Secrets** come from `infra/compose/.env` (copy from `.env.example`; generate
-  `SALT` / `ENCRYPTION_KEY` / `NEXTAUTH_SECRET` with `openssl rand -hex 32`).
+  `SALT` / `ENCRYPTION_KEY` / `NEXTAUTH_SECRET` with `openssl rand -hex 32`). Backend
+  secrets come from `backend/.env.dev` (referenced via `env_file` in `dev.yml`).
 - Compose's `.env` parser treats `#` as a comment **only at line start** — keep comments
   on their own lines.
-- The **UI is published on host port 3000**: `http://localhost:3000`.
-- Inside the stack, services talk to each other **by service name** (`postgres`,
-  `clickhouse`, …) — never `localhost`. Only browser-facing URLs use `localhost`.
-- **Volumes** (`postgres_data`, `clickhouse_data`, `clickhouse_logs`, `redis_data`,
-  `minio_data`) persist the stack's data across restarts.
+- Inside the stack, services talk to each other **by service name** (`backend`,
+  `langfuse-web`, `postgres`, …) — never `localhost`. Only browser-facing URLs
+  (`NEXTAUTH_URL`, the published ports) use `localhost`.
+- **Bind mounts** (dev) = live code, hot reload; **named volumes** (`postgres_data`,
+  `clickhouse_data`, `clickhouse_logs`, `redis_data`, `minio_data`) = persistent data
+  across restarts.
+- **Port conflict on 3000?** An older stack (e.g. the M08 `langfuse-dev` project) is
+  still holding the port — stop it: `docker compose -p langfuse-dev down`.
 
 Full observability guide: [observability.md](observability.md).
 
@@ -144,6 +194,59 @@ Full observability guide: [observability.md](observability.md).
 | `docker image prune` | Delete dangling (untagged) images |
 | `docker system prune` | Remove unused images/containers/networks (careful) |
 | `docker system df` | Disk usage breakdown |
+
+Project-level cleanup (PowerShell — the `make` equivalents are `dev-down` / `dev-down -v`):
+
+```powershell
+# stop the stack, keep named volumes
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down
+# ...or also delete the volumes (wipes the DB/trace data)
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down -v
+```
+
+**Full wipe — everything on the machine** (containers, volumes, images, networks):
+
+```powershell
+docker rm -f (docker ps -aq)          # stop + remove ALL containers
+docker system prune -a --volumes -f   # remove all unused images/volumes/networks + build cache
+```
+
+> On Linux/macOS use `$(docker ps -aq)` instead of PowerShell's `(docker ps -aq)`.
+
+## Network stuck — "Resource is still in use"
+
+If `docker compose ... down` (or a manual `docker network rm`) reports:
+
+```
+! Network taylored-assistant_default Resource is still in use
+```
+
+…or the longer form:
+
+```
+network taylored-assistant_default has active endpoints (name:"taylored-assistant-postgres-1", ...)
+```
+
+…it means at least one container is **still attached** to the project's default network.
+A network can only be deleted when **zero** containers (running or stopped) are connected
+to it — the attached containers are the network's "endpoints".
+
+> **Observed quirk (Compose v5.4.0):** `docker compose down` can skip the container-removal
+> step entirely and jump straight to `Network ... Removing`, so it never frees the network —
+> even though `docker compose ps` still lists the containers. If `down` keeps failing with
+> this message, don't loop on it; remove the containers directly:
+
+```powershell
+# 1. Stop + remove every project container (force = the reliable fallback)
+docker rm -f (docker ps -a -q -f name=taylored-assistant)
+
+# 2. The network is now free — delete it (or `docker network prune -f` for all unused)
+docker network rm taylored-assistant_default
+```
+
+- `docker rm` **never** deletes named volumes — `postgres_data`, `clickhouse_data`, etc.
+  survive, so the next `up` reuses them.
+- To also wipe the volumes: `docker compose ... down -v` (after the containers are gone).
 
 ## Common gotchas
 - **`curl: (7) Failed to connect to localhost:8000`** → the container is fine, but its port isn't published; re-run with `-p 8000:8000` (the healthcheck passes even when the host can't reach it, because it runs inside the container).

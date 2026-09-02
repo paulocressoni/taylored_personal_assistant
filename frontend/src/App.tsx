@@ -3,6 +3,7 @@
 // (REPLACE the whole file — M11 Phase 1 adds the session sidebar)
 
 import { useChatStream } from './hooks/useChatStream'
+import { useEffect, useState } from 'react'
 import MessageList from './components/MessageList'
 import MessageInput from './components/MessageInput'
 import LanguageBadge from './components/LanguageBadge'
@@ -23,6 +24,17 @@ export default function App() {
     deleteSession,
   } = useChatStream()
 
+  // M12: the version lives in the backend (app/_version.py) and is served
+  // at /health. The frontend just displays it — one source of truth, no
+  // duplicate constant to drift out of sync.
+  const [version, setVersion] = useState<string | null>(null)
+  useEffect(() => {
+    fetch('/health')
+      .then((r) => r.json())
+      .then((d: { version?: string }) => setVersion(d.version ?? null))
+      .catch(() => setVersion(null))
+  }, [])
+
   return (
     // h-screen = full viewport height; flex row puts the sidebar on the left.
     <div className="flex h-screen bg-gray-50">
@@ -38,7 +50,10 @@ export default function App() {
       {/* Right: the chat column */}
       <div className="flex flex-1 flex-col">
         <header className="flex items-center justify-between border-b bg-white px-4 py-3">
-          <h1 className="text-lg font-semibold">Taylored Assistant</h1>
+          <h1 className="text-lg font-semibold">
+            Taylored Assistant{' '}
+            {version && <span className="text-sm font-normal text-gray-400">v{version}</span>}
+          </h1>
           <div className="flex items-center gap-3">
             <LanguageBadge lang={lang} />
             {isStreaming && status && <span className="text-xs text-gray-500">{status}</span>}

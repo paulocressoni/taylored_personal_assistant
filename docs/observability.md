@@ -15,7 +15,10 @@ fail-fast.
 
 ## Architecture — the compose stack
 
-`infra/compose/docker-compose.langfuse.yml` runs 6 services. Managed from the repo root:
+Since M12 the 6 Langfuse services live in `infra/compose/docker-compose.base.yml`, tagged
+`profiles: ["observability"]` so they are **optional** — see
+[docker-cheatsheet.md](docker-cheatsheet.md) for the overlay model (base / dev / prod).
+Managed from the repo root:
 
 | Service | Image | Role | Host port |
 |---|---|---|---|
@@ -65,22 +68,33 @@ LANGFUSE_BASE_URL=http://localhost:3000
 > in `infra/compose/.env` (`LANGFUSE_INIT_PROJECT_PUBLIC_KEY` /
 > `LANGFUSE_INIT_PROJECT_SECRET_KEY`).
 >
-> **Two different base URLs, deliberately:** the SDK uses the host-published
-> `http://localhost:3000`; the compose file uses internal service-name URLs.
+> **Two different base URLs, deliberately:** the SDK run on the **host** uses the
+> host-published `http://localhost:3000`; the compose file uses internal service-name
+> URLs. Since M12, when the backend runs **inside** the Compose network, `dev.yml`
+> overrides `LANGFUSE_BASE_URL` to `http://langfuse-web:3000` (service name) — so the
+> value in `backend/.env.dev` only applies to host-native runs (`make dev-local`).
 
 ### 3. Start the stack
 
-```powershell
-make langfuse-up      # = docker compose -f infra/compose/docker-compose.langfuse.yml up -d --wait
+M12: observability comes up with the whole app. **Linux / macOS** (`make`, repo root):
+
+```bash
+make dev-up          # full stack incl. Langfuse (observability profile)
+# lighter, no Langfuse:  make dev-up-light
 ```
 
-Makefile targets:
+**Windows / PowerShell** (full stack):
 
-| Target | Purpose |
+```powershell
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+```
+
+| Target / command | Purpose |
 |---|---|
-| `make langfuse-up` | Bring up the 6-service stack (`-d --wait`) |
-| `make langfuse-down` | Stop the stack |
-| `make langfuse-logs` | Tail logs |
+| `make dev-up` | Full stack incl. Langfuse (`up --build -d --wait`) |
+| `make dev-up-light` | Same stack without Langfuse |
+| `make dev-down` | Stop everything (volumes kept) |
+| `make dev-logs` | Tail all logs |
 
 ## Verify it works
 
@@ -122,9 +136,7 @@ Runtime settings live in `backend/app/core/config.py`:
 
 ## Troubleshooting
 
-- **Stack not healthy:** `make langfuse-logs`; check each service with
-  `docker compose -f infra/compose/docker-compose.langfuse.yml ps` (the worker has no
-  healthcheck by design).
+- **Stack not healthy:** `make dev-logs` (PowerShell: `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f`); check each service with `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps` (the worker has no healthcheck by design).
 - **Traces missing:** confirm `LANGFUSE_ENABLED=true` + matching keys in
   `backend/.env.dev`, and that the stack is up. The SDK path is best-effort — check the
   backend logs for Langfuse errors, not the app failing.

@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
+from app._version import __version__
 from app.main import app
 
 
@@ -82,7 +83,8 @@ def client():
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json()["status"] == "ok"
+    assert r.json()["version"] == __version__
 
 
 def test_chat_returns_reply_lang_route(client):

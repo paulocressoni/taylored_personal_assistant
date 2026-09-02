@@ -67,8 +67,10 @@ frontend/
 
 ## Running it
 
-1. Backend up first (`make dev-up` from the repo root, or `uv run uvicorn app.main:app
-   --reload` from `backend/`) — the frontend is useless without it.
+1. Backend up first — either the **full stack** (`make dev-up` from the repo root, which
+   also serves the frontend from a container) or the **backend only** (`make dev-local`,
+   or `uv run uvicorn app.main:app --reload` from `backend/`). The frontend is useless
+   without it.
 2. Install deps and generate the API types:
 
    ```powershell
@@ -85,11 +87,14 @@ frontend/
 
 4. Open `http://localhost:5173` and chat. Tokens stream in visibly, one at a time.
 
-The Vite dev server proxies `/ws`, `/openapi.json`, and `/sessions` (M11) to
-`http://localhost:8000` (`vite.config.ts`). That's why the browser only ever talks to
-`:5173` — no CORS, no hardcoded backend URL. WebSockets aren't subject to CORS anyway, but
-the proxy is the pattern that will also serve the built app from the backend later (single
-unified package).
+The Vite dev server proxies `/ws`, `/openapi.json`, `/sessions`, and `/health` to a
+backend URL (`vite.config.ts`). That's why the browser only ever talks to `:5173` — no
+CORS, no hardcoded backend URL. Since M12 the target is configurable via `BACKEND_URL`:
+native dev defaults to `http://localhost:8000`; the compose overlay sets it to the
+**service name** `http://backend:8000` so the containerized frontend reaches the
+containerized backend. WebSockets aren't subject to CORS anyway, but the proxy is the
+pattern that will also serve the built app from the backend later (single unified
+package).
 
 ## How streaming works (the mental model)
 

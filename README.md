@@ -41,7 +41,7 @@ taylored_personal_assistant/
 ├── .pre-commit-config.yaml       # Git hooks (lint, format, secrets)
 ├── .secrets.baseline             # Detect-secrets allowlist (COMMIT this)
 ├── .gitignore
-├── Makefile                      # Dev workflow: dev-up, test, langfuse-* (M08)
+├── Makefile                      # Dev workflow: dev-up (full stack, M12), test, lint, types
 ├── README.md
 ├── docs/
 │   ├── docker-cheatsheet.md      # Docker command reference (M07)
@@ -50,7 +50,9 @@ taylored_personal_assistant/
 │   └── frontend.md               # React chat UI guide (M10)
 ├── infra/
 │   └── compose/
-│       ├── docker-compose.langfuse.yml   # 6-service Langfuse stack (M08)
+│       ├── docker-compose.base.yml       # Base stack: backend + frontend + Langfuse (M12)
+│       ├── docker-compose.dev.yml        # Dev overlay: bind mounts, reload, ports (M12)
+│       ├── docker-compose.prod.yml       # Prod overlay sketch (M12)
 │       └── .env.example                  # Compose secrets template (M08)
 ├── backend/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
@@ -152,7 +154,7 @@ taylored_personal_assistant/
 | `package-lock.json` | Locked frontend deps — commit it, never edit by hand |
 | `Dockerfile` | Multi-stage build: `builder` (uv + deps) → slim `runtime` (venv + code) |
 | `.dockerignore` | Excludes `.venv`, caches, `.git` from the Docker build context |
-| `infra/compose` | Docker Compose files for local infrastructure (Langfuse stack, M08) |
+| `infra/compose` | Docker Compose files for the full local dev stack — base/dev/prod overlays + optional Langfuse (M12) |
 | `docs/` | Topic guides: Docker (M07), Langfuse (M08), API (M09/M11), frontend (M10/M11) |
 | Image vs container | **Image** = immutable blueprint; **container** = a running instance of it |
 
@@ -400,15 +402,18 @@ uv run pytest -m integration         # live DeepSeek API smoke tests
 uv run pytest tests/test_api.py      # HTTP + WebSocket API tests (fake graph, no network)
 ```
 
-Run the dev server (HTTP + WebSocket API, M09):
+Run the full dev stack (backend + frontend + Langfuse + DBs — M12):
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant   # from the repo root
-make dev-up                  # ENV=dev uv run uvicorn app.main:app --reload
+make dev-up                  # full compose stack with hot reload (Linux/macOS)
+# Windows/PowerShell equivalent:
+#   docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+# Backend only, no Docker:  make dev-local
 ```
 
-Then: `curl.exe http://localhost:8000/health` → `{"status":"ok"}`, or open the interactive
-docs at `http://localhost:8000/docs`. Full reference in [docs/api.md](docs/api.md).
+Then: `curl.exe http://localhost:8000/health` → `{"status":"ok","version":"0.2.0"}`, or open
+the interactive docs at `http://localhost:8000/docs`. Full reference in [docs/api.md](docs/api.md).
 
 ---
 
@@ -451,7 +456,8 @@ npm run dev      # Vite on http://localhost:5173
 ```
 
 Open `http://localhost:5173`, type a message, and watch tokens stream in. The backend must
-be running first (`make dev-up` in another terminal). Full guide: [docs/frontend.md](docs/frontend.md).
+be running first — `make dev-up` (full stack) or `make dev-local` (uvicorn only) in another
+terminal. Full guide: [docs/frontend.md](docs/frontend.md).
 
 ---
 
@@ -509,13 +515,13 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 
 ---
 
-## Observability (M08) — self-hosted Langfuse
+## Observability (M08/M12) — self-hosted Langfuse
 
-M08 adds **self-hosted Langfuse v4** for local-dev observability: every graph run becomes
+M08 added **self-hosted Langfuse v4** for local-dev observability: every graph run becomes
 a trace — spans for `detect_lang` / `router` / `knowledge` / `responder`, LLM generations
-with token counts, and session grouping. The stack lives in
-`infra/compose/docker-compose.langfuse.yml` (6 services: `langfuse-web`,
-`langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`).
+with token counts, and session grouping. Since M12 the 6 services (`langfuse-web`,
+`langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`) live in
+`infra/compose/docker-compose.base.yml` under the optional `observability` profile.
 
 **Best-effort by design**: if Langfuse is off or misconfigured, the assistant runs
 identically — only `DEEPSEEK_API_KEY` is fail-fast. The SDK wiring lives in
@@ -528,15 +534,17 @@ Quick start (full guide: [docs/observability.md](docs/observability.md)):
 cd infra/compose
 Copy-Item .env.example .env        # fill in secrets (openssl rand -hex 32)
 cd ../..
-make langfuse-up                   # docker compose up -d --wait
+make dev-up                        # M12: full stack incl. Langfuse (observability profile)
 # backend/.env.dev: LANGFUSE_ENABLED=true + pk-lf-* / sk-lf-* keys (see .env.dev.example)
 cd backend
 ENV=dev uv run python -m scripts.smoke_07_langfuse   # verify a trace lands
 # open http://localhost:3000 -> Traces -> newest run
 ```
 
-Makefile targets: `make langfuse-up`, `make langfuse-down`, `make langfuse-logs`.
-Runtime settings live in `backend/app/core/config.py` (`langfuse_*`).
+M12 Makefile targets: `make dev-up` (full stack incl. Langfuse) · `make dev-up-light`
+(skip Langfuse) · `make dev-down`. PowerShell equivalents in
+[docs/docker-cheatsheet.md](docs/docker-cheatsheet.md). Runtime settings live in
+`backend/app/core/config.py` (`langfuse_*`).
 
 ---
 
@@ -720,14 +728,16 @@ Run everything from `backend/` unless noted.
 | Lint + fix | `uv run ruff check --fix .` |
 | Format | `uv run ruff format .` |
 | Run tests | `uv run pytest` |
-| Run the API dev server | `make dev-up` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |
+| Run the full dev stack (M12) | `make dev-up` (repo root) · PowerShell: `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait` |
+| Run the full stack without Langfuse | `make dev-up-light` (repo root) |
+| Stop the stack / tail logs | `make dev-down` · `make dev-logs` (repo root) |
+| Run the API dev server only (no Docker) | `make dev-local` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |
 | Stream a WS chat | `uv run python scripts/ws_probe.py "<message>"` |
 | Run the frontend dev server | `cd frontend && npm run dev` (repo root → :5173) |
 | Frontend lint | `cd frontend && npm run lint` |
 | Frontend format (write / check) | `cd frontend && npm run format` · `npm run format:check` |
 | Regenerate API types | `cd frontend && npm run types` (backend on :8000) |
 | Install frontend deps (locked) | `cd frontend && npm ci` |
-| Langfuse stack up / down / logs | `make langfuse-up` · `make langfuse-down` · `make langfuse-logs` |
 | Run pre-commit on everything | `uv run pre-commit run --all-files` |
 | Update hook versions | `uv run pre-commit autoupdate` |
 
@@ -778,7 +788,7 @@ cd frontend && npm run format:check # check frontend formatting
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
-make dev-up                            # API dev server with --reload (M09)
+make dev-up                            # full local stack with hot reload (M12)
 # ... edit code ...
 cd backend && uv run pytest            # run tests
 cd backend && uv run ruff check --fix .   # lint + autofix
