@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../api/types'
 import type { WsFrame } from '../api/ws'
 import { getDeviceId } from '../lib/deviceId'
-import { historyToChatMessages, type ChatMessage, type SessionHistory } from '../lib/history'
+import { sessionHistoryToChatMessages, type ChatMessage, type SessionHistory } from '../lib/history'
 import {
   createSession,
   getActiveSessionId,
@@ -106,7 +106,7 @@ export function useChatStream() {
         })
         if (!res.ok) throw new Error(`history request failed: ${res.status}`)
         const data = (await res.json()) as SessionHistory
-        if (!cancelled) setMessages(data.messages.flatMap(historyToChatMessages))
+        if (!cancelled) setMessages(sessionHistoryToChatMessages(data.messages))
       } catch {
         // Backend unreachable (or session never existed) — leave the chat
         // empty and tell the user, but don't crash.
