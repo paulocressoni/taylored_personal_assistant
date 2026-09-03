@@ -160,8 +160,9 @@ browser-like environment so `localStorage` exists). Config lives in `vite.config
 
 - `src/lib/__tests__/sessions.test.ts` — the localStorage registry: first-use default,
   auto-naming, active-session switching, and the delete/fallback edge cases.
-- `src/lib/__tests__/history.test.ts` — the pure `historyToChatMessages` mapper: human →
-  user, ai → assistant, tool/system dropped.
+- `src/lib/__tests__/history.test.ts` — the list-level `sessionHistoryToChatMessages`
+  mapper: human → user, last-ai-per-turn → assistant (drops intermediate ai from
+  other graph nodes), tool/system dropped.
 
 Only **pure logic** is tested so far, mirroring the backend's philosophy (cheap, fast
 unit tests for pure functions; fakes/mocks only when the payoff justifies it). The

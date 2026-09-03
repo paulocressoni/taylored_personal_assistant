@@ -16,26 +16,40 @@ export type HistoryMessage = { role: string; content: string }
 
 export type SessionHistory = { session_id: string; messages: HistoryMessage[] }
 
-// TODO(bug): re-opening a previous conversation can render TWO assistant
-// bubbles for a single turn. The checkpointer persists every AI message the
-// graph emitted — the knowledge-specialist's answer AND the responder's final
-// message — and this mapper renders every `ai` message as a bubble. Only the
-// LAST AI message of a turn (the responder) should be shown.
-// historyToChatMessages is per-message today, so the fix needs list-level
-// grouping: a new function that takes the full SessionHistory, walks turns
-// (a 'human' message starts a turn), and keeps only the final 'ai' message of
-// each turn. Add a unit test in src/lib/__tests__/history.test.ts.
+// Convert a persisted session history into chat bubbles.
+//
+// List-level on PURPOSE, not per-message: the checkpointer persists every ai
+// message the LangGraph emitted for one turn (the knowledge-specialist's
+// answer AND the responder's final message). Rendering each one via flatMap
+// produced two assistant bubbles per turn. Rule: a 'human' message starts a
+// turn, and only the LAST 'ai' message of that turn is the reply worth
+// showing. tool/system messages are internal bookkeeping — dropped, and they
+// do NOT reset the current turn.
+export function sessionHistoryToChatMessages(messages: HistoryMessage[]): ChatMessage[] {
+  const bubbles: ChatMessage[] = []
+  let pendingReply: HistoryMessage | null = null // last ai seen in the current turn
 
-// Convert one persisted backend message into chat bubbles.
-// human -> user bubble, ai -> assistant bubble. tool/system messages are
-// internal bookkeeping (tool results, system instructions) and are dropped —
-// an empty array means "nothing to render", which callers can flatMap away.
-export function historyToChatMessages(m: HistoryMessage): ChatMessage[] {
-  if (m.role === 'human') {
-    return [{ id: crypto.randomUUID(), role: 'user', content: m.content }]
+  const flushReply = () => {
+    if (pendingReply) {
+      bubbles.push({
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: pendingReply.content,
+      })
+      pendingReply = null
+    }
   }
-  if (m.role === 'ai') {
-    return [{ id: crypto.randomUUID(), role: 'assistant', content: m.content }]
+
+  for (const m of messages) {
+    if (m.role === 'human') {
+      flushReply() // previous turn is over -> emit only its final ai reply
+      bubbles.push({ id: crypto.randomUUID(), role: 'user', content: m.content })
+    } else if (m.role === 'ai') {
+      pendingReply = m // overwrite: only the LAST ai of this turn survives
+    }
+    // tool / system: ignored
   }
-  return []
+
+  flushReply() // trailing ai with no following human (e.g. a greeting)
+  return bubbles
 }
