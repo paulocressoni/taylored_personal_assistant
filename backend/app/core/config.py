@@ -39,14 +39,25 @@ class Settings(BaseSettings):
     env: Literal["dev", "prod"] = "dev"
     deepseek_api_key: SecretStr = SecretStr("")
 
+    # Shared API key clients must present (X-API-Key header on HTTP,
+    # ?api_key= query param on WebSocket). Required, fail-fast like the
+    # DeepSeek key, so auth can never silently be off.
+    assistant_api_key: SecretStr = SecretStr("")
+
     # Deterministic settings with sane defaults (NOT vector memory)
     default_timezone: str = "Europe/Berlin"
     supported_languages: list[str] = ["en", "de", "pt-BR"]
 
+    # Browser origins allowed to call this API directly (e.g. CORS_ORIGINS=
+    # '["http://localhost:5173"]'). Empty by default = same-origin only: the
+    # stock dev UI talks to :5173 and the Vite proxy forwards, so it needs no
+    # CORS headers. Never use a wildcard with credentials.
+    cors_origins: list[str] = []
+
     # --- Observability (Langfuse) ---
     # Deliberately OPTIONAL and best-effort: a down or unconfigured
     # observability stack must NEVER block the assistant. The validator
-    # below does NOT require these — only DeepSeek stays fail-fast.
+    # below does NOT require these — only DeepSeek and the assistant API key stay fail-fast.
     langfuse_enabled: bool = False
     langfuse_public_key: SecretStr = SecretStr("")
     langfuse_secret_key: SecretStr = SecretStr("")
@@ -60,6 +71,11 @@ class Settings(BaseSettings):
         return bool(self.deepseek_api_key.get_secret_value())
 
     @property
+    def has_assistant(self) -> bool:
+        """Check if the shared API key is available."""
+        return bool(self.assistant_api_key.get_secret_value())
+
+    @property
     def langfuse_ready(self) -> bool:
         """True only when observability is switched on AND fully keyed."""
         return self.langfuse_enabled and bool(
@@ -69,10 +85,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _fail_fast_on_missing_required(self) -> "Settings":
+        """Fail fast on missing required settings."""
         if not self.deepseek_api_key.get_secret_value():
             raise ValueError(
                 "DEEPSEEK_API_KEY is required but was not found. "
                 f"Add it to .env.{_APP_ENV} or set the DEEPSEEK_API_KEY env var."
+            )
+        if not self.assistant_api_key.get_secret_value():
+            raise ValueError(
+                "ASSISTANT_API_KEY is required but was not found. "
+                f"Add it to .env.{_APP_ENV} or set the ASSISTANT_API_KEY env var."
             )
         return self
 

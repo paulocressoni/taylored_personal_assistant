@@ -23,6 +23,7 @@ from fastapi import (
 from langchain_core.messages import AIMessageChunk, BaseMessage
 
 from app._version import __version__
+from app.api.auth import require_api_key, require_ws_api_key
 from app.api.deps import (
     build_initial_state,
     build_run_config,
@@ -52,7 +53,11 @@ def health() -> dict[str, str]:
     return {"status": "ok", "version": __version__}
 
 
-@router.post("/chat", response_model=ChatResponse)
+@router.post(
+    "/chat",
+    response_model=ChatResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def chat(
     payload: ChatRequest,
     graph: Any = Depends(get_graph),  # noqa: B008
@@ -106,6 +111,7 @@ async def chat(
 @router.get(
     "/sessions/{session_id}/history",
     response_model=SessionHistoryResponse,
+    dependencies=[Depends(require_api_key)],
 )
 async def get_session_history(
     session_id: str,
@@ -138,7 +144,10 @@ async def get_session_history(
     )
 
 
-@router.delete("/sessions/{session_id}")
+@router.delete(
+    "/sessions/{session_id}",
+    dependencies=[Depends(require_api_key)],
+)
 async def delete_session(
     session_id: str,
     checkpointer: Any = Depends(get_checkpointer),  # noqa: B008
@@ -176,6 +185,16 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     # Accept the WebSocket connection before receiving any messages.
     await websocket.accept()
+
+    # Validate the shared API key (sent as ?api_key= because browsers
+    # cannot set headers on a WS handshake). Accept first, then close with
+    # 1008 (policy violation) — a close frame can't be sent before accepting.
+    if not require_ws_api_key(websocket):
+        try:
+            await websocket.close(code=1008)
+        except WebSocketDisconnect:
+            pass  # client vanished while we were rejecting them
+        return
 
     try:
         # Receive the initial JSON payload from the client and validate it against

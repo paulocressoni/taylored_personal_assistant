@@ -23,8 +23,21 @@ def test_settings_resolve_defaults_from_env_file() -> None:
 
 
 def test_has_deepseek_true_when_key_provided() -> None:
-    settings = Settings(_env_file=None, deepseek_api_key="sk-test-key")
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+    )
     assert settings.has_deepseek is True
+
+
+def test_has_api_key_true_when_key_provided() -> None:
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+    )
+    assert settings.has_assistant is True
 
 
 def test_fail_fast_on_missing_api_key() -> None:

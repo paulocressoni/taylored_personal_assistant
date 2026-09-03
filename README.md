@@ -258,6 +258,7 @@ Then open `backend/.env.dev` and replace the placeholders with real keys:
 ```ini
 ENV=dev
 DEEPSEEK_API_KEY=sk-your-real-key
+ASSISTANT_API_KEY=your-real-api-key
 DEFAULT_TIMEZONE=Europe/Berlin
 SUPPORTED_LANGUAGES=["en","de","pt-BR"]
 
@@ -269,7 +270,7 @@ LANGFUSE_BASE_URL=http://localhost:3000
 ```
 
 > Langfuse keys are **optional**: if `LANGFUSE_ENABLED` is false or the keys are missing,
-> the app runs exactly as before (no observability). Only `DEEPSEEK_API_KEY` is fail-fast.
+> the app runs exactly as before (no observability). Only `DEEPSEEK_API_KEY` and `ASSISTANT_API_KEY` are fail-fast.
 > See [docs/observability.md](docs/observability.md).
 
 **Rules:**
