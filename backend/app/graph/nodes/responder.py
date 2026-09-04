@@ -41,7 +41,6 @@ def responder_node(state: IPAState, config: RunnableConfig) -> dict:
             "messages": state["messages"],
         }
     ).to_messages()
-    llm_response = llm_call(state, model, messages, config)
+    llm_response = llm_call(model, messages, config)
     response = llm_response["response"]  # Extract the response from the llm_call result
-    llm_calls = llm_response["llm_calls"]  # Extract the LLM call count
-    return {"messages": [response], "llm_calls": llm_calls}
+    return {"messages": [response]}
