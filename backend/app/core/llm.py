@@ -10,7 +10,7 @@ from functools import cache
 from typing import Any, TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_deepseek import ChatDeepSeek
 
 from app.core.config import settings
@@ -92,7 +92,9 @@ def get_chat_model(role: str) -> BaseChatModel:
 
 
 def llm_call(
-    model: BaseChatModel, messages: list[Any], config: RunnableConfig
+    model: BaseChatModel | Runnable[Any, Any],
+    messages: list[Any],
+    config: RunnableConfig,
 ) -> dict[str, Any]:
     """Invoke the given model with the provided messages and update state.
 
