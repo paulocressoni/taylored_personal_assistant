@@ -34,6 +34,14 @@ services:
       # app/core/config.py requires ENV=dev|prod. The overlays set the
       # concrete value; this default keeps base.yml runnable on its own.
       ENV: ${APP_ENV:-dev}
+    volumes:
+      # Persist the SQLite checkpointer DB across container
+      # recreation. The checkpointer writes checkpoints.db into the CWD
+      # (/app, see backend/app/graph/checkpointer.py), so the named volume
+      # mounts over /app. In dev, docker-compose.dev.yml additionally
+      # bind-mounts ../../backend/app:/app/app over the volume, so source
+      # code stays live while only checkpoints.db survives on the volume.
+      - checkpoints_data:/app
     depends_on:
       # Best-effort observability. `required: false` (Compose >= 2.20)
       # means: wait for Langfuse healthy IF the observability profile is
@@ -223,3 +231,6 @@ volumes:
   clickhouse_logs:
   redis_data:
   minio_data:
+  # Cconversation checkpoints (backend writes checkpoints.db into /app).
+  # Named volume (not bind mount) so `docker compose down` keeps it alive.
+  checkpoints_data:

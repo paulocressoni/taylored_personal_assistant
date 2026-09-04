@@ -76,6 +76,10 @@ class FakeCheckpointer:
     async def aget_tuple(self, config: dict) -> FakeCheckpointTuple | None:
         return self._store.get(config["configurable"]["thread_id"])
 
+    async def adelete_thread(self, thread_id: str) -> None:
+        """Remove a thread's checkpoint; a no-op if the id never existed."""
+        self._store.pop(thread_id, None)
+
 
 @pytest.fixture
 def client():
@@ -144,6 +148,31 @@ def test_session_history_returns_persisted_messages(client):
         {"role": "human", "content": "hello"},
         {"role": "ai", "content": "hi there!"},
     ]
+
+
+def test_delete_session_removes_persisted_session(client):
+    client.app.state.checkpointer.seed(
+        "s1",
+        [HumanMessage(content="hello"), AIMessage(content="hi there!")],
+    )
+    r = client.delete("/sessions/s1", headers={"X-API-Key": API_KEY})
+    assert r.status_code == 200
+    assert r.json() == {"session_id": "s1", "deleted": True}
+    # The conversation is truly gone afterwards.
+    h = client.get("/sessions/s1/history", headers={"X-API-Key": API_KEY})
+    assert h.status_code == 200
+    assert h.json()["messages"] == []
+
+
+def test_delete_session_unknown_is_harmless_noop(client):
+    r = client.delete("/sessions/never-seen", headers={"X-API-Key": API_KEY})
+    assert r.status_code == 200
+    assert r.json() == {"session_id": "never-seen", "deleted": True}
+
+
+def test_delete_session_requires_api_key(client):
+    r = client.delete("/sessions/s1")
+    assert r.status_code == 401
 
 
 # --- BE-01: auth ---------------------------------------------------------

@@ -48,8 +48,10 @@ curl.exe http://localhost:8000/health        # -> {"status":"ok"}
 
 Interactive docs (generated from the Pydantic schemas): `http://localhost:8000/docs`.
 
-> **Config fails fast**: the app will not start without `ENV=dev|prod` and a
-> `DEEPSEEK_API_KEY`. Langfuse keys are optional (best-effort observability).
+> **Config fails fast**: the app will not start without `ENV=dev|prod`, a
+> `DEEPSEEK_API_KEY`, and an `ASSISTANT_API_KEY` (the shared key every client must send —
+> see [Authentication](#authentication)). Langfuse keys are optional (best-effort
+> observability).
 
 ## Endpoints
 
@@ -60,6 +62,27 @@ Interactive docs (generated from the Pydantic schemas): `http://localhost:8000/d
 | `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame | `token` frames + `done` |
 | `GET` | `/sessions/{id}/history` | Read a conversation's persisted messages (M11) | `SessionHistoryResponse` |
 | `DELETE` | `/sessions/{id}` | Delete a conversation's checkpoints (M11) | `{"session_id", "deleted"}` |
+
+## Authentication
+
+Every endpoint **except `GET /health`** is protected by a **shared API key**: the value of
+`ASSISTANT_API_KEY` from `backend/.env.dev` (`settings.assistant_api_key` in
+`app.core.config`). Like `DEEPSEEK_API_KEY`, it is fail-fast — the app refuses to boot
+without it, so auth can never silently be off.
+
+How you present the key depends on the transport (`backend/app/api/auth.py`):
+
+| Transport | Send it as | Failure without it |
+|---|---|---|
+| HTTP — `POST /chat`, `GET /sessions/{id}/history`, `DELETE /sessions/{id}` | `X-API-Key: <ASSISTANT_API_KEY>` header | `401 Unauthorized` |
+| WebSocket — `WS /ws/chat` | `?api_key=<ASSISTANT_API_KEY>` query parameter | connection closed with code `1008` |
+
+Browsers cannot set headers on a WebSocket handshake, which is why the socket takes the
+key as a query parameter instead of a header. Keys are compared in constant time
+(`secrets.compare_digest`), so timing attacks can't leak the value.
+
+In every example below, replace `<ASSISTANT_API_KEY>` with the value from your
+`backend/.env.dev`.
 
 ## POST /chat
 
@@ -96,6 +119,7 @@ Example:
 ```powershell
 curl.exe -X POST http://localhost:8000/chat `
   -H "Content-Type: application/json" `
+  -H "X-API-Key: <ASSISTANT_API_KEY>" `
   -d '{"session_id":"s1","message":"hello"}'
 ```
 
@@ -109,8 +133,9 @@ last message plus `lang` / `route` from the final state.
 
 ## WS /ws/chat
 
-Protocol: open `ws://localhost:8000/ws/chat`, send **one** JSON envelope (same shape as
-`ChatRequest`), then read frames:
+Protocol: open `ws://localhost:8000/ws/chat?api_key=<ASSISTANT_API_KEY>` (the WS analog of
+the `X-API-Key` header — see [Authentication](#authentication)), send **one** JSON
+envelope (same shape as `ChatRequest`), then read frames:
 
 | Frame | Fields | Meaning |
 |---|---|---|
@@ -124,7 +149,9 @@ Protocol: open `ws://localhost:8000/ws/chat`, send **one** JSON envelope (same s
 - Error policy: a client leaving mid-run is a `WebSocketDisconnect` and is handled
   silently; any other failure propagates so the server logs the real traceback.
 
-Try it with the bundled probe client (it prints tokens as they arrive):
+Try it with the bundled probe client (it prints tokens as they arrive). The probe reads
+the shared API key from `app.core.config.settings` and appends it to the URI as
+`?api_key=` automatically — no manual key needed:
 
 ```powershell
 cd backend
@@ -149,7 +176,8 @@ created at startup) keyed by `thread_id`. Same `thread_id` → same conversation
 ### GET /sessions/{session_id}/history
 
 ```powershell
-curl.exe http://localhost:8000/sessions/demo/history
+curl.exe -H "X-API-Key: <ASSISTANT_API_KEY>" `
+  http://localhost:8000/sessions/demo/history
 ```
 
 Returns `SessionHistoryResponse` — `{"session_id": "...", "messages": [...]}` oldest
@@ -159,7 +187,8 @@ routes read the same store implicitly.
 ### DELETE /sessions/{session_id}
 
 ```powershell
-curl.exe -X DELETE http://localhost:8000/sessions/demo
+curl.exe -X DELETE http://localhost:8000/sessions/demo `
+  -H "X-API-Key: <ASSISTANT_API_KEY>"
 ```
 
 Runs `checkpointer.adelete_thread(id)`, deleting every checkpoint + pending write for that
@@ -182,6 +211,9 @@ The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
   OpenAPI documents HTTP only — it does not describe WS traffic.
 - The frontend sends the same `ChatRequest` envelope and reads `token` / `done` / `status`
   / `error` frames through the Vite dev proxy (no CORS involved).
+- The browser authenticates with the same shared key: `VITE_API_KEY`
+  (`frontend/.env.local`) is sent as the `X-API-Key` header on the `/sessions` HTTP calls
+  and as `?api_key=` on the WebSocket — it must equal the backend's `ASSISTANT_API_KEY`.
 - Since M11 the frontend also calls `GET /sessions/{id}/history` (load a conversation) and
   `DELETE /sessions/{id}` (delete it); the Vite proxy forwards `/sessions` too.
 
