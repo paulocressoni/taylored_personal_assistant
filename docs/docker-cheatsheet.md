@@ -151,7 +151,7 @@ docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-
 # Status / logs / stop
 docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps
 docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down
+docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability down
 ```
 
 Shortcut — set once per terminal, then plain `docker compose` works:

@@ -29,8 +29,7 @@ def knowledge_node(state: IPAState, config: RunnableConfig) -> dict:
     model = get_chat_model("specialist").bind_tools(TOOLS)
     messages = [SystemMessage(content=KNOWLEDGE_SYSTEM_PROMPT), *state["messages"]]
 
-    llm_response = llm_call(state, model, messages, config)
+    llm_response = llm_call(model, messages, config)
     response = llm_response["response"]  # Extract the response from the llm_call result
-    llm_calls = llm_response["llm_calls"]  # Extract the LLM call count
 
-    return {"messages": [response], "llm_calls": llm_calls}
+    return {"messages": [response]}
