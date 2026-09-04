@@ -96,6 +96,12 @@ containerized backend. WebSockets aren't subject to CORS anyway, but the proxy i
 pattern that will also serve the built app from the backend later (single unified
 package).
 
+**Auth:** every route except `/health` requires the shared key. The frontend reads it from
+`VITE_API_KEY` (`frontend/.env.local`) and sends it as the `X-API-Key` header on the
+`/sessions` HTTP calls and as `?api_key=` on the `/ws/chat` handshake
+(`src/hooks/useChatStream.ts`). It must equal the backend's `ASSISTANT_API_KEY`, or the
+backend answers `401` and closes unauthenticated sockets with code `1008`.
+
 ## How streaming works (the mental model)
 
 - The backend runs **one turn per connection**: it accepts a `ChatRequest`, streams

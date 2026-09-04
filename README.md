@@ -568,8 +568,12 @@ Quick start (full reference: [docs/api.md](docs/api.md)):
 ```powershell
 make dev-up                          # repo root; uvicorn --reload on :8000
 curl.exe http://localhost:8000/health
+# Every other route requires the shared key: X-API-Key header on HTTP,
+# ?api_key= on the WebSocket (see docs/api.md). <ASSISTANT_API_KEY> = the
+# value from backend/.env.dev.
 curl.exe -X POST http://localhost:8000/chat `
   -H "Content-Type: application/json" `
+  -H "X-API-Key: <ASSISTANT_API_KEY>" `
   -d '{"session_id":"s1","message":"hello"}'
 # WS streaming — from backend/ (the probe sends the shared API key
 # automatically as ?api_key=):
