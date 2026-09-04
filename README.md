@@ -571,7 +571,8 @@ curl.exe http://localhost:8000/health
 curl.exe -X POST http://localhost:8000/chat `
   -H "Content-Type: application/json" `
   -d '{"session_id":"s1","message":"hello"}'
-# WS streaming — from backend/:
+# WS streaming — from backend/ (the probe sends the shared API key
+# automatically as ?api_key=):
 uv run python scripts/ws_probe.py "tell me a short joke"
 ```
 

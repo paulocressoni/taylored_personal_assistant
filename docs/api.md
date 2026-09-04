@@ -124,7 +124,9 @@ Protocol: open `ws://localhost:8000/ws/chat`, send **one** JSON envelope (same s
 - Error policy: a client leaving mid-run is a `WebSocketDisconnect` and is handled
   silently; any other failure propagates so the server logs the real traceback.
 
-Try it with the bundled probe client (it prints tokens as they arrive):
+Try it with the bundled probe client (it prints tokens as they arrive). The probe reads
+the shared API key from `app.core.config.settings` and appends it to the URI as
+`?api_key=` automatically — no manual key needed:
 
 ```powershell
 cd backend
