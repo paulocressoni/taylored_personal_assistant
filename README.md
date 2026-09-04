@@ -519,8 +519,10 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 ## Observability (M08/M12) — self-hosted Langfuse
 
 M08 added **self-hosted Langfuse v4** for local-dev observability: every graph run becomes
-a trace — spans for `detect_lang` / `router` / `knowledge` / `responder`, LLM generations
-with token counts, and session grouping. Since M12 the 6 services (`langfuse-web`,
+a trace — spans for `detect_lang` / `router` / `knowledge` / `responder` / `telemetry`, LLM
+generations with token counts, and session grouping. A final `telemetry` node enriches each
+trace with the mid-run `route` / `lang` / `tools_called` values and names it
+`assistant:<route>`. Since M12 the 6 services (`langfuse-web`,
 `langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`) live in
 `infra/compose/docker-compose.base.yml` under the optional `observability` profile.
 

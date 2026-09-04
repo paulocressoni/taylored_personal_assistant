@@ -107,7 +107,9 @@ ENV=dev uv run python -m scripts.smoke_07_langfuse
 
 Then open `http://localhost:3000` → **Traces** → newest run. You should see an
 `assistant:knowledge` trace with spans for `detect_lang` / `router` / `knowledge` /
-`responder` and an LLM generation with token counts.
+`responder` / `telemetry` and an LLM generation with token counts. The trace's
+metadata shows the mid-run values the final `telemetry` node stamped on it
+(`route`, `lang`, `tools_called`).
 
 Login: use the `LANGFUSE_INIT_USER_*` values from `infra/compose/.env` (defaults:
 `dev@localhost.local` / `dev-password-123`).
@@ -118,8 +120,11 @@ Login: use the `LANGFUSE_INIT_USER_*` values from `infra/compose/.env` (defaults
   with no args and binds to the process-wide singleton client.
 - Per-trace attributes are passed through the invoke `config["metadata"]` using reserved
   `langfuse_*` keys (session id, user id); the handler propagates them via OTel baggage.
-- `enrich_trace(state)` updates metadata mid-run from the **final node**
-  (`route`, `lang`, `tools_called`) — these are only known once the run decides them.
+- `enrich_trace(state)` is called from the final **`telemetry` node** (which runs
+  after the responder) to update metadata mid-run with `route`, `lang`,
+  `tools_called` — these are only known once the run decides them. That node reads
+  the `RunTelemetry` counter from `config["configurable"]["run_telemetry"]`, so the
+  trace's `llm_calls` reflects every model call in the run.
 - `flush()` (v4: on the client) is called on app shutdown and after the smoke test so
   queued events land before the process exits.
 - Everything is gated by `settings.langfuse_ready`; when off, helpers return `None` /
