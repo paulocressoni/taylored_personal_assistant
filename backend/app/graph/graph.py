@@ -9,6 +9,7 @@ from app.graph.nodes.detect_lang import detect_lang_node
 from app.graph.nodes.knowledge import knowledge_node
 from app.graph.nodes.responder import responder_node
 from app.graph.nodes.router import DEFAULT_ROUTE, router_node
+from app.graph.nodes.telemetry import telemetry_node
 from app.graph.nodes.tool_exec import TOOL_ITERATION_CAP, tool_exec_node
 from app.graph.state import IPAState
 from app.graph.utils import get_last_message
@@ -73,6 +74,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> Any:
     builder.add_node("knowledge", knowledge_node)
     builder.add_node("tool_exec", tool_exec_node)
     builder.add_node("responder", responder_node)
+    builder.add_node("telemetry", telemetry_node)
 
     # Language first: every downstream node reads a resolved state["lang"].
     builder.add_edge(START, "detect_lang")
@@ -88,6 +90,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None) -> Any:
         {"tool_exec": "tool_exec", "responder": "responder"},
     )
     builder.add_edge("tool_exec", "knowledge")
-    builder.add_edge("responder", END)
+    # Every route converges on the responder; telemetry then runs LAST so it
+    # can reconcile the run totals and enrich the trace before it flushes.
+    builder.add_edge("responder", "telemetry")
+    builder.add_edge("telemetry", END)
 
     return builder.compile(checkpointer=checkpointer)
