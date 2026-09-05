@@ -161,8 +161,9 @@ uv run python scripts/ws_probe.py "tell me a short joke"
 ## Sessions & checkpointing (M11)
 
 HTTP is stateless: each request is independent. The **checkpointer** is the server-side
-store that gives conversations memory. It's a SQLite database (`backend/checkpoints.db`,
-created at startup) keyed by `thread_id`. Same `thread_id` → same conversation.
+store that gives conversations memory. It's a SQLite database (created at startup; by
+default `backend/checkpoints.db`, configurable via `CHECKPOINT_DB_PATH` in
+`backend/.env.dev`) keyed by `thread_id`. Same `thread_id` → same conversation.
 
 ### Why `thread_id` lives in `config`, not the state
 
@@ -197,8 +198,9 @@ no-op (`{"session_id": ..., "deleted": true}`).
 
 ### Resetting everything in dev
 
-Stop the server and delete `backend/checkpoints.db*` (the DB uses WAL mode, so also the
-`-wal` / `-shm` files). It's recreated empty on next startup.
+Stop the server and delete the checkpoint DB files (`backend/checkpoints.db*` for the
+default path — WAL mode also produces `-wal` / `-shm` siblings). It's recreated empty on
+next startup. If you relocated it via `CHECKPOINT_DB_PATH`, delete that file instead.
 
 ### Consumed by the frontend (M10)
 

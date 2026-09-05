@@ -643,7 +643,7 @@ Full file map, walkthrough, and troubleshooting: [docs/frontend.md](docs/fronten
 
 ## LLM provider layer (M02)
 
-All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Model names, temperatures, and thinking mode live only in `ROLE_CONFIG` — business logic never hardcodes a model name.
+All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Business logic never hardcodes a model name — the model **tiers** live in `app/core/config.py` (`DEEPSEEK_MODEL_FLASH` / `DEEPSEEK_MODEL_PRO`), each role in `ROLE_CONFIG` references its tier, and temperatures/thinking/timeouts/token budgets stay in `ROLE_CONFIG`.
 
 | Role | Model | Temperature | Thinking | Timeout (s) | Max tokens | Max retries | Use case |
 |---|---|---|---|---|---|---|---|
