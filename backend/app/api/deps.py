@@ -55,10 +55,16 @@ def build_initial_state(
     channel: str,
     device_id: str | None,
 ) -> IPAState:
-    """Seed the same 12-field IPAState the CLI seeds, but for an HTTP turn.
+    """Seed the per-turn IPAState the CLI seeds, minus ``lang``.
 
-    The user's text becomes a HumanMessage so the responder model sees a
-    proper message list.
+    Every plain field is reset for this turn EXCEPT ``lang``: on a
+    checkpointed continuation turn, LangGraph OVERWRITES non-reducer channels
+    from the input, so seeding ``lang=None`` here would clobber the language
+    the previous turn resolved to and break continuity. Leaving it unset lets
+    the persisted value survive; on a brand-new thread there is nothing to
+    preserve and detect_lang_node (the graph's first node) writes ``lang``
+    before any reader runs. The user's text becomes a HumanMessage so the
+    responder model sees a proper message list.
 
     Args:
         user_input: The user's text input.
@@ -76,7 +82,6 @@ def build_initial_state(
         "channel": channel,
         "device_id": device_id,
         "principal": None,
-        "lang": None,
         "route": None,
         "pending_action": None,
         "llm_calls": 0,

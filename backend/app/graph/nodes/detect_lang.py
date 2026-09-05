@@ -3,37 +3,41 @@
 Runs BEFORE the router so every downstream node (router, specialists,
 responder) reads a resolved ``lang`` from state. Deterministic: no LLM call,
 no tokens spent — just the lingua detector plus the M05 fallback chain.
+
+Language continuity rides on PERSISTED STATE, not on re-detecting old turns.
+``lang`` is a plain (non-reducer) channel, so after a turn the
+checkpointer stores the RESOLVED language under state["lang"]. The per-turn
+seeders (app.api.deps.build_initial_state, app.graph.cli) deliberately leave
+``lang`` unset so that persisted value survives into the next run instead of
+being overwritten with None. This node reads it back as the fallback
+``previous_lang`` — which resolve_lang only consults when this turn's
+detection confidence is below MIN_CONFIDENCE (rung 2 of the fallback chain).
 """
 
-from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 
 from app.graph.state import IPAState
-from app.language.detector import detect_lang, resolve_lang
+from app.language.detector import resolve_lang
 
 
 def _previous_user_lang(state: IPAState) -> str | None:
-    """Language of the most recent PRIOR user turn, if one exists.
+    """Language of the most recent PRIOR turn, read from persisted state.
 
-    The current turn is state["user_input"] (the last HumanMessage's
-    content), so we walk backwards to the first HumanMessage that isn't it.
-
-    TODO(persistence): once real conversation checkpointing lands, read the
-    persisted previous state["lang"] here instead of re-detecting.
+    state["lang"] already holds the language the assistant actually used on
+    the previous turn: detect_lang_node resolves it every run and writes it
+    back, and the checkpointer persists it between turns. We therefore do
+    NOT walk the message list or re-run lingua on old text — continuity
+    follows state, so trimming message history can never break it.
 
     Args:
         state (IPAState): The current IPA state.
 
     Returns:
-        str | None: The language tag of the most recent prior user turn, or None if not found.
+        str | None: The resolved language of the most recent prior turn, or
+            None when there is no previous turn (fresh thread / stateless
+            run) — same behaviour as before persistence.
     """
-    # Walk backwards through the messages to find the most recent prior user turn
-    current = state.get("user_input", "")
-    for message in reversed(state.get("messages", [])):
-        if isinstance(message, HumanMessage) and str(message.content) != current:
-            detected, _confidence = detect_lang(str(message.content))
-            return detected
-    return None
+    return state.get("lang")
 
 
 def detect_lang_node(state: IPAState, config: RunnableConfig) -> dict:
