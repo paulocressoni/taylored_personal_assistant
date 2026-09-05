@@ -2,7 +2,7 @@
 between nodes. Extend here, never by ad-hoc dicts inside nodes."""
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 
@@ -25,7 +25,8 @@ class IPAState(TypedDict):
     channel: str  # "text" | "voice" | "cli"
     device_id: str | None  # which device this turn came from
     principal: dict | None  # {user_id, role, confidence, auth_method}
-    lang: str | None  # "en" | "de" | "pt-BR"
+    lang: NotRequired[str | None]  # "en" | "de" | "pt-BR"; absent until
+    # detect_lang_node fills it (BE-08) — ALWAYS read via state.get("lang")
     route: str | None
     pending_action: dict | None
     llm_calls: int
