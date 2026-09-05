@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     # /ws/chat stream so a hung upstream model can never hold a request open.
     graph_timeout_seconds: float = 90.0
 
+    # Cap on how many conversation messages a node forwards to the
+    # model. The checkpointer keeps the FULL history (the session's memory,
+    # read back whole by GET /sessions/{id}/history) — this only bounds the
+    # window the responder / knowledge specialist build their prompt from,
+    # so a long session can't exceed the model's context window or bloat
+    # every LLM call. Override with MAX_HISTORY_MESSAGES. 0 / negative =
+    # no cap.
+    max_history_messages: int = 20
+
     # DeepSeek model names (v4-flash is cheaper, v4-pro is more capable).
     # The default is hardcoded here so we have a single source of truth for the default models.
     deepseek_model_flash: str = "deepseek-v4-flash"
