@@ -64,6 +64,7 @@ def make_state(**overrides) -> dict:
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,
+        "tools_called": [],
     }
     state.update(overrides)
     return state
