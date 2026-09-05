@@ -450,7 +450,22 @@ npm run types    # openapi-typescript http://localhost:8000/openapi.json -o src/
 
 Regenerate whenever the backend schemas change, and commit the output (`src/api/types.ts`).
 
-### 7d. Run the dev server
+### 7d. Set the shared API key
+
+The backend requires a shared key on every route except `/health` (HTTP `X-API-Key`
+header, WebSocket `?api_key=`). The frontend reads it from `VITE_API_KEY`. Create the
+frontend env file from the committed template and set it to the **same value** as the
+backend's `ASSISTANT_API_KEY` (in `backend/.env.dev`):
+
+```powershell
+cd frontend
+Copy-Item .env.example .env.local    # then open .env.local and fill it in
+```
+
+A mismatch means the backend answers `401` on HTTP and closes WebSockets with code `1008`
+— the chat won't work until the two keys agree.
+
+### 7e. Run the dev server
 
 ```powershell
 npm run dev      # Vite on http://localhost:5173
@@ -643,7 +658,7 @@ Full file map, walkthrough, and troubleshooting: [docs/frontend.md](docs/fronten
 
 ## LLM provider layer (M02)
 
-All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Model names, temperatures, and thinking mode live only in `ROLE_CONFIG` — business logic never hardcodes a model name.
+All LLM access goes through the role-based factory in `backend/app/core/llm.py`. Callers pass a *role*; the factory returns a fully configured `ChatDeepSeek`. Business logic never hardcodes a model name — the model **tiers** live in `app/core/config.py` (`DEEPSEEK_MODEL_FLASH` / `DEEPSEEK_MODEL_PRO`), each role in `ROLE_CONFIG` references its tier, and temperatures/thinking/timeouts/token budgets stay in `ROLE_CONFIG`.
 
 | Role | Model | Temperature | Thinking | Timeout (s) | Max tokens | Max retries | Use case |
 |---|---|---|---|---|---|---|---|

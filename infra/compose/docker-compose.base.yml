@@ -68,7 +68,7 @@ services:
   # browser needs.
 
   langfuse-web:
-    image: docker.langfuse.com/langfuse/langfuse:4
+    image: docker.langfuse.com/langfuse/langfuse:4.30.0
     profiles: ["observability"]
     restart: unless-stopped
     depends_on:
@@ -141,7 +141,7 @@ services:
       start_period: 30s
 
   langfuse-worker:
-    image: docker.langfuse.com/langfuse/langfuse-worker:4
+    image: docker.langfuse.com/langfuse/langfuse-worker:4.30.0
     profiles: ["observability"]
     restart: unless-stopped
     depends_on:
@@ -158,7 +158,7 @@ services:
       PORT: "3030"
 
   postgres:
-    image: postgres:17
+    image: postgres:17.11
     profiles: ["observability"]
     restart: unless-stopped
     environment:
@@ -176,7 +176,7 @@ services:
       retries: 10
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25.12
+    image: clickhouse/clickhouse-server:25.12.11.4
     profiles: ["observability"]
     restart: unless-stopped
     user: "101:101"    # official image UID/GID — avoids volume permission errors
@@ -195,7 +195,7 @@ services:
       start_period: 1s
 
   redis:
-    image: redis:7
+    image: redis:7.4.11
     profiles: ["observability"]
     restart: unless-stopped
     command: ["redis-server", "--requirepass", "${REDIS_AUTH:?set in infra/compose/.env}", "--appendonly", "yes"]

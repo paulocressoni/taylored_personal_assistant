@@ -10,6 +10,12 @@ from typing import Literal
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# SUPPORTED_LANGS is the CANONICAL language list and lives in a leaf module
+# (it imports nothing from the app). We import it here so
+# Settings.supported_languages defaults from a single source of truth instead
+# of duplicating the literal (CFG-02).
+from app.language.detector import SUPPORTED_LANGS
+
 VALID_ENVS = ("dev", "prod")
 
 # Step 1 — chicken-and-egg: ENV must exist in the OS environment BEFORE
@@ -24,7 +30,12 @@ if _APP_ENV not in VALID_ENVS:
 
 
 class Settings(BaseSettings):
-    """Settings for the application."""
+    """Settings for the application.
+
+    Every field maps to an env var of the same name, case-insensitively
+    (e.g. ``checkpoint_db_path`` <-> ``CHECKPOINT_DB_PATH``). Values load from
+    the ``.env.{ENV}`` file chosen above, then from the process environment.
+    """
 
     # Configuration for pydantic-settings
     model_config = SettingsConfigDict(
@@ -46,7 +57,28 @@ class Settings(BaseSettings):
 
     # Deterministic settings with sane defaults (NOT vector memory)
     default_timezone: str = "Europe/Berlin"
-    supported_languages: list[str] = ["en", "de", "pt-BR"]
+    # Single source of truth for supported language tags lives in
+    # app.language.detector.SUPPORTED_LANGS (a leaf module). We DEFAULT from it
+    # here; the SUPPORTED_LANGUAGES env var can still override at runtime
+    # (CFG-02 — test_langdetect.py guards the two from drifting).
+    supported_languages: list[str] = SUPPORTED_LANGS
+
+    # --- Runtime knobs (BE-04 / BE-05) ---
+    # Where the SQLite checkpointer DB file is created. Relative paths resolve
+    # against the process CWD: backend/ when run locally, /app inside the
+    # Docker image (the compose named volume mounts over /app). A FILE (not
+    # ":memory:") survives both `uvicorn --reload` restarts and container
+    # recreation.
+    checkpoint_db_path: str = "checkpoints.db"
+
+    # Hard deadline (seconds) for ONE graph run, applied in POST /chat and the
+    # /ws/chat stream so a hung upstream model can never hold a request open.
+    graph_timeout_seconds: float = 90.0
+
+    # DeepSeek model names (v4-flash is cheaper, v4-pro is more capable).
+    # The default is hardcoded here so we have a single source of truth for the default models.
+    deepseek_model_flash: str = "deepseek-v4-flash"
+    deepseek_model_pro: str = "deepseek-v4-pro"
 
     # Browser origins allowed to call this API directly (e.g. CORS_ORIGINS=
     # '["http://localhost:5173"]'). Empty by default = same-origin only: the

@@ -15,8 +15,17 @@ from lingua import Language, LanguageDetectorBuilder
 
 # Restricted candidate set = better accuracy on short text. The library's own
 # docs: "the more languages take part in the decision process, the less
-# accurate are the detection results." Must stay in sync with
-# settings.supported_languages — test_langdetect.py guards this.
+# accurate are the detection results."
+#
+# CANONICAL LIST — single source of truth. This module is a leaf and
+# imports nothing from the app, so it stays trivially unit-testable without
+# ENV. Settings.supported_languages in app/core/config.py DEFAULTS from this
+# list (imported, not duplicated); the SUPPORTED_LANGUAGES env var can still
+# override at runtime. test_langdetect.py::test_supported_langs_match_config
+# guards the two from drifting.
+#
+# If you add a language you must extend BOTH _LINGUA_LANGS and _to_app_lang()
+# below — lingua only ships models for the set built at import time.
 SUPPORTED_LANGS = ["en", "de", "pt-BR"]
 
 DEFAULT_LANG = "en"

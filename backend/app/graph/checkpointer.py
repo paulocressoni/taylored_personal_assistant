@@ -1,9 +1,10 @@
 """Conversation checkpointing — the persistent memory behind M11.
 
 The checkpointer is created ONCE at app startup (like the compiled graph)
-and shared by every request. Keeping it in its own module means the DB path
-and the open/setup dance live in exactly one place instead of cluttering
-main.py's lifespan.
+and shared by every request. Keeping it in its own module means the open/setup
+dance lives in exactly one place instead of cluttering main.py's lifespan.
+The DB path itself is env-configurable via Settings.checkpoint_db_path
+, so operators can relocate it without touching code.
 """
 
 from collections.abc import AsyncGenerator
@@ -11,11 +12,7 @@ from contextlib import asynccontextmanager
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-# SQLite file that survives across HTTP requests. A FILE (not ":memory:")
-# also survives a `uvicorn --reload` restart — which is what makes the
-# "refresh the browser tab" demo work even across a code reload.
-# TODO: promote to app.core.config.Settings once paths become env-driven.
-CHECKPOINT_DB_PATH = "checkpoints.db"
+from app.core.config import settings
 
 
 @asynccontextmanager
@@ -37,8 +34,12 @@ async def open_checkpointer() -> AsyncGenerator[AsyncSqliteSaver]:
     LangGraph refuses to run async with a sync checkpointer, so one async
     saver is the single shape that serves both routes.
 
+    The target file comes from ``settings.checkpoint_db_path`` (default
+    "checkpoints.db", relative to the process CWD). A FILE — not ":memory:" —
+    is what makes conversations survive a `uvicorn --reload` restart.
+
     Yields:
         An initialized AsyncSqliteSaver with its checkpoints table ready.
     """
-    async with AsyncSqliteSaver.from_conn_string(CHECKPOINT_DB_PATH) as saver:
+    async with AsyncSqliteSaver.from_conn_string(settings.checkpoint_db_path) as saver:
         yield saver

@@ -25,13 +25,11 @@ class RoleConfig(TypedDict):
     max_retries: int
 
 
-# TODO: Should we store these values in a config file or environment variables
-# instead of hardcoding them here?
 ROLE_CONFIG: dict[str, RoleConfig] = {
     # thinking: False keeps cheap roles cheap — verified empirically that
     # v4-flash thinks by default, so we must send "disabled" explicitly.
     "router": {
-        "model": "deepseek-v4-flash",
+        "model": settings.deepseek_model_flash,
         "temperature": 0.0,
         "thinking": False,
         "timeout": 10.0,
@@ -39,7 +37,7 @@ ROLE_CONFIG: dict[str, RoleConfig] = {
         "max_retries": 2,
     },
     "specialist": {
-        "model": "deepseek-v4-flash",
+        "model": settings.deepseek_model_flash,
         "temperature": 0.0,
         "thinking": False,
         "timeout": 10.0,
@@ -47,7 +45,7 @@ ROLE_CONFIG: dict[str, RoleConfig] = {
         "max_retries": 2,
     },
     "responder": {
-        "model": "deepseek-v4-flash",
+        "model": settings.deepseek_model_flash,
         "temperature": 1.3,
         "thinking": False,
         "timeout": 10.0,
