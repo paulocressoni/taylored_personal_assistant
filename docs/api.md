@@ -84,6 +84,29 @@ key as a query parameter instead of a header. Keys are compared in constant time
 In every example below, replace `<ASSISTANT_API_KEY>` with the value from your
 `backend/.env.dev`.
 
+## Rate limiting
+
+`POST /chat` and `WS /ws/chat` are rate-limited **per API key** with an in-memory
+sliding-window limiter (`backend/app/api/ratelimit.py`). HTTP and WS share one budget
+per key because both present the same `ASSISTANT_API_KEY` credential.
+
+| Setting | Env var | Default | Meaning |
+|---|---|---|---|
+| `rate_limit_requests` | `RATE_LIMIT_REQUESTS` | `30` | Max requests per key per window |
+| `rate_limit_window_seconds` | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding window length (s) |
+
+- **HTTP** (`POST /chat`): over budget → `429 Too Many Requests`, with a `Retry-After`
+  header. Auth still runs first, so bad/missing keys get `401`, never `429`.
+- **WebSocket** (`WS /ws/chat`): over budget → an
+  `{"type":"error","detail":"rate limit exceeded"}` frame, then the socket closes with
+  code `1013` (Try Again Later). WS has no numeric 429; the error frame + close code is
+  the analog.
+- **Scope & caveats**: in-memory and per-process — counts reset on restart and are not
+  shared across workers, so this is a dev-grade guard, not a distributed one (revisit
+  before horizontal scaling). Because the service authenticates with ONE shared key, the
+  bucket is effectively per-deployment today; it becomes truly per-client once per-user
+  keys land. Set `RATE_LIMIT_REQUESTS=0` to disable.
+
 ## POST /chat
 
 Request body — `ChatRequest`:
