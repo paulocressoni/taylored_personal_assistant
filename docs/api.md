@@ -143,7 +143,7 @@ Example:
 curl.exe -X POST http://localhost:8000/chat `
   -H "Content-Type: application/json" `
   -H "X-API-Key: <ASSISTANT_API_KEY>" `
-  -d '{"session_id":"s1","message":"hello"}'
+  -d "{\`"session_id\`":\`"s1\`",\`"message\`":\`"hello\`"}"
 ```
 
 **How it works:** Pydantic validates the body at the boundary (a 422 is returned without
