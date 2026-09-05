@@ -84,6 +84,15 @@ class Settings(BaseSettings):
     # no cap.
     max_history_messages: int = 20
 
+    # --- Rate limiting ---
+    # Per-API-key sliding-window limits for POST /chat and WS /ws/chat.
+    # In-memory only (no Redis for dev): counts reset on restart and are not
+    # shared across workers — fine for the single-process dev deployment.
+    # Limits apply per presented API key. Set RATE_LIMIT_REQUESTS=0 to
+    # disable.
+    rate_limit_requests: int = 30
+    rate_limit_window_seconds: float = 60.0
+
     # DeepSeek model names (v4-flash is cheaper, v4-pro is more capable).
     # The default is hardcoded here so we have a single source of truth for the default models.
     deepseek_model_flash: str = "deepseek-v4-flash"

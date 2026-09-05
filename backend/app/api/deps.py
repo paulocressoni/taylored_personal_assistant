@@ -8,11 +8,13 @@ trick that lets us test the HTTP layer without ever hitting DeepSeek.
 
 from typing import Any
 
-from fastapi import Request
+from fastapi import Header, HTTPException, Request, WebSocket, status
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import HumanMessage
 
+from app.api.ratelimit import SlidingWindowLimiter
 from app.core.callbacks import RunTelemetry
+from app.core.config import settings
 from app.core.observability import langfuse_metadata, new_langfuse_handler
 from app.graph.state import IPAState
 
@@ -123,3 +125,72 @@ def build_run_config(session_id: str, channel: str) -> dict[str, Any]:
         },
         "metadata": langfuse_metadata(session_id=session_id, channel=channel),
     }
+
+
+def build_rate_limiter() -> SlidingWindowLimiter:
+    """Build the process-wide per-key rate limiter from Settings.
+
+    Called ONCE in main.py's lifespan and stored on app.state — the same
+    pattern as the compiled graph and checkpointer, so tests can swap it for
+    a small-limit instance.
+
+    Returns:
+        A SlidingWindowLimiter configured from Settings.
+    """
+    return SlidingWindowLimiter(
+        limit=settings.rate_limit_requests,
+        window_seconds=settings.rate_limit_window_seconds,
+    )
+
+
+def require_rate_limit(
+    request: Request,
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+) -> None:
+    """FastAPI dependency: 429 when the API key exceeds its rate budget.
+
+    Listed AFTER require_api_key in the route's dependencies, so only
+    authenticated keys are counted (bad/missing keys 401 before this runs).
+    The bucket identity is the presented key itself.
+
+    Args:
+        request: FastAPI Request carrying app.state.rate_limiter.
+        x_api_key: The X-API-Key header value — the rate-limit identity.
+
+    Raises:
+        HTTPException: 429 Too Many Requests when the key is over budget.
+    """
+    # Read the limiter off request.app.state so tests can swap it for a
+    # small-limit instance. The real limiter is built ONCE in main.py's
+    # lifespan and stored on app.state.
+    limiter: SlidingWindowLimiter = request.app.state.rate_limiter
+
+    # If the key is over budget, raise a 429 with a Retry-After header.
+    if not limiter.allow(x_api_key or "unknown"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Rate limit exceeded. Please try again later.",
+            headers={"Retry-After": str(int(settings.rate_limit_window_seconds))},
+        )
+
+
+def check_ws_rate_limit(websocket: WebSocket) -> bool:
+    """True when the socket's api_key is still within its budget.
+
+    Must be called AFTER the socket is accepted AND authorized (a close frame
+    cannot be sent pre-accept). Reads ?api_key= from the query params — the
+    same credential HTTP sends as X-API-Key — so both transports share one
+    budget per key.
+
+    Args:
+        websocket: The accepted WebSocket to check.
+
+    Returns:
+        bool: True if allowed; False when the key exceeded its budget.
+    """
+    # Read the limiter off websocket.app.state so tests can swap it for a
+    # small-limit instance. The real limiter is built ONCE in main.py's
+    # lifespan and stored on app.state.
+    limiter: SlidingWindowLimiter = websocket.app.state.rate_limiter
+    key = websocket.query_params.get("api_key") or "unknown"
+    return limiter.allow(key)

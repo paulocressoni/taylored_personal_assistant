@@ -27,8 +27,10 @@ from app.api.auth import require_api_key, require_ws_api_key
 from app.api.deps import (
     build_initial_state,
     build_run_config,
+    check_ws_rate_limit,
     get_checkpointer,
     get_graph,
+    require_rate_limit,
 )
 from app.api.schemas import (
     ChatRequest,
@@ -57,7 +59,7 @@ def health() -> dict[str, str]:
 @router.post(
     "/chat",
     response_model=ChatResponse,
-    dependencies=[Depends(require_api_key)],
+    dependencies=[Depends(require_api_key), Depends(require_rate_limit)],
 )
 async def chat(
     payload: ChatRequest,
@@ -202,6 +204,19 @@ async def chat_ws(websocket: WebSocket) -> None:
             await websocket.close(code=1008)
         except WebSocketDisconnect:
             pass  # client vanished while we were rejecting them
+        return
+
+    # Per-key rate limit for sockets too (same budget as HTTP — both
+    # count against the presented API key). WS has no numeric 429, so the
+    # transport analog is an error frame + close 1013 ("Try Again Later").
+    if not check_ws_rate_limit(websocket):
+        try:
+            await websocket.send_json(
+                {"type": "error", "detail": "rate limit exceeded"}
+            )
+            await websocket.close(code=1013)
+        except WebSocketDisconnect:
+            pass  # client vanished while we were reporting the limit
         return
 
     try:
