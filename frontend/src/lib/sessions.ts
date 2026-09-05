@@ -2,6 +2,8 @@
 // The browser's registry of conversations ("sessions"), persisted in
 // localStorage so it survives page reloads and browser restarts.
 
+import { newUuid } from './uuid'
+
 const STORAGE_KEY = 'ipa.sessions'
 const ACTIVE_KEY = 'ipa.active_session_id'
 
@@ -90,17 +92,4 @@ export function removeSession(id: string): string {
   if (!next) next = createSession().id
   persistActive(next)
   return next
-}
-
-// A fresh id. Prefer the browser's crypto.randomUUID() (available on
-// localhost); fall back to a hand-rolled v4 UUID for very old browsers.
-function newUuid(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
-    const v = c === 'x' ? r : (r & 0x3) | 0x8
-    return v.toString(16)
-  })
 }
