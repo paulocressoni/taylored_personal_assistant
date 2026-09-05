@@ -240,12 +240,18 @@ export function useChatStream() {
             break
 
           case 'token':
-            // Append this token to the assistant message we created above.
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id ? { ...m, content: m.content + frame.content } : m,
-              ),
-            )
+            // Rebuild the array but REPLACE only the streaming
+            // assistant bubble (always the last element we appended) — no
+            // .map() over the whole list every token. Unchanged messages keep
+            // their object identity, so memoized rows in MessageList skip
+            // re-rendering; only this bubble updates.
+            setMessages((prev) => {
+              const i = prev.length - 1
+              if (i < 0 || prev[i].id !== assistantMsg.id) return prev
+              const next = prev.slice() // one new array, untouched items keep refs
+              next[i] = { ...next[i], content: next[i].content + frame.content }
+              return next
+            })
             break
 
           // The backend can send an error frame at any time. Stop streaming.
@@ -257,13 +263,17 @@ export function useChatStream() {
 
           // The backend sends a "done" frame when the reply is complete.
           case 'done':
-            // If no tokens arrived (backend fell back to the final state),
-            // fill in the final reply so the bubble isn't empty.
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id && m.content === '' ? { ...m, content: frame.reply } : m,
-              ),
-            )
+            // Same in-place update as tokens — only fill the bubble if
+            // it is still empty (no tokens arrived and the backend fell back
+            // to the final state).
+            setMessages((prev) => {
+              const i = prev.length - 1
+              if (i < 0 || prev[i].id !== assistantMsg.id) return prev
+              if (prev[i].content !== '') return prev
+              const next = prev.slice()
+              next[i] = { ...next[i], content: frame.reply }
+              return next
+            })
             setLang(frame.lang)
             setRoute(frame.route)
             setIsStreaming(false)
