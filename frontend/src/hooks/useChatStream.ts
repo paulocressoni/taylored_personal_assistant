@@ -1,5 +1,7 @@
 // frontend/src/hooks/useChatStream.ts
-// (REPLACE the whole file — M11 Phase 3 + history.ts refactor)
+// Owns the chat UI state: the WebSocket lifecycle (subprotocol auth,
+// close-code messaging), the message bubbles, and the localStorage
+// session registry. Pure history/session logic lives in src/lib/.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { components } from '../api/types'
@@ -14,6 +16,7 @@ import {
   removeSession,
   type Session,
 } from '../lib/sessions'
+import { newUuid } from '../lib/uuid'
 
 // Re-export so components can keep importing ChatMessage from the hook
 // (MessageList does). The type itself now lives in lib/history.ts so the
@@ -23,9 +26,35 @@ export type { ChatMessage } from '../lib/history'
 // The generated type for backend's ChatRequest pydantic model.
 type ChatRequest = components['schemas']['ChatRequest']
 
-// The backend requires a shared API key. Read once from Vite env and
-// send it two ways: X-API-Key on the session HTTP calls, ?api_key= on the
-// WebSocket (browsers can't set headers on a WS handshake).
+// Map WebSocket close codes to human-friendly messages.
+//
+// These are the codes the backend (routes.py chat_ws) actually uses:
+//   1008 auth failed, 1003 invalid payload, 1013 rate-limited/timeout,
+//   1011 internal error. 1006 = the connection never completed (backend
+//   down) -> generic network message. 1000/1005 (normal) and anything else
+//   -> null, meaning "no error message".
+function wsErrorMessage(code: number): string | null {
+  switch (code) {
+    case 1008:
+      return 'Authentication failed — check VITE_API_KEY.'
+    case 1003:
+      return 'The server rejected this message (invalid payload).'
+    case 1013:
+      return 'The assistant is busy — please try again in a moment.'
+    case 1011:
+      return 'The assistant hit an internal error.'
+    case 1006:
+      return 'Connection failed — is the backend running?'
+    default:
+      return null
+  }
+}
+
+// The backend requires a shared API key. Read once from Vite env and send it
+// two ways: X-API-Key on the session HTTP calls, and as the WebSocket
+// subprotocol (Sec-WebSocket-Protocol) so it never lands in the URL / proxy /
+// access logs. Browsers can't set headers on a WS handshake, but they
+// CAN pass subprotocols.
 function apiKey(): string {
   return import.meta.env.VITE_API_KEY ?? ''
 }
@@ -40,8 +69,9 @@ function authHeaders(): HeadersInit {
 
 function wsUrl(): string {
   // Relative to the Vite dev server, which proxies /ws/chat to the backend.
+  // The key is NOT in the URL — it travels as a subprotocol instead.
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}/ws/chat?api_key=${encodeURIComponent(apiKey())}`
+  return `${proto}//${location.host}/ws/chat`
 }
 
 export function useChatStream() {
@@ -212,12 +242,12 @@ export function useChatStream() {
       if (live === WebSocket.OPEN || live === WebSocket.CONNECTING) return
 
       const userMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: newUuid(),
         role: 'user',
         content: trimmed,
       }
       const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: newUuid(),
         role: 'assistant',
         content: '',
       }
@@ -229,11 +259,24 @@ export function useChatStream() {
       setLang(null)
       setRoute(null)
 
-      const socket = new WebSocket(wsUrl())
+      // Offer the API key as the WebSocket subprotocol so it never
+      // appears in the URL. When the key is missing (misconfiguration) open
+      // with no subprotocol — the backend still rejects with 1008, which
+      // turns into the "check VITE_API_KEY" message.
+      const key = apiKey()
+      const socket = key ? new WebSocket(wsUrl(), [key]) : new WebSocket(wsUrl())
       socketRef.current = socket
+
+      // Per-connection flags for. They live in this closure (not React
+      // state) because the listeners need the CURRENT value synchronously,
+      // without waiting for a re-render.
+      let opened = false // handshake completed (server accepted)
+      let resolved = false // a 'done'/'error' frame already ended the turn
+      let errorShown = false // an error message is already on screen
 
       // When the socket opens, send the user's message as a ChatRequest JSON payload.
       socket.addEventListener('open', () => {
+        opened = true
         const payload: ChatRequest = {
           session_id: activeSessionId, // was 'default' — now the REAL session id
           message: trimmed,
@@ -273,8 +316,13 @@ export function useChatStream() {
 
           // The backend can send an error frame at any time. Stop streaming.
           case 'error':
+            // This detail (rate-limited, timeout, mid-stream failure) is more
+            // specific than any close-code mapping, so keep it and mark the
+            // turn resolved so the close event can't overwrite it.
             setError(frame.detail)
             setIsStreaming(false)
+            resolved = true
+            errorShown = true
             socket.close()
             break
 
@@ -295,21 +343,39 @@ export function useChatStream() {
             setRoute(frame.route)
             setIsStreaming(false)
             setStatus(null)
+            resolved = true
             socket.close()
             break
         }
       })
 
-      // If the socket closes (e.g. network error), stop streaming and clear our ref.
-      socket.addEventListener('close', () => {
+      // If the socket closes, stop streaming, clear our ref, and — when the
+      // server closed abnormally after a completed handshake — translate the
+      // close code into a friendly message.
+      socket.addEventListener('close', (event: CloseEvent) => {
         // Only clear OUR reference; a newer socket must not be clobbered.
         if (socketRef.current === socket) socketRef.current = null
         setIsStreaming(false)
+
+        // Skip translation when: the handshake never completed (pre-open
+        // closes are either our own resets or already handled by the 'error'
+        // event), or a frame already resolved the turn with a better message.
+        if (!opened || resolved || errorShown) return
+        const message = wsErrorMessage(event.code)
+        if (message) {
+          errorShown = true
+          setError(message)
+        }
       })
 
-      // If the socket fails to connect, show an error and stop streaming.
+      // If the socket fails to connect (e.g. backend unreachable), show the
+      // generic network error once — the follow-up 'close' (code 1006) must
+      // not overwrite it, which is what errorShown guards against.
       socket.addEventListener('error', () => {
-        setError('Connection failed — is the backend running on :8000?')
+        if (!errorShown) {
+          errorShown = true
+          setError('Connection failed — is the backend running?')
+        }
         setIsStreaming(false)
         socket.close()
       })

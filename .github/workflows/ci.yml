@@ -27,9 +27,10 @@ jobs:
                   enable-cache: true
                   cache-dependency-glob: "backend/uv.lock"
 
-            # Install dependencies (from lockfile)
+            # Install dependencies (from lockfile) — --frozen fails the job if
+            # uv.lock is stale vs pyproject.toml, so drift can't slip in.
             - name: Sync dependencies (from uv.lock)
-              run: uv sync
+              run: uv sync --frozen
 
             # Lint + format + type-check + unit tests (mocked, no API)
             - name: Lint
@@ -88,6 +89,76 @@ jobs:
             # Type check
             - name: Type check + build
               run: npm run build
+
+    # OpenAPI -> TypeScript drift check: boot the real backend,
+    # regenerate frontend/src/api/types.ts from its /openapi.json, and fail if
+    # the committed generated file differs. Guards the hand-committed contract.
+    openapi-types-drift:
+        runs-on: ubuntu-latest
+        steps:
+            # Checkout the repo
+            - uses: actions/checkout@v7.0.1
+
+            # Install uv and Python (same pattern as the backend job)
+            - name: Install uv and Python
+              uses: astral-sh/setup-uv@v10.0.1
+              with:
+                  python-version: "3.12"
+                  enable-cache: true
+                  cache-dependency-glob: "backend/uv.lock"
+
+            # Install Node (same pattern as the frontend job)
+            - name: Install Node
+              uses: actions/setup-node@v4
+              with:
+                  node-version-file: frontend/.nvmrc
+                  cache: npm
+                  cache-dependency-path: frontend/package-lock.json
+
+            # Backend deps, from the lockfile
+            - name: Sync backend dependencies
+              working-directory: backend
+              run: uv sync --frozen
+
+            # The app refuses to boot without ENV + a .env.dev template.
+            - name: Prepare dev env
+              working-directory: backend
+              run: cp .env.dev.example .env.dev
+
+            # Start uvicorn on :8000 and wait until /openapi.json responds.
+            # Langfuse is forced off so no observability client is constructed.
+            # The placeholder keys in .env.dev.example satisfy Settings' fail-fast
+            # validator; pre-warming only CONSTRUCTS models (no network call).
+            - name: Start backend
+              working-directory: backend
+              env:
+                  ENV: dev
+                  LANGFUSE_ENABLED: "false"
+              run: |
+                  nohup uv run python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > uvicorn.log 2>&1 &
+                  for i in $(seq 1 30); do
+                    if curl -fsS http://127.0.0.1:8000/openapi.json > /dev/null; then
+                      echo "backend is up"
+                      exit 0
+                    fi
+                    sleep 1
+                  done
+                  echo "backend did not become ready" >&2
+                  cat uvicorn.log >&2
+                  exit 1
+
+            # Frontend deps, then regenerate types from the LIVE schema.
+            - name: Install frontend dependencies
+              working-directory: frontend
+              run: npm ci
+
+            # Regenerate and fail on drift: any schema change that was not
+            # reflected in the committed types.ts makes git diff non-empty.
+            - name: Regenerate types and fail on drift
+              working-directory: frontend
+              run: |
+                  npm run types
+                  git diff --exit-code -- src/api/types.ts
 
     # Secret scanning over the FULL history — a leaked key can't hide in an
     # old commit. Separate job so it scans the whole monorepo and can't be

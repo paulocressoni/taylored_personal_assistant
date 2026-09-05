@@ -75,11 +75,26 @@ How you present the key depends on the transport (`backend/app/api/auth.py`):
 | Transport | Send it as | Failure without it |
 |---|---|---|
 | HTTP — `POST /chat`, `GET /sessions/{id}/history`, `DELETE /sessions/{id}` | `X-API-Key: <ASSISTANT_API_KEY>` header | `401 Unauthorized` |
-| WebSocket — `WS /ws/chat` | `?api_key=<ASSISTANT_API_KEY>` query parameter | connection closed with code `1008` |
+| WebSocket — `WS /ws/chat` | **Preferred:** a `Sec-WebSocket-Protocol` subprotocol token equal to the key (`new WebSocket(url, [key])`). **Fallback:** `?api_key=<ASSISTANT_API_KEY>` query parameter | connection closed with code `1008` |
 
-Browsers cannot set headers on a WebSocket handshake, which is why the socket takes the
-key as a query parameter instead of a header. Keys are compared in constant time
-(`secrets.compare_digest`), so timing attacks can't leak the value.
+**Why the subprotocol:** browsers cannot set headers on a WebSocket handshake,
+but they CAN pass subprotocols. Sending the key as a `Sec-WebSocket-Protocol` token keeps
+it out of the URL, so it never appears in access logs, proxy logs, or browser history.
+
+Tradeoffs to know:
+- The server must echo the chosen subprotocol in the handshake response
+  (`accept(subprotocol=...)`), and RFC 6455 subprotocol values must be token characters —
+  so the key must not contain spaces or other non-token chars (hex/base64 keys are fine).
+  If yours ever does, use the `?api_key=` fallback.
+- The fallback also exists for clients that cannot set a subprotocol at all (e.g. the
+  bundled `ws_probe.py`).
+- Both transports should run over TLS in production.
+- uvicorn's access log records only the request path (`scope["path"]`), not the query
+  string — so even the `?api_key=` fallback never reaches the uvicorn log. A reverse
+  proxy in front of uvicorn, however, *may* log the full URL; prefer the subprotocol there.
+
+Keys are compared in constant time (`secrets.compare_digest`), so timing attacks can't
+leak the value.
 
 In every example below, replace `<ASSISTANT_API_KEY>` with the value from your
 `backend/.env.dev`.
@@ -156,9 +171,13 @@ last message plus `lang` / `route` from the final state.
 
 ## WS /ws/chat
 
-Protocol: open `ws://localhost:8000/ws/chat?api_key=<ASSISTANT_API_KEY>` (the WS analog of
-the `X-API-Key` header — see [Authentication](#authentication)), send **one** JSON
-envelope (same shape as `ChatRequest`), then read frames:
+Protocol: open `ws://localhost:8000/ws/chat` and offer the key as the WebSocket
+subprotocol (the WS analog of the `X-API-Key` header — see
+[Authentication](#authentication)):
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/chat', [ASSISTANT_API_KEY])
+```
 
 | Frame | Fields | Meaning |
 |---|---|---|
@@ -238,7 +257,8 @@ The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
   / `error` frames through the Vite dev proxy (no CORS involved).
 - The browser authenticates with the same shared key: `VITE_API_KEY`
   (`frontend/.env.local`) is sent as the `X-API-Key` header on the `/sessions` HTTP calls
-  and as `?api_key=` on the WebSocket — it must equal the backend's `ASSISTANT_API_KEY`.
+  and as the WebSocket **subprotocol** on `/ws/chat` — it must equal the backend's
+  `ASSISTANT_API_KEY`.
 - Since M11 the frontend also calls `GET /sessions/{id}/history` (load a conversation) and
   `DELETE /sessions/{id}` (delete it); the Vite proxy forwards `/sessions` too.
 

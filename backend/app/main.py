@@ -18,6 +18,7 @@ from app.api.deps import build_rate_limiter
 from app.api.routes import router
 from app.core.config import settings
 from app.core.llm import ROLE_CONFIG, get_chat_model
+from app.core.logging import configure_logging
 from app.core.observability import flush
 from app.graph.checkpointer import open_checkpointer
 from app.graph.graph import build_graph
@@ -35,6 +36,11 @@ async def lifespan(app: FastAPI):
         None. The function manages the startup and shutdown lifecycle of the app.
     """
     # --- startup ---------------------------------------------------------
+    # Configure the ROOT logger BEFORE anything logs: dev -> readable
+    # text, prod -> JSON. Runs every time the lifespan enters, so tests that
+    # boot the app via TestClient get logging too.
+    configure_logging()
+
     # open_checkpointer() is an ASYNC CONTEXT MANAGER: entering it opens the
     # SQLite connection and yields the saver; exiting it closes the connection.
     # We keep that context open for the WHOLE app lifetime, so the single

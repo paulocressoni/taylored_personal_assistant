@@ -15,6 +15,7 @@ from langchain_core.messages import HumanMessage
 from app.api.ratelimit import SlidingWindowLimiter
 from app.core.callbacks import RunTelemetry
 from app.core.config import settings
+from app.core.logging import set_log_context
 from app.core.observability import langfuse_metadata, new_langfuse_handler
 from app.graph.state import IPAState
 
@@ -113,6 +114,14 @@ def build_run_config(session_id: str, channel: str) -> dict[str, Any]:
         A dictionary containing the run configuration.
     """
     telemetry = RunTelemetry()
+    # Stamp the session/channel onto this request's log context BEFORE
+    # the run starts, so every log line for this turn (route-level info, node
+    # warnings, exceptions) carries the correlation id. FastAPI runs each
+    # request handler in its own asyncio task (a private contextvars copy), so
+    # this can never leak into the next request. Worker-thread logs inside
+    # nodes are best-effort: they only see it if LangGraph's executor copies
+    # the caller's context.
+    set_log_context(session_id=session_id, channel=channel)
     callbacks: list[BaseCallbackHandler] = [telemetry]
     langfuse = new_langfuse_handler()
     if langfuse is not None:
@@ -174,16 +183,19 @@ def require_rate_limit(
         )
 
 
-def check_ws_rate_limit(websocket: WebSocket) -> bool:
-    """True when the socket's api_key is still within its budget.
+def check_ws_rate_limit(websocket: WebSocket, key: str | None) -> bool:
+    """True when the socket's presented key is still within its budget.
 
     Must be called AFTER the socket is accepted AND authorized (a close frame
-    cannot be sent pre-accept). Reads ?api_key= from the query params — the
-    same credential HTTP sends as X-API-Key — so both transports share one
-    budget per key.
+    cannot be sent pre-accept). The key is passed in by the route because it
+    may have arrived as a WebSocket subprotocol rather than in the
+    query string — the route is the one that resolved it. Both transports
+    therefore share one budget per key.
 
     Args:
         websocket: The accepted WebSocket to check.
+        key: The presented API key (subprotocol token or ?api_key= value),
+            as resolved by the route. None when the client sent no key.
 
     Returns:
         bool: True if allowed; False when the key exceeded its budget.
@@ -192,5 +204,4 @@ def check_ws_rate_limit(websocket: WebSocket) -> bool:
     # small-limit instance. The real limiter is built ONCE in main.py's
     # lifespan and stored on app.state.
     limiter: SlidingWindowLimiter = websocket.app.state.rate_limiter
-    key = websocket.query_params.get("api_key") or "unknown"
-    return limiter.allow(key)
+    return limiter.allow(key or "unknown")

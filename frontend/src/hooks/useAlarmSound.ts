@@ -26,10 +26,31 @@ export function useAlarmSound() {
     return ctxRef.current
   }, [])
 
+  // Tear down whatever is currently ringing. stop() is guarded — calling it
+  // on an already-stopped oscillator throws in some browsers — and
+  // disconnect() releases the node so the Web Audio graph can be collected.
+  const stopCurrent = useCallback(() => {
+    const osc = oscRef.current
+    if (!osc) return
+    try {
+      osc.stop()
+    } catch {
+      // Already stopped / never started — nothing to tear down.
+    }
+    osc.disconnect()
+    oscRef.current = null
+  }, [])
+
   const play = useCallback(() => {
     const ctx = ensureCtx()
     if (!ctx) return
     if (ctx.state === 'suspended') void ctx.resume()
+
+    // Never stack tones. Each play() makes a fresh oscillator, but if
+    // the previous one is still sounding it must be stopped + disconnected
+    // FIRST — otherwise rapid play() calls leak active nodes until each one's
+    // own 1-second stop() fires.
+    stopCurrent()
 
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
@@ -40,12 +61,11 @@ export function useAlarmSound() {
     osc.start()
     osc.stop(ctx.currentTime + 1) // ring for 1 second
     oscRef.current = osc
-  }, [ensureCtx])
+  }, [ensureCtx, stopCurrent])
 
   const stop = useCallback(() => {
-    oscRef.current?.stop()
-    oscRef.current = null
-  }, [])
+    stopCurrent()
+  }, [stopCurrent])
 
   return { play, stop }
 }

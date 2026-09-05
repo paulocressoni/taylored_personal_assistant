@@ -236,3 +236,59 @@ def test_ws_rate_limited_connection_closed(client):
         ws2.receive_json()  # the {"type":"error"} frame
         ws2.receive_json()  # surfaces the close -> WebSocketDisconnect
     assert exc_info.value.code == 1013
+
+
+# --- Subprotocol auth + error-frame branches ---------------
+
+
+def test_ws_accepts_subprotocol_api_key(client):
+    # The key travels as a Sec-WebSocket-Protocol token — no ?api_key= at all.
+    with client.websocket_connect("/ws/chat", subprotocols=[API_KEY]) as ws:
+        ws.send_json({"session_id": "s1", "message": "hi"})
+        assert ws.receive_json()["type"] == "token"
+        done = ws.receive_json()
+        assert done["type"] == "done"
+        assert done["reply"] == "fake reply"
+
+
+def test_ws_invalid_payload_closes_1003(client):
+    # Malformed JSON -> server sends an error frame, then closes with 1003
+    # (Unsupported Data). The second receive surfaces the close as a
+    # WebSocketDisconnect.
+    from fastapi import WebSocketDisconnect
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect(f"/ws/chat?api_key={API_KEY}") as ws,
+    ):
+        ws.send_text("{not json")
+        assert ws.receive_json()["type"] == "error"
+        ws.receive_json()  # -> raises WebSocketDisconnect(1003)
+    assert exc_info.value.code == 1003
+
+
+def test_ws_timeout_closes_1013(client, monkeypatch):
+    # A graph run that outlives graph_timeout_seconds -> error frame, then
+    # close 1013 (Try Again Later). The fake stream sleeps far longer than the
+    # patched timeout so asyncio.timeout fires deterministically.
+    import asyncio
+
+    from fastapi import WebSocketDisconnect
+
+    class SlowFakeGraph(FakeGraph):
+        async def astream_events(self, initial, config=None, version="v2"):
+            await asyncio.sleep(1.0)
+            if False:
+                yield  # never yields a real event before the timeout fires
+
+    monkeypatch.setattr("app.api.routes.settings.graph_timeout_seconds", 0.1)
+    client.app.state.graph = SlowFakeGraph()
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect(f"/ws/chat?api_key={API_KEY}") as ws,
+    ):
+        ws.send_json({"session_id": "s1", "message": "hi"})
+        assert ws.receive_json()["type"] == "error"
+        ws.receive_json()  # -> raises WebSocketDisconnect(1013)
+    assert exc_info.value.code == 1013

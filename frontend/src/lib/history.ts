@@ -3,6 +3,8 @@
 // the bubbles the chat view renders. Kept OUT of the React hook on purpose:
 // pure functions like this are trivial to unit-test (no React, no fetch).
 
+import { newUuid } from './uuid'
+
 // The shape of one bubble in the chat view.
 export type ChatMessage = {
   id: string
@@ -32,7 +34,7 @@ export function sessionHistoryToChatMessages(messages: HistoryMessage[]): ChatMe
   const flushReply = () => {
     if (pendingReply) {
       bubbles.push({
-        id: crypto.randomUUID(),
+        id: newUuid(),
         role: 'assistant',
         content: pendingReply.content,
       })
@@ -43,7 +45,7 @@ export function sessionHistoryToChatMessages(messages: HistoryMessage[]): ChatMe
   for (const m of messages) {
     if (m.role === 'human') {
       flushReply() // previous turn is over -> emit only its final ai reply
-      bubbles.push({ id: crypto.randomUUID(), role: 'user', content: m.content })
+      bubbles.push({ id: newUuid(), role: 'user', content: m.content })
     } else if (m.role === 'ai') {
       pendingReply = m // overwrite: only the LAST ai of this turn survives
     }
