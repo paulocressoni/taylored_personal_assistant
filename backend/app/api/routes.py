@@ -23,7 +23,7 @@ from fastapi import (
 from langchain_core.messages import AIMessageChunk, BaseMessage
 
 from app._version import __version__
-from app.api.auth import require_api_key, require_ws_api_key
+from app.api.auth import authorize_ws, require_api_key
 from app.api.deps import (
     build_initial_state,
     build_run_config,
@@ -89,6 +89,11 @@ async def chat(
     )
     config = build_run_config(payload.session_id, channel="api")
 
+    # Build_run_config has stamped session/channel onto the log
+    # context, so the lines below (and any logger inside the run) now carry
+    # the correlation id.
+    logger.info("chat run start")
+
     # Cooperative cancellation, NOT an abort. asyncio.timeout only
     # cancels THIS coroutine's await. LangGraph runs its sync node code — the
     # DeepSeek HTTP call included — on a thread-executor thread, so firing
@@ -108,6 +113,12 @@ async def chat(
             status_code=503,
             detail="The assistant took too long. Please try again.",
         )
+
+    # Closing correlation line for this run — both route/lang land in
+    # the JSON/text record alongside session_id.
+    logger.info(
+        "chat run complete (route=%s lang=%s)", final.get("route"), final.get("lang")
+    )
 
     last = get_last_message(final["messages"])
 
@@ -193,31 +204,50 @@ async def chat_ws(websocket: WebSocket) -> None:
     """
     graph = websocket.app.state.graph
 
-    # Accept the WebSocket connection before receiving any messages.
-    await websocket.accept()
+    # Resolve the presented key BEFORE accepting. The client offers the
+    # API key as a Sec-WebSocket-Protocol (subprotocol) token — browsers
+    # cannot set headers on a WS handshake but CAN pass subprotocols — with
+    # ?api_key= kept as a documented fallback. authorize_ws returns the
+    # subprotocol the server must echo: RFC 6455 requires the server to select
+    # exactly one of the client's offered subprotocols, otherwise the browser
+    # aborts the handshake. So the choice has to be made pre-accept.
+    authorized, subprotocol = authorize_ws(websocket)
+    await websocket.accept(subprotocol=subprotocol)
 
-    # Validate the shared API key (sent as ?api_key= because browsers
-    # cannot set headers on a WS handshake). Accept first, then close with
-    # 1008 (policy violation) — a close frame can't be sent before accepting.
-    if not require_ws_api_key(websocket):
+    if not authorized:
+        # Never log the key itself (BE-09) — only the transport that was used.
+        logger.warning(
+            "ws auth rejected (transport=%s)",
+            "subprotocol" if subprotocol else "query",
+        )
         try:
-            await websocket.close(code=1008)
+            await websocket.close(code=1008)  # 1008 = Policy Violation
         except WebSocketDisconnect:
             pass  # client vanished while we were rejecting them
         return
 
-    # Per-key rate limit for sockets too (same budget as HTTP — both
-    # count against the presented API key). WS has no numeric 429, so the
-    # transport analog is an error frame + close 1013 ("Try Again Later").
-    if not check_ws_rate_limit(websocket):
+    # Per-key rate limit for sockets too (same budget as HTTP — both count
+    # against the presented API key). The key is the subprotocol token when
+    # that transport was used, else the ?api_key= query value.
+    presented_key = subprotocol or websocket.query_params.get("api_key")
+    if not check_ws_rate_limit(websocket, presented_key):
+        logger.warning("ws rate limit exceeded")
         try:
             await websocket.send_json(
                 {"type": "error", "detail": "rate limit exceeded"}
             )
-            await websocket.close(code=1013)
+            await websocket.close(code=1013)  # 1013 = Try Again Later
         except WebSocketDisconnect:
             pass  # client vanished while we were reporting the limit
         return
+
+    # BE-09: a WS handler is ONE long-lived task, so log the transport (never
+    # the key). The correlation session_id is stamped by build_run_config once
+    # the payload below yields a session_id, so later lines carry it too.
+    logger.info(
+        "ws chat connected (transport=%s)",
+        "subprotocol" if subprotocol else "query",
+    )
 
     try:
         # Receive the initial JSON payload from the client and validate it against
