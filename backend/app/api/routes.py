@@ -36,6 +36,7 @@ from app.api.schemas import (
     HistoryMessage,
     SessionHistoryResponse,
 )
+from app.core.config import settings
 from app.graph.utils import get_last_message
 
 logger = logging.getLogger(__name__)
@@ -88,7 +89,7 @@ async def chat(
 
     # Run with a hard deadline so a hung model can't hold a request forever.
     try:
-        async with asyncio.timeout(90):
+        async with asyncio.timeout(settings.graph_timeout_seconds):
             # The graph.ainvoke method runs the graph with the initial state and configuration.
             # it must wait for the async graph to complete and return the final state (async
             # like the checkpointer).
@@ -235,7 +236,7 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     try:
         # Stream events from the graph and send them to the client in real-time.
-        async with asyncio.timeout(90):
+        async with asyncio.timeout(settings.graph_timeout_seconds):
             async for event in graph.astream_events(
                 initial, config=config, version="v2"
             ):
