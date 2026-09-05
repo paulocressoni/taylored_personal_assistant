@@ -16,7 +16,7 @@ export interface paths {
      * @description Liveness probe for the Docker HEALTHCHECK.
      *
      *     Returns:
-     *         A dictionary indicating the health status.
+     *         A dictionary with the health status and the running app version.
      */
     get: operations['health_health_get']
     put?: never
@@ -40,16 +40,85 @@ export interface paths {
      * Chat
      * @description One-shot request/response: run the graph, return the final answer.
      *
+     *     M11: we call ``graph.ainvoke`` (async), matching the async checkpointer.
+     *     LangGraph runs the sync node code in a thread executor internally, so the
+     *     event loop is not blocked. Because ``build_run_config`` stamps the
+     *     session's thread_id into the config, this turn is MERGED into the saved
+     *     history for that session instead of starting from scratch.
+     *
      *     Args:
      *         payload: The request body containing the chat message and session ID.
      *         graph: The graph instance to use for processing the request.
      *
      *     Returns:
-     *         A ChatResponse object containing the assistant's reply, resolved language,
-     *         and routed intent.
+     *         A ChatResponse object containing the assistant's reply, resolved
+     *         language, and routed intent.
      */
     post: operations['chat_chat_post']
     delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/sessions/{session_id}/history': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get Session History
+     * @description Return every persisted message for a session, oldest first.
+     *
+     *     Reads the LATEST checkpoint for the thread straight from SQLite. This is
+     *     a debugging/inspection endpoint — the chat routes never call it; they use
+     *     the same checkpointer implicitly through graph.ainvoke/astream_events.
+     *
+     *     Args:
+     *         session_id: The thread_id that ties turns into one conversation.
+     *         checkpointer: The app-wide AsyncSqliteSaver (from startup).
+     *
+     *     Returns:
+     *         The session's full message history (empty if the session never ran).
+     */
+    get: operations['get_session_history_sessions__session_id__history_get']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/sessions/{session_id}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    post?: never
+    /**
+     * Delete Session
+     * @description Delete a conversation and all its checkpoints.
+     *
+     *     Calls ``checkpointer.adelete_thread``, which removes every checkpoint AND
+     *     pending write for that thread_id from the SQLite store. Deleting a thread
+     *     that never existed is a harmless no-op (zero rows removed), so we don't
+     *     bother returning a 404.
+     *
+     *     Args:
+     *         session_id: The thread_id of the conversation to delete.
+     *         checkpointer: The app-wide AsyncSqliteSaver (from startup).
+     *
+     *     Returns:
+     *         A small confirmation dict for the client.
+     */
+    delete: operations['delete_session_sessions__session_id__delete']
     options?: never
     head?: never
     patch?: never
@@ -106,6 +175,38 @@ export interface components {
       /** Detail */
       detail?: components['schemas']['ValidationError'][]
     }
+    /**
+     * HistoryMessage
+     * @description One persisted message in a session's history.
+     */
+    HistoryMessage: {
+      /**
+       * Role
+       * @description Message type: 'human', 'ai', 'tool' or 'system'.
+       */
+      role: string
+      /**
+       * Content
+       * @description Flattened text of the message.
+       */
+      content: string
+    }
+    /**
+     * SessionHistoryResponse
+     * @description Body of GET /sessions/{id}/history.
+     */
+    SessionHistoryResponse: {
+      /**
+       * Session Id
+       * @description The thread_id this history belongs to.
+       */
+      session_id: string
+      /**
+       * Messages
+       * @description All persisted messages for the session, oldest first.
+       */
+      messages: components['schemas']['HistoryMessage'][]
+    }
     /** ValidationError */
     ValidationError: {
       /** Location */
@@ -153,7 +254,9 @@ export interface operations {
   chat_chat_post: {
     parameters: {
       query?: never
-      header?: never
+      header?: {
+        'X-API-Key'?: string | null
+      }
       path?: never
       cookie?: never
     }
@@ -170,6 +273,74 @@ export interface operations {
         }
         content: {
           'application/json': components['schemas']['ChatResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  get_session_history_sessions__session_id__history_get: {
+    parameters: {
+      query?: never
+      header?: {
+        'X-API-Key'?: string | null
+      }
+      path: {
+        session_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SessionHistoryResponse']
+        }
+      }
+      /** @description Validation Error */
+      422: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['HTTPValidationError']
+        }
+      }
+    }
+  }
+  delete_session_sessions__session_id__delete: {
+    parameters: {
+      query?: never
+      header?: {
+        'X-API-Key'?: string | null
+      }
+      path: {
+        session_id: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': {
+            [key: string]: unknown
+          }
         }
       }
       /** @description Validation Error */
