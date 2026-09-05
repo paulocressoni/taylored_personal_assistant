@@ -11,7 +11,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "types": "openapi-typescript http://localhost:8000/openapi.json -o src/api/types.ts",
+    "types": "openapi-typescript http://localhost:8000/openapi.json -o src/api/types.ts && prettier --write src/api/types.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "preview": "vite preview",
