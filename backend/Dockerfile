@@ -33,12 +33,12 @@ RUN chown appuser:appuser /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-# Install curl for healthcheck and clean up apt cache to reduce image size
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
-
 USER appuser
 
-# Healthcheck to ensure the application is running
-HEALTHCHECK --interval=30s CMD curl -f http://localhost:8000/health || exit 1
+# Healthcheck to ensure the application is running.
+# python:slim ships NO curl, so use the stdlib one-liner instead of apt-get
+# installing curl (keeps the image smaller). This is the same pattern
+# documented in docs/docker-cheatsheet.md.
+HEALTHCHECK --interval=30s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
 
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
