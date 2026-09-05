@@ -75,6 +75,23 @@ export function useChatStream() {
     }
   }, [])
 
+  // TODO(behaviour): switching chat/conversation tabs while a reply is
+  // streaming ABANDONS that turn. resetChat() (called by switchSession and
+  // newSession) closes the WebSocket mid-flight; the backend's chat_ws
+  // handler then sees a WebSocketDisconnect and stops, so the LangGraph run
+  // is never completed — the answer is lost AND the Langfuse trace for that
+  // run is recorded as an ERROR trace, because a client-initiated disconnect
+  // looks like a failure to the tracing layer.
+  // Future fix directions: (1) don't kill the stream on a tab switch — let
+  // it finish in the background (the checkpointer already persists the reply
+  // per thread_id, so it would be there when the user returns); (2) send the
+  // backend an explicit cancel frame so it can finalize the run cleanly and
+  // label the trace "aborted" rather than "error"; and/or (3) on the backend,
+  // mark client-disconnect traces as "aborted" instead of "error". Note:
+  // closing the socket also does NOT stop the in-flight
+  // thread-executor model call — that keeps running until its own
+  // ROLE_CONFIG timeout.
+
   // Reset the on-screen chat to an empty conversation. Also closes any
   // in-flight stream so tokens from the OLD session can't write into the new
   // view. We clear the ref and flip isStreaming off HERE rather than waiting
