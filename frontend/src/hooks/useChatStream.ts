@@ -144,25 +144,39 @@ export function useChatStream() {
   // Delete a conversation. Also erase the checkpoint on the backend
   // via DELETE /sessions/{id} (which runs checkpointer.adelete_thread), so
   // the conversation's memory is truly gone, not just hidden from the UI.
+  // Fail-closed: if the server refuses (non-2xx) we keep the session
+  // listed and surface the error, instead of deleting it locally and letting
+  // it resurrect on the next history reload.
   const deleteSession = useCallback(
     async (id: string) => {
       const wasActive = id === activeSessionId
 
-      // 1) Erase the conversation's memory on the server (M11 checkpointer).
+      // 1) Erase the conversation's memory on the server (checkpointer).
       // The Vite dev server proxies /sessions -> http://localhost:8000, so
       // this is a same-origin request (no CORS). fetch() only rejects on
-      // NETWORK errors — an HTTP error status won't throw — so we still
-      // unlink the session locally either way (deliberate fail-open).
+      // NETWORK errors — an HTTP error status does NOT throw.
+      let response: Response | null = null
       try {
-        await fetch(`/sessions/${encodeURIComponent(id)}`, {
+        response = await fetch(`/sessions/${encodeURIComponent(id)}`, {
           method: 'DELETE',
           headers: authHeaders(),
         })
-      } catch {
-        console.error('failed to delete session on the backend', id)
+      } catch (err) {
+        // Network error (server unreachable). Keep the historical fail-open
+        // behaviour — unlink locally anyway — but log the real reason clearly.
+        console.error('could not reach the backend to delete session', id, err)
       }
 
-      // 2) Forget it in the browser and switch away if it was active.
+      // 2) Fail-closed: the server answered but REFUSED, so the conversation
+      // still exists in its checkpointer. Removing it now would just let it
+      // resurrect. Tell the user and keep it in the sidebar.
+      if (response && !response.ok) {
+        setError(`Could not delete this conversation (server returned ${response.status}).`)
+        return
+      }
+
+      // 3) Forget it in the browser and switch away if it was active.
+      //    Reached only on success (res.ok) OR on a pure network error.
       const next = removeSession(id) // returns the id that should be active now
       setActiveSessionId(next)
       refreshSessions()
