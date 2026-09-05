@@ -40,6 +40,7 @@ frontend/
 ├── vite.config.ts           # Vite + Tailwind + dev proxy (/ws, /sessions) + Vitest config
 ├── eslint.config.js         # ESLint flat config (lint, not format)
 ├── .prettierrc.json         # Prettier style (format)
+├── .env.example             # Env template — VITE_API_KEY (copy to .env.local)
 ├── index.html               # Page shell
 ├── tsconfig*.json           # TypeScript project references
 └── src/
@@ -79,13 +80,23 @@ frontend/
    npm run types        # needs the backend on :8000 → writes src/api/types.ts
    ```
 
-3. Start the dev server:
+3. Set the shared API key — the backend authenticates every route except `/health` with
+   `ASSISTANT_API_KEY`. Copy the env template and fill it in with that **same** value
+   (the hook sends it as `X-API-Key` on HTTP and `?api_key=` on the WebSocket):
+
+   ```powershell
+   Copy-Item .env.example .env.local   # then set VITE_API_KEY=<ASSISTANT_API_KEY>
+   ```
+
+   A mismatch → `401` on HTTP and socket close `1008` on WS (see "Auth" below).
+
+4. Start the dev server:
 
    ```powershell
    npm run dev          # Vite on http://localhost:5173
    ```
 
-4. Open `http://localhost:5173` and chat. Tokens stream in visibly, one at a time.
+5. Open `http://localhost:5173` and chat. Tokens stream in visibly, one at a time.
 
 The Vite dev server proxies `/ws`, `/openapi.json`, `/sessions`, and `/health` to a
 backend URL (`vite.config.ts`). That's why the browser only ever talks to `:5173` — no
