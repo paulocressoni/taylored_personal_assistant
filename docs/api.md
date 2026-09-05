@@ -240,6 +240,26 @@ The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
   `max_retries` in `ROLE_CONFIG` (`backend/app/core/llm.py`), so a hung upstream cannot
   block a thread forever.
 
+### Timeouts are cooperative, not an abort
+
+`POST /chat` and `WS /ws/chat` wrap the graph run in
+`asyncio.timeout(settings.graph_timeout_seconds)` (default 90s). Important: this only
+cancels the route's `await`. LangGraph runs the sync node code — including the DeepSeek
+HTTP call — on a **thread-executor thread**, so when the timeout fires the request/socket
+is released but the model call keeps running on its thread until it finishes or hits its
+own bound. Consequences:
+
+- `graph_timeout_seconds` is a coarse request-level safety net: it stops a hung run from
+  holding a request (or socket) open forever, returning `503` on `POST /chat` or closing
+  the socket with `1013` on `WS /ws/chat`.
+- The **real bound on an in-flight model call** is the per-role
+  `ROLE_CONFIG[role]["timeout"]` (currently 10s) in `backend/app/core/llm.py`. That is
+  the timeout the `ChatDeepSeek` HTTP client actually enforces per call and raises as an
+  error mid-graph. Because `max_retries` is 2, worst-case wall time per role is a few ×
+  its timeout.
+- Do not rely on `asyncio.timeout` to abort upstream work. If a single model call must
+  return sooner, lower that role's `ROLE_CONFIG["timeout"]` instead.
+
 ## Testing the API layer (no DeepSeek)
 
 `backend/tests/test_api.py` uses FastAPI's `TestClient` and a duck-typed `FakeGraph`

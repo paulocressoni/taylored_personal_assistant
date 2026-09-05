@@ -87,7 +87,14 @@ async def chat(
     )
     config = build_run_config(payload.session_id, channel="api")
 
-    # Run with a hard deadline so a hung model can't hold a request forever.
+    # Cooperative cancellation, NOT an abort. asyncio.timeout only
+    # cancels THIS coroutine's await. LangGraph runs its sync node code — the
+    # DeepSeek HTTP call included — on a thread-executor thread, so firing
+    # this timeout releases the HTTP request but does NOT stop the in-flight
+    # model call: it keeps occupying its thread until it finishes or hits its
+    # own bound. The REAL per-call bound is ROLE_CONFIG[role]["timeout"]
+    # (app/core/llm.py), enforced by the ChatDeepSeek client; this deadline is
+    # only a coarse request-level safety net.
     try:
         async with asyncio.timeout(settings.graph_timeout_seconds):
             # The graph.ainvoke method runs the graph with the initial state and configuration.
@@ -235,7 +242,10 @@ async def chat_ws(websocket: WebSocket) -> None:
     completed = False  # True only when the root on_chain_end is seen
 
     try:
-        # Stream events from the graph and send them to the client in real-time.
+        # Same cooperative-cancellation caveat as POST /chat: this
+        # timeout cancels the stream's await, not the in-flight model call on
+        # its thread-executor thread. ROLE_CONFIG's per-role timeout is the
+        # real bound on each DeepSeek call.
         async with asyncio.timeout(settings.graph_timeout_seconds):
             async for event in graph.astream_events(
                 initial, config=config, version="v2"
