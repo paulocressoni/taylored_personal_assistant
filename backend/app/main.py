@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app._version import __version__
+from app.api.deps import build_rate_limiter
 from app.api.routes import router
 from app.core.config import settings
 from app.core.llm import ROLE_CONFIG, get_chat_model
@@ -39,8 +40,17 @@ async def lifespan(app: FastAPI):
     # We keep that context open for the WHOLE app lifetime, so the single
     # saver instance is alive for every request and is closed at shutdown.
     async with open_checkpointer() as checkpointer:
+        # Store the checkpointer and graph on app.state so every request can read
+        # them via Depends(get_graph) / Depends(get_checkpointer). We never
+        # recompile the graph or reopen the checkpointer per-request.
         app.state.checkpointer = checkpointer
+
+        # Build the LangGraph graph ONCE at startup and store it on app.state. The
+        # graph is a callable that takes an IPAState and returns an IPAState.
         app.state.graph = build_graph(checkpointer=checkpointer)
+
+        # Pprocess-wide per-key rate limiter (in-memory, single worker).
+        app.state.rate_limiter = build_rate_limiter()
 
         # Pre-warm the @cache'd chat models (they're created lazily inside the
         # nodes). The FIRST request now skips the one-time model construction.

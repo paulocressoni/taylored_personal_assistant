@@ -31,8 +31,12 @@ def main() -> None:
     user_input = " ".join(sys.argv[1:])
     session_id = uuid.uuid4().hex
 
-    # The initial state seeds every field. The user's text becomes a
-    # HumanMessage so the responder model sees a proper message list.
+    # The initial state seeds every field EXCEPT ``lang``: on a
+    # continuation turn the checkpointer's persisted lang must survive;
+    # a stateless CLI run simply has none until detect_lang_node fills it.
+    # Kept in lockstep with build_initial_state in app/api/deps.py. The
+    # user's text becomes a HumanMessage so the responder model sees a
+    # proper message list.
     initial: IPAState = {
         "messages": [HumanMessage(content=user_input)],
         "user_input": user_input,
@@ -40,7 +44,6 @@ def main() -> None:
         "channel": "cli",
         "device_id": None,
         "principal": None,
-        "lang": None,
         "route": None,
         "pending_action": None,
         "llm_calls": 0,

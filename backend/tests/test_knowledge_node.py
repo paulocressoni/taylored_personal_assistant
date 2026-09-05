@@ -15,8 +15,9 @@ system prompt was prepended and that the real TOOLS were bound.
 """
 
 from conftest import FakeChatModel, make_state
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from app.core.config import settings
 from app.graph.nodes.knowledge import knowledge_node
 from app.prompts.knowledge import KNOWLEDGE_SYSTEM_PROMPT
 from app.tools.registry import TOOLS
@@ -50,3 +51,29 @@ def test_knowledge_node_binds_tools_and_prepends_system_prompt(patch_llm) -> Non
     assert isinstance(sent[0], SystemMessage)
     assert KNOWLEDGE_SYSTEM_PROMPT in sent[0].content
     assert state["messages"] == []
+
+
+def test_knowledge_node_caps_history_sent_to_model(patch_llm) -> None:
+    cap = settings.max_history_messages
+    history = [HumanMessage(content=f"m{i}") for i in range(cap + 5)]
+    fake = FakeChatModel(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculate", "args": {"expression": "1+1"}, "id": "1"}
+            ],
+        )
+    )
+    patch_llm(lambda role: fake)
+
+    state = make_state(user_input="What is 1+1?", messages=history)
+    result = knowledge_node(state, config=None)
+
+    (out_msg,) = result["messages"]
+    assert isinstance(out_msg, AIMessage)
+
+    sent = fake.calls[0]
+    assert isinstance(sent[0], SystemMessage)  # system prepended locally
+    assert len(sent) - 1 == cap  # only the capped window follows
+    assert sent[-1].content == f"m{cap + 4}"  # newest message preserved
+    assert state["messages"] == history  # persisted history untouched

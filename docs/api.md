@@ -84,6 +84,29 @@ key as a query parameter instead of a header. Keys are compared in constant time
 In every example below, replace `<ASSISTANT_API_KEY>` with the value from your
 `backend/.env.dev`.
 
+## Rate limiting
+
+`POST /chat` and `WS /ws/chat` are rate-limited **per API key** with an in-memory
+sliding-window limiter (`backend/app/api/ratelimit.py`). HTTP and WS share one budget
+per key because both present the same `ASSISTANT_API_KEY` credential.
+
+| Setting | Env var | Default | Meaning |
+|---|---|---|---|
+| `rate_limit_requests` | `RATE_LIMIT_REQUESTS` | `30` | Max requests per key per window |
+| `rate_limit_window_seconds` | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding window length (s) |
+
+- **HTTP** (`POST /chat`): over budget → `429 Too Many Requests`, with a `Retry-After`
+  header. Auth still runs first, so bad/missing keys get `401`, never `429`.
+- **WebSocket** (`WS /ws/chat`): over budget → an
+  `{"type":"error","detail":"rate limit exceeded"}` frame, then the socket closes with
+  code `1013` (Try Again Later). WS has no numeric 429; the error frame + close code is
+  the analog.
+- **Scope & caveats**: in-memory and per-process — counts reset on restart and are not
+  shared across workers, so this is a dev-grade guard, not a distributed one (revisit
+  before horizontal scaling). Because the service authenticates with ONE shared key, the
+  bucket is effectively per-deployment today; it becomes truly per-client once per-user
+  keys land. Set `RATE_LIMIT_REQUESTS=0` to disable.
+
 ## POST /chat
 
 Request body — `ChatRequest`:
@@ -120,7 +143,7 @@ Example:
 curl.exe -X POST http://localhost:8000/chat `
   -H "Content-Type: application/json" `
   -H "X-API-Key: <ASSISTANT_API_KEY>" `
-  -d '{"session_id":"s1","message":"hello"}'
+  -d "{\`"session_id\`":\`"s1\`",\`"message\`":\`"hello\`"}"
 ```
 
 **How it works:** Pydantic validates the body at the boundary (a 422 is returned without
@@ -239,6 +262,26 @@ The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
 - **Timeouts:** every role now carries a per-model `timeout`, `max_tokens` budget, and
   `max_retries` in `ROLE_CONFIG` (`backend/app/core/llm.py`), so a hung upstream cannot
   block a thread forever.
+
+### Timeouts are cooperative, not an abort
+
+`POST /chat` and `WS /ws/chat` wrap the graph run in
+`asyncio.timeout(settings.graph_timeout_seconds)` (default 90s). Important: this only
+cancels the route's `await`. LangGraph runs the sync node code — including the DeepSeek
+HTTP call — on a **thread-executor thread**, so when the timeout fires the request/socket
+is released but the model call keeps running on its thread until it finishes or hits its
+own bound. Consequences:
+
+- `graph_timeout_seconds` is a coarse request-level safety net: it stops a hung run from
+  holding a request (or socket) open forever, returning `503` on `POST /chat` or closing
+  the socket with `1013` on `WS /ws/chat`.
+- The **real bound on an in-flight model call** is the per-role
+  `ROLE_CONFIG[role]["timeout"]` (currently 10s) in `backend/app/core/llm.py`. That is
+  the timeout the `ChatDeepSeek` HTTP client actually enforces per call and raises as an
+  error mid-graph. Because `max_retries` is 2, worst-case wall time per role is a few ×
+  its timeout.
+- Do not rely on `asyncio.timeout` to abort upstream work. If a single model call must
+  return sooner, lower that role's `ROLE_CONFIG["timeout"]` instead.
 
 ## Testing the API layer (no DeepSeek)
 

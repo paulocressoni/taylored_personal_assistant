@@ -75,6 +75,23 @@ export function useChatStream() {
     }
   }, [])
 
+  // TODO(behaviour): switching chat/conversation tabs while a reply is
+  // streaming ABANDONS that turn. resetChat() (called by switchSession and
+  // newSession) closes the WebSocket mid-flight; the backend's chat_ws
+  // handler then sees a WebSocketDisconnect and stops, so the LangGraph run
+  // is never completed — the answer is lost AND the Langfuse trace for that
+  // run is recorded as an ERROR trace, because a client-initiated disconnect
+  // looks like a failure to the tracing layer.
+  // Future fix directions: (1) don't kill the stream on a tab switch — let
+  // it finish in the background (the checkpointer already persists the reply
+  // per thread_id, so it would be there when the user returns); (2) send the
+  // backend an explicit cancel frame so it can finalize the run cleanly and
+  // label the trace "aborted" rather than "error"; and/or (3) on the backend,
+  // mark client-disconnect traces as "aborted" instead of "error". Note:
+  // closing the socket also does NOT stop the in-flight
+  // thread-executor model call — that keeps running until its own
+  // ROLE_CONFIG timeout.
+
   // Reset the on-screen chat to an empty conversation. Also closes any
   // in-flight stream so tokens from the OLD session can't write into the new
   // view. We clear the ref and flip isStreaming off HERE rather than waiting
@@ -144,25 +161,39 @@ export function useChatStream() {
   // Delete a conversation. Also erase the checkpoint on the backend
   // via DELETE /sessions/{id} (which runs checkpointer.adelete_thread), so
   // the conversation's memory is truly gone, not just hidden from the UI.
+  // Fail-closed: if the server refuses (non-2xx) we keep the session
+  // listed and surface the error, instead of deleting it locally and letting
+  // it resurrect on the next history reload.
   const deleteSession = useCallback(
     async (id: string) => {
       const wasActive = id === activeSessionId
 
-      // 1) Erase the conversation's memory on the server (M11 checkpointer).
+      // 1) Erase the conversation's memory on the server (checkpointer).
       // The Vite dev server proxies /sessions -> http://localhost:8000, so
       // this is a same-origin request (no CORS). fetch() only rejects on
-      // NETWORK errors — an HTTP error status won't throw — so we still
-      // unlink the session locally either way (deliberate fail-open).
+      // NETWORK errors — an HTTP error status does NOT throw.
+      let response: Response | null = null
       try {
-        await fetch(`/sessions/${encodeURIComponent(id)}`, {
+        response = await fetch(`/sessions/${encodeURIComponent(id)}`, {
           method: 'DELETE',
           headers: authHeaders(),
         })
-      } catch {
-        console.error('failed to delete session on the backend', id)
+      } catch (err) {
+        // Network error (server unreachable). Keep the historical fail-open
+        // behaviour — unlink locally anyway — but log the real reason clearly.
+        console.error('could not reach the backend to delete session', id, err)
       }
 
-      // 2) Forget it in the browser and switch away if it was active.
+      // 2) Fail-closed: the server answered but REFUSED, so the conversation
+      // still exists in its checkpointer. Removing it now would just let it
+      // resurrect. Tell the user and keep it in the sidebar.
+      if (response && !response.ok) {
+        setError(`Could not delete this conversation (server returned ${response.status}).`)
+        return
+      }
+
+      // 3) Forget it in the browser and switch away if it was active.
+      //    Reached only on success (res.ok) OR on a pure network error.
       const next = removeSession(id) // returns the id that should be active now
       setActiveSessionId(next)
       refreshSessions()
@@ -226,12 +257,18 @@ export function useChatStream() {
             break
 
           case 'token':
-            // Append this token to the assistant message we created above.
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id ? { ...m, content: m.content + frame.content } : m,
-              ),
-            )
+            // Rebuild the array but REPLACE only the streaming
+            // assistant bubble (always the last element we appended) — no
+            // .map() over the whole list every token. Unchanged messages keep
+            // their object identity, so memoized rows in MessageList skip
+            // re-rendering; only this bubble updates.
+            setMessages((prev) => {
+              const i = prev.length - 1
+              if (i < 0 || prev[i].id !== assistantMsg.id) return prev
+              const next = prev.slice() // one new array, untouched items keep refs
+              next[i] = { ...next[i], content: next[i].content + frame.content }
+              return next
+            })
             break
 
           // The backend can send an error frame at any time. Stop streaming.
@@ -243,13 +280,17 @@ export function useChatStream() {
 
           // The backend sends a "done" frame when the reply is complete.
           case 'done':
-            // If no tokens arrived (backend fell back to the final state),
-            // fill in the final reply so the bubble isn't empty.
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id && m.content === '' ? { ...m, content: frame.reply } : m,
-              ),
-            )
+            // Same in-place update as tokens — only fill the bubble if
+            // it is still empty (no tokens arrived and the backend fell back
+            // to the final state).
+            setMessages((prev) => {
+              const i = prev.length - 1
+              if (i < 0 || prev[i].id !== assistantMsg.id) return prev
+              if (prev[i].content !== '') return prev
+              const next = prev.slice()
+              next[i] = { ...next[i], content: frame.reply }
+              return next
+            })
             setLang(frame.lang)
             setRoute(frame.route)
             setIsStreaming(false)

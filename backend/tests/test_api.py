@@ -175,7 +175,7 @@ def test_delete_session_requires_api_key(client):
     assert r.status_code == 401
 
 
-# --- BE-01: auth ---------------------------------------------------------
+# --- auth ---------------------------------------------------------
 
 
 def test_chat_requires_api_key(client):
@@ -197,3 +197,42 @@ def test_ws_requires_api_key(client):
     ):
         ws.receive_json()
     assert exc_info.value.code == 1008
+
+
+# --- per-key rate limiting -----------------------------------------
+
+
+def test_chat_rate_limited_returns_429(client):
+    from app.api.ratelimit import SlidingWindowLimiter
+
+    client.app.state.rate_limiter = SlidingWindowLimiter(limit=2, window_seconds=60)
+    payload = {"session_id": "s1", "message": "hello"}
+    for _ in range(2):
+        r = client.post("/chat", json=payload, headers={"X-API-Key": API_KEY})
+        assert r.status_code == 200
+    r = client.post("/chat", json=payload, headers={"X-API-Key": API_KEY})
+    assert r.status_code == 429
+    assert "Retry-After" in r.headers
+
+
+def test_ws_rate_limited_connection_closed(client):
+    from fastapi import WebSocketDisconnect
+
+    from app.api.ratelimit import SlidingWindowLimiter
+
+    client.app.state.rate_limiter = SlidingWindowLimiter(limit=1, window_seconds=60)
+
+    # First connection is within budget and streams a normal turn.
+    with client.websocket_connect(f"/ws/chat?api_key={API_KEY}") as ws:
+        ws.send_json({"session_id": "s1", "message": "hi"})
+        assert ws.receive_json()["type"] == "token"
+        assert ws.receive_json()["type"] == "done"
+
+    # Second connection exceeds the budget: error frame, then close 1013.
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect(f"/ws/chat?api_key={API_KEY}") as ws2,
+    ):
+        ws2.receive_json()  # the {"type":"error"} frame
+        ws2.receive_json()  # surfaces the close -> WebSocketDisconnect
+    assert exc_info.value.code == 1013
