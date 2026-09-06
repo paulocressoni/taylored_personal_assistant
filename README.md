@@ -413,7 +413,7 @@ make dev-up                  # full compose stack with hot reload (Linux/macOS)
 # Backend only, no Docker:  make dev-local
 ```
 
-Then: `curl.exe http://localhost:8000/health` → `{"status":"ok","version":"0.2.0"}`, or open
+Then: `curl.exe http://localhost:8000/health` → `{"status":"ok","version":"<current version>"}`, or open
 the interactive docs at `http://localhost:8000/docs`. Full reference in [docs/api.md](docs/api.md).
 
 ---
