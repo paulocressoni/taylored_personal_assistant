@@ -33,22 +33,44 @@ POSIX shell (`bash`) — use Git Bash on Windows.
 - feat: -> MINOR  (1.2.3 -> 1.3.0)
 - feat! / BREAKING CHANGE: -> MAJOR (1.2.3 -> 2.0.0)
 
-## Releasing a new version (M12)
+## Releasing a new version (automated with release-please)
 
-The app version is stored in exactly ONE place — `backend/pyproject.toml`
-(`[project].version`) — and exposed at runtime via `backend/app/_version.py`
-(`__version__`), which `app/main.py` and the `/health` endpoint read.
-`frontend/package.json` mirrors it for display only (the UI footer reads the real
-value from `/health`, so it can't drift). The git tag is the release identifier;
-Compose image tags are derived from `_version.py` via the Makefile's `APP_VERSION`.
+Version numbers and CHANGELOG entries are generated FROM commit history — no
+manual version bumps, no hand-pushed tags. release-please owns the release PR,
+the git tag and the GitHub Release.
 
-Release steps:
-1. Bump `version` in `backend/pyproject.toml` AND `__version__` in
-   `backend/app/_version.py` (and `frontend/package.json` for display),
-   e.g. 0.1.0 -> 0.2.0.
-2. Commit with a conventional message, then tag:
-   `git tag -a v0.2.0 -m "Release v0.2.0 - <summary>"`.
-3. Push the branch and the tag (`git push origin <branch>` + `git push origin v0.2.0`).
+The single version is mirrored across three files that release-please keeps in
+sync inside the release PR it opens:
+  - `backend/pyproject.toml` -> `[project].version` (authoritative value)
+  - `backend/app/_version.py` -> `__version__` (read at runtime by `app.main`,
+    `/health`, and the frontend footer; the Makefile derives `APP_VERSION` from
+    it for image tags)
+  - `frontend/package.json` + `frontend/package-lock.json` -> display-only mirror
+
+How a release happens:
+1. Merge conventional-commit PRs into `main` as usual
+   (`fix:` -> PATCH, `feat:` -> MINOR, `feat!:`/`BREAKING CHANGE:` -> MAJOR).
+2. On the next push to `main`, the release-please GitHub Action
+   (`.github/workflows/release-please.yml`) scans commits since the last
+   `vX.Y.Z` tag and opens a "release PR" proposing the next SemVer version,
+   an auto-generated `CHANGELOG.md` entry, and the version bumps above.
+3. Merge that release PR. release-please creates the `vX.Y.Z` git tag and a
+   matching GitHub Release.
+
+Config:
+  - `release-please-config.json` — single unified version via the root "."
+    package; `extra-files` lists every file release-please rewrites.
+  - `.release-please-manifest.json` — last released version (currently 0.2.0).
+  - `.github/workflows/release-please.yml` — the automation itself.
+
+Notes:
+- The `# x-release-please-version` marker on the `__version__` line in
+  `backend/app/_version.py` tells release-please which line to rewrite.
+- No release PR opens for `chore`/`docs`/`ci` commits — only feat/fix/breaking
+  changes drive a bump.
+- The workflow needs the `RELEASE_PLEASE_TOKEN` secret (fine-grained PAT with
+  Contents + Pull requests write access) so CI runs on the release PR and it can
+  merge into the protected `main` branch.
 
 ## Workflow
 1. git checkout -b feat/your-feature

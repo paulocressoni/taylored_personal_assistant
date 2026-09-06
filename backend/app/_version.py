@@ -1,4 +1,4 @@
-"""Application version — single source of truth (M12).
+"""Application version — single source of truth.
 
 Every runtime consumer of the version imports ``__version__`` from here
 instead of hardcoding it:
@@ -6,9 +6,9 @@ instead of hardcoding it:
   - the /health endpoint (``app.api.routes``)
   - the frontend footer (fetched from /health at runtime)
 
-Keep this in sync with two places when releasing:
-  1. ``backend/pyproject.toml`` -> ``[project].version``
-  2. the git tag ``v<version>`` (e.g. v0.2.0)
+Release automation (release-please) keeps this in sync with
+``backend/pyproject.toml`` (``[project].version``), ``frontend/package.json``
+and the ``v<version>`` git tag — no manual edits required at release time.
 
 Why a plain module and not ``importlib.metadata``?
   The Docker image does NOT pip-install the package — it only copies
@@ -16,4 +16,6 @@ Why a plain module and not ``importlib.metadata``?
   would raise inside the container. A module always works everywhere.
 """
 
-__version__ = "0.2.0"
+# The trailing marker is read by release-please's "generic" updater: it rewrites
+# the version value on THIS line only (see release-please-config.json extra-files).
+__version__ = "0.2.0"  # x-release-please-version

@@ -1,0 +1,27 @@
+name: release-please
+
+on:
+    push:
+        branches: [main]
+
+# release-please pushes a release-PR branch, and later creates the git tag +
+# GitHub Release. That needs write access to contents and pull-requests.
+permissions:
+    contents: write
+    pull-requests: write
+
+jobs:
+    release-please:
+        runs-on: ubuntu-latest
+        steps:
+            # Manifest mode is auto-detected: release-please reads
+            # release-please-config.json + .release-please-manifest.json from
+            # the repo root, so we deliberately do NOT pass a release-type
+            # input here — the config file drives everything.
+            #
+            # @v4 is the safe floor; this repo pins exact action versions
+            # (e.g. actions/checkout@v7.0.1). Once this runs once, tighten it
+            # to the exact v4.x.y tag from the releases page.
+            - uses: googleapis/release-please-action@v4
+              with:
+                  token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
