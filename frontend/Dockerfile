@@ -62,6 +62,12 @@ RUN npm run build
 # real build-time knob is ever needed, add an ARG here only then.
 FROM nginx:1.30.4-alpine AS prod
 
+# Pull the latest alpine security fixes at build time. The stock
+# nginx:alpine base image can lag behind alpine's package repository.
+# `apk upgrade` installs the already-released fixes, so the shipped image
+# starts clean instead of shipping a known-vulnerable base.
+RUN apk upgrade --no-cache
+
 # Replace the stock server block with ours (serves dist/ + proxies /ws,
 # /sessions, /health, /openapi.json to the backend service).
 COPY nginx.conf /etc/nginx/conf.d/default.conf
