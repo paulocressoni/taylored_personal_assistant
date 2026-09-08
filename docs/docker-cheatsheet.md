@@ -141,6 +141,14 @@ HIGH/CRITICAL), and pushes **two images** to GitHub Container Registry:
 Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
 **Golden rule:** the git tag IS the image tag IS the deployed version — never deploy `:latest`.
 
+> **Frontend auth key is baked at build time (M23):** the SPA must present the backend's
+> shared `ASSISTANT_API_KEY`, but Vite only inlines `VITE_*` vars at build time and
+> `frontend/.dockerignore` keeps `.env*` out of the build context. So the publish workflow
+> injects `VITE_API_KEY` as a build ARG from the **`VITE_API_KEY` GitHub repository secret**
+> (Settings → Secrets and variables → Actions), which must hold the same value as the
+> backend's `ASSISTANT_API_KEY`. Key changed? Update the secret **before** cutting the next
+> release tag, then re-pull the new `frontend:X.Y.Z`.
+
 ```powershell
 # Pull a release (requires GHCR auth; images are private by default)
 docker login ghcr.io -u paulocressoni

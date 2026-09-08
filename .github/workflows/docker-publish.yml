@@ -43,11 +43,13 @@ jobs:
                     - name: taylored-personal-assistant-backend
                       context: backend
                       target: runtime
+                      embed_key: 'false'
                       cache-scope: backend
                     - name: taylored-personal-assistant-frontend
                       context: frontend
                       target: prod
                       cache-scope: frontend
+                      embed_key: 'true'
         steps:
             # Checkout the repo
             - uses: actions/checkout@v7.0.1
@@ -98,10 +100,13 @@ jobs:
             # ONE tag (the SemVer) so the Trivy step below can scan it.
             - name: Build image (scan candidate, no push)
               uses: docker/build-push-action@v7.3.0
+              env:
+                  VITE_API_KEY: ${{ secrets.VITE_API_KEY }}
               with:
                   context: ${{ matrix.context }}
                   file: ${{ matrix.context }}/Dockerfile
                   target: ${{ matrix.target }}
+                  build-args: ${{ matrix.embed_key == 'true' && format('VITE_API_KEY={0}', env.VITE_API_KEY) || '' }}
                   push: false
                   load: true
                   tags: ${{ steps.vars.outputs.REGISTRY_IMAGE }}:${{ steps.vars.outputs.RELEASE_VERSION }}
@@ -126,10 +131,13 @@ jobs:
             # cache (and the just-built local cache), so this is fast.
             - name: Build and push release tags
               uses: docker/build-push-action@v7.3.0
+              env:
+                  VITE_API_KEY: ${{ secrets.VITE_API_KEY }}
               with:
                   context: ${{ matrix.context }}
                   file: ${{ matrix.context }}/Dockerfile
                   target: ${{ matrix.target }}
+                  build-args: ${{ matrix.embed_key == 'true' && format('VITE_API_KEY={0}', env.VITE_API_KEY) || '' }}
                   push: true
                   tags: ${{ steps.meta.outputs.tags }}
                   labels: ${{ steps.meta.outputs.labels }}

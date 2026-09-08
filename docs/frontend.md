@@ -113,6 +113,24 @@ package).
 (`src/hooks/useChatStream.ts`). It must equal the backend's `ASSISTANT_API_KEY`, or the
 backend answers `401` and closes unauthenticated sockets with code `1008`.
 
+**The key in the published image (M23):** Vite inlines `VITE_*` variables at **build
+time**, and `frontend/.dockerignore` excludes `.env*` from the Docker build context — so
+a `.env.local` on your laptop can **never** reach the container. The published prod image
+instead receives the key through a Docker **build ARG**: the `builder` stage declares
+`ARG VITE_API_KEY` + `ENV VITE_API_KEY=$VITE_API_KEY` before `npm run build`
+(`frontend/Dockerfile`), and the publish workflow feeds it from the **`VITE_API_KEY`
+GitHub Actions repository secret** (Settings → Secrets and variables → Actions). That
+secret must hold the same value as the backend's `ASSISTANT_API_KEY`.
+
+Two consequences worth knowing:
+
+- A plain `docker build frontend/` (local dev, PR scans) passes no ARG → no key baked →
+  the UI shows its "Authentication failed — check VITE_API_KEY" state. That is expected:
+  only a release built with the secret set can authenticate.
+- Changing the key means updating the repo secret **before** the next release tag, then
+  deploying the freshly built `frontend:X.Y.Z` — the key is frozen into the image, not
+  read at runtime.
+
 ## How streaming works (the mental model)
 
 - The backend runs **one turn per connection**: it accepts a `ChatRequest`, streams
