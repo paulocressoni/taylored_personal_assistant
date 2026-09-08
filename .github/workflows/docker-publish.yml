@@ -120,6 +120,7 @@ jobs:
                   severity: HIGH,CRITICAL
                   exit-code: '1'
                   ignore-unfixed: true
+                  version: v0.74.0
 
             # ---- Pass 2: PUSH the real tags. Layers come from the gha
             # cache (and the just-built local cache), so this is fast.
