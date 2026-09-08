@@ -78,8 +78,11 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 
 EXPOSE 80
 
-# nginx:alpine ships busybox wget (no curl). Check the STATIC server
-# itself — never /health, which is proxied to the backend and would flap
-# whenever the backend is down even though nginx is perfectly fine.
+# nginx:alpine ships busybox wget (no curl). Probe 127.0.0.1, NOT localhost:
+# we replaced the stock default.conf, so nginx binds IPv4 ONLY (no [::]:80
+# listener) — `localhost` resolves to ::1 first, which would make this
+# healthcheck report UNHEALTHY forever even though nginx is serving fine.
+# Also never probe /health: that path is proxied to the backend and would
+# flap whenever the backend restarts.
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-    CMD wget -q -O /dev/null http://localhost/ || exit 1
+    CMD wget -q -O /dev/null http://127.0.0.1/ || exit 1
