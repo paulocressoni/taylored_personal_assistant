@@ -10,6 +10,11 @@
 #   - `command:`       overrides base (scalar wins)
 #   - `environment:`   merges per key (LANGFUSE_BASE_URL overridden)
 #   - `ports:`/`volumes:` concatenate with base
+#
+# PROJECT NAME: this overlay is meant to run as `taylored-assistant-dev`
+# (-p in the Makefile / COMPOSE_PROJECT_NAME), giving dev its own volumes
+# and containers - fully separate from prod (taylored-assistant-prod), so
+# dev and prod never share conversation data.
 # ------------------------------------------------------------------
 
 services:

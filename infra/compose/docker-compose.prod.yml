@@ -18,12 +18,16 @@
 # pinned to :${APP_VERSION} and REQUIRES it — never :latest in prod.
 # `:latest` exists only for browsing convenience on GHCR.
 #
-# Usage (run from the repo root with Docker running):
+# Usage (run from the repo root with Docker running). PROD runs under its
+# OWN project name -p taylored-assistant-prod (separate volumes/networks/
+# containers from dev - conversation data is never shared):
 #   $env:APP_VERSION = '1.3.0'
-#   docker compose -f infra/compose/docker-compose.base.yml `
+#   docker compose -p taylored-assistant-prod `
+#                  -f infra/compose/docker-compose.base.yml `
 #                  -f infra/compose/docker-compose.prod.yml `
 #                  --env-file infra/compose/.env pull
-#   docker compose -f infra/compose/docker-compose.base.yml `
+#   docker compose -p taylored-assistant-prod `
+#                  -f infra/compose/docker-compose.base.yml `
 #                  -f infra/compose/docker-compose.prod.yml `
 #                  --env-file infra/compose/.env up -d --no-build --wait
 #
