@@ -1,4 +1,16 @@
+# frontend/.dockerignore — keep the build context tiny + secret-free
 node_modules
 dist
 .git
 *.log
+
+# Secrets must never enter a build context or image. The frontend needs
+# no .env at build time (dev BACKEND_URL is read by the Vite dev server
+# at runtime, never baked in), so exclude them all.
+.env*
+.env
+
+# Editor / local tooling junk (smaller uploads, faster builds)
+.vscode
+.idea
+coverage

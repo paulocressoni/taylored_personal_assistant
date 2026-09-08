@@ -36,7 +36,14 @@ services:
       - "8000:8000"
 
   frontend:
-    command: npm run dev
+    # Select the `dev` TARGET of frontend/Dockerfile (node + Vite). The
+    # Dockerfile is now multi-stage: `dev` for this overlay, prod nginx
+    # is the default target that CI/GHCR builds. base.yml supplies the
+    # build context; the overlay only overrides the target. The dev
+    # stage's CMD already runs `npm run dev`, so no `command:` override
+    # is needed here anymore.
+    build:
+      target: dev
     environment:
       # The vite proxy (vite.config.ts) forwards /ws, /openapi.json,
       # /sessions, /health to this target. Inside the container it must
