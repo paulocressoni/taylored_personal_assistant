@@ -1,13 +1,59 @@
-# infra/compose/docker-compose.prod.yml  (M12, sketch only)
-# Demonstrates the overlay pattern for prod. NOTE: real prod packaging
-# = frontend static assets bundled INTO the Python backend (repo's
-# "unified package" goal) — a future milestone. This is a placeholder.
+# infra/compose/docker-compose.prod.yml
+# ------------------------------------------------------------------
+# PROD overlay ON TOP OF base.yml. Contains ONLY prod differences.
+#
+# Merge semantics in action:
+#   - `image:`            overrides base's build/image with the CI-published
+#                         GHCR image for this release.
+#   - `pull_policy: always` forces docker compose to PULL that exact image
+#                         — prod never builds from the working tree and
+#                         never reuses a stale local copy.
+#   - `environment:`      merges per key (ENV: prod).
+#   - `ports:`            concatenate with base — only the browser-facing
+#                         port is published; the backend stays internal
+#                         (the browser reaches it ONLY through the
+#                         frontend's nginx proxy, M08 #4).
+#
+# GOLDEN RULE: the image tag IS the deployed version. The image ref is
+# pinned to :${APP_VERSION} and REQUIRES it — never :latest in prod.
+# `:latest` exists only for browsing convenience on GHCR.
+#
+# Usage (run from the repo root with Docker running):
+#   $env:APP_VERSION = '1.3.0'
+#   docker compose -f infra/compose/docker-compose.base.yml `
+#                  -f infra/compose/docker-compose.prod.yml `
+#                  --env-file infra/compose/.env pull
+#   docker compose -f infra/compose/docker-compose.base.yml `
+#                  -f infra/compose/docker-compose.prod.yml `
+#                  --env-file infra/compose/.env up -d --no-build --wait
+#
+#   `pull` first + `up --no-build` guarantees you run the exact published,
+#   Trivy-scanned image — never something rebuilt locally.
+# ------------------------------------------------------------------
 
 services:
   backend:
+    # Replace base's local image/build with the release image from GHCR.
+    # ${APP_VERSION:?...} fails fast instead of silently deploying a blank
+    # or default tag.
+    image: ghcr.io/paulocressoni/taylored-personal-assistant-backend:${APP_VERSION:?set APP_VERSION to the release you deploy (e.g. 1.3.0, never latest)}
+    pull_policy: always
     environment:
       ENV: prod
     env_file:
+      # Real secrets (DEEPSEEK_API_KEY, Langfuse keys) for prod.
       - ../../backend/.env.prod
+    # No published port: reachable only via the frontend nginx proxy. The
+    # base image's HEALTHCHECK + the checkpoints_data volume still apply
+    # (merged from base.yml, nothing to repeat here).
+
+  frontend:
+    image: ghcr.io/paulocressoni/taylored-personal-assistant-frontend:${APP_VERSION:?set APP_VERSION to the release you deploy (e.g. 1.3.0, never latest)}
+    pull_policy: always
     ports:
-      - "8000:8000"
+      # nginx inside the container listens on :80; publish to the host.
+      # 8080 avoids colliding with the dev stack (5173) / Langfuse (3000).
+      # base.yml already orders this service after backend is healthy —
+      # which also guarantees nginx can resolve the `backend` upstream at
+      # boot (nginx resolves proxy_pass hostnames at startup).
+      - "8080:80"
