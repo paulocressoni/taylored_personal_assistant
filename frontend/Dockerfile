@@ -50,6 +50,16 @@ RUN npm ci
 
 COPY . .
 
+# --- build-time auth key (prod only) ---------------------------------
+# The SPA must present the backend's shared key: VITE_API_KEY must equal the
+# backend's ASSISTANT_API_KEY. Vite only inlines VITE_* vars present at build
+# time. .dockerignore excludes .env* from the context, so a build ARG (fed
+# from a GitHub secret at publish time) is the only way it gets in.
+# Plain `docker build frontend/` with no arg => empty key => no auth baked
+# (the same behavior as today for dev images / PR scans).
+ARG VITE_API_KEY
+ENV VITE_API_KEY=$VITE_API_KEY
+
 # `npm run build` runs `tsc -b && vite build` — type-checks THEN bundles,
 # so a type error already fails the image build.
 RUN npm run build
