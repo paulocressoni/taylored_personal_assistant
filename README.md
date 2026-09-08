@@ -536,8 +536,9 @@ On every tagged release, CI builds, Trivy-scans, and pushes **two images** to GH
 `ghcr.io/paulocressoni/taylored-personal-assistant-frontend` (nginx serving the built UI
 and proxying `/ws` + API to the backend). Each is tagged `X.Y.Z`, `sha-<sha>`, and
 `latest` (browsing only). The git tag IS the image tag — prod runs the pinned `:X.Y.Z`,
-never `:latest`. Pull + run instructions live in the
-[Docker cheat sheet](docs/docker-cheatsheet.md).
+never `:latest`. The frontend image bakes the shared API key at build time from the
+`VITE_API_KEY` repo secret (must equal the backend's `ASSISTANT_API_KEY`). Pull + run
+instructions live in the [Docker cheat sheet](docs/docker-cheatsheet.md).
 
 ---
 
