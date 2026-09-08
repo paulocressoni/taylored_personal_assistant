@@ -114,7 +114,7 @@ M12 replaced the M08 "observability only" compose file with **one stack for the 
 |---|---|
 | `infra/compose/docker-compose.base.yml` | **Base** — every service in every environment (backend, frontend, the M08 Langfuse stack). No host ports here. |
 | `infra/compose/docker-compose.dev.yml` | **Dev overlay** — bind mounts for hot reload, `uvicorn --reload`, the Vite dev server, and the host ports (8000 / 5173 / 3000). |
-| `infra/compose/docker-compose.prod.yml` | **Prod overlay** (sketch) — the pattern to follow for release builds. |
+| `infra/compose/docker-compose.prod.yml` | **Prod overlay** — pulls the GHCR-published images pinned to `:${APP_VERSION}` (never `latest`); the frontend's nginx publishes the browser port and proxies API/WS to the backend. |
 
 **How overlays merge** (Compose `-f` rules): later files **override** scalars
 (`command`, …), `environment` maps merge per key, and `ports` / `volumes` lists
@@ -127,6 +127,36 @@ depends on `langfuse-web` with `required: false`, so it starts fine without them
 **Image tags:** each service builds and tags `taylored-assistant-<service>:${APP_VERSION:-latest}`.
 `APP_VERSION` is derived from `backend/app/_version.py` by the Makefile (`make dev-up`);
 unset → falls back to `latest`.
+
+### Published images (GHCR)
+
+On every tagged release (`vX.Y.Z`), CI builds, Trivy-scans (fails on fixable
+HIGH/CRITICAL), and pushes **two images** to GitHub Container Registry:
+
+| Image | Contains |
+|---|---|
+| `ghcr.io/paulocressoni/taylored-personal-assistant-backend` | FastAPI backend |
+| `ghcr.io/paulocressoni/taylored-personal-assistant-frontend` | nginx serving the built UI + reverse-proxying `/ws`, `/sessions`, `/health`, `/openapi.json` to the backend |
+
+Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
+**Golden rule:** the git tag IS the image tag IS the deployed version — never deploy `:latest`.
+
+```powershell
+# Pull a release (requires GHCR auth; images are private by default)
+docker login ghcr.io -u paulocressoni
+docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
+docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
+
+# Run the production stack: two containers, images from GHCR (never built).
+# `-p taylored-assistant-prod` gives prod its OWN compose project -> separate
+# volumes/networks/containers from dev (taylored-assistant-dev), so
+# conversation data is never shared. Both can even run at once (prod
+# publishes :8080; dev uses 8000/5173/3000).
+$env:APP_VERSION = '0.3.0'
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env pull
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env up -d --no-build --wait
+# open http://localhost:8080  (nginx) — chat streams over /ws through the proxy
+```
 
 ### One command (Linux / macOS — `make`, repo root)
 
@@ -142,16 +172,17 @@ unset → falls back to `latest`.
 ### The same commands in PowerShell (Windows)
 
 ```powershell
-# Full stack incl. Langfuse (the M12 command)
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+# Full stack incl. Langfuse (the M12 command). DEV runs as its own project
+# `taylored-assistant-dev` (-p) so its volumes never mix with prod.
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
 
 # Lightweight stack without Langfuse
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env up --build -d --wait
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env up --build -d --wait
 
 # Status / logs / stop
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability down
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability down
 ```
 
 Shortcut — set once per terminal, then plain `docker compose` works:
@@ -159,6 +190,7 @@ Shortcut — set once per terminal, then plain `docker compose` works:
 ```powershell
 $env:COMPOSE_FILE = "infra/compose/docker-compose.base.yml;infra/compose/docker-compose.dev.yml"
 $env:COMPOSE_ENV_FILES = "infra/compose/.env"
+$env:COMPOSE_PROJECT_NAME = "taylored-assistant-dev"   # isolate dev from prod
 docker compose --profile observability up --build -d --wait
 ```
 
@@ -198,10 +230,11 @@ Full observability guide: [observability.md](observability.md).
 Project-level cleanup (PowerShell — the `make` equivalents are `dev-down` / `dev-down -v`):
 
 ```powershell
-# stop the stack, keep named volumes
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down
+# stop the dev stack, keep named volumes
+# (dev runs as its own project, taylored-assistant-dev)
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down
 # ...or also delete the volumes (wipes the DB/trace data)
-docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down -v
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down -v
 ```
 
 **Full wipe — everything on the machine** (containers, volumes, images, networks):

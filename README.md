@@ -52,7 +52,7 @@ taylored_personal_assistant/
 │   └── compose/
 │       ├── docker-compose.base.yml       # Base stack: backend + frontend + Langfuse (M12)
 │       ├── docker-compose.dev.yml        # Dev overlay: bind mounts, reload, ports (M12)
-│       ├── docker-compose.prod.yml       # Prod overlay sketch (M12)
+│       ├── docker-compose.prod.yml       # Prod overlay: GHCR images pinned to APP_VERSION (M23)
 │       └── .env.example                  # Compose secrets template (M08)
 ├── backend/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
@@ -529,6 +529,16 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 > M08 note: this image runs the **assistant** only. Observability (self-hosted Langfuse)
 > is a **separate** Compose stack — see [Observability (M08)](#observability-m08--self-hosted-langfuse).
 
+### Published images
+
+On every tagged release, CI builds, Trivy-scans, and pushes **two images** to GHCR:
+`ghcr.io/paulocressoni/taylored-personal-assistant-backend` (the FastAPI backend) and
+`ghcr.io/paulocressoni/taylored-personal-assistant-frontend` (nginx serving the built UI
+and proxying `/ws` + API to the backend). Each is tagged `X.Y.Z`, `sha-<sha>`, and
+`latest` (browsing only). The git tag IS the image tag — prod runs the pinned `:X.Y.Z`,
+never `:latest`. Pull + run instructions live in the
+[Docker cheat sheet](docs/docker-cheatsheet.md).
+
 ---
 
 ## Observability (M08/M12) — self-hosted Langfuse
@@ -834,7 +844,7 @@ git commit                             # pre-commit hooks fire automatically
 | Phase | Scope | Status |
 |---|---|---|
 | 1. Core graph & API | LangGraph agent (M02–M06), FastAPI endpoints + WS streaming (M09), pytest suite | ✅ core done |
-| 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Docker + CI done; compose/CD in progress |
+| 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Images built, scanned & published to GHCR (M23); Mini PC deploy in progress |
 | 3. Observability & memory | Self-hosted Langfuse traces (M08), Qdrant/Chroma vector store | Langfuse done; vector memory future |
 | 4. Omni-channel UI | Vite/React chat UI with WS streaming (M10), voice via reSpeaker/ESP32 | chat UI done; voice future |
 | 5. Session memory | LangGraph SQLite checkpointing (M11) + frontend multi-session sidebar | ✅ done |
