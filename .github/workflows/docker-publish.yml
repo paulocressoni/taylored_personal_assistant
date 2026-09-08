@@ -1,0 +1,156 @@
+# .github/workflows/docker-publish.yml
+# ------------------------------------------------------------------
+# THE GOLDEN RULE IN ACTION: on a release tag, git tag == image tag ==
+# deployed version. Every image carries the SemVer (e.g. :1.3.0) and the
+# exact source SHA it was built from (:sha-<sha>). `:latest` is tagged
+# ONLY for convenience/browsing — never deploy it.
+#
+# Triggered by release-please pushing a `vX.Y.Z` tag (which happens when
+# a release PR is merged to main). Runs on tag pushes only; the PR/main
+# "does it build" gate lives in ci.yml.
+#
+# Per image, the order is deliberate:
+#   1. build locally (no push)      -> the exact artifact that WOULD ship
+#   2. Trivy scan that build        -> gate BEFORE anything is pushed
+#   3. only then push the tags      -> a failed scan never leaves a
+#                                      half-published :X.Y.Z on GHCR
+#   4. generate an SBOM artifact    -> traceable software inventory
+# ------------------------------------------------------------------
+
+name: publish-docker-images
+
+on:
+    push:
+        tags:
+            - 'v*'
+
+permissions:
+    contents: read
+    # GITHUB_TOKEN can push packages to GHCR because the repo owner is a
+    # personal account (no org PAT needed).
+    packages: write
+
+jobs:
+    build-and-push:
+        runs-on: ubuntu-latest
+        strategy:
+            # One broken image must not cancel the other's scan/publish.
+            fail-fast: false
+            matrix:
+                include:
+                    # Explicit build TARGET per image (never the implicit
+                    # last stage). gha cache scoped per image.
+                    - name: taylored-personal-assistant-backend
+                      context: backend
+                      target: runtime
+                      cache-scope: backend
+                    - name: taylored-personal-assistant-frontend
+                      context: frontend
+                      target: prod
+                      cache-scope: frontend
+        steps:
+            # Checkout the repo
+            - uses: actions/checkout@v7.0.1
+
+            # Compute the pieces every later step needs from the git tag:
+            #   RELEASE_VERSION = "1.3.0"        (git tag "v1.3.0" minus "v")
+            #   REGISTRY_IMAGE  = ghcr.io/<owner>/<image name>
+            # SemVer is NOT read from code: the git tag IS the version.
+            # Written via $GITHUB_OUTPUT (step outputs) so consumers use
+            # steps.vars.outputs.* — explicit and linter-friendly.
+            - name: Derive release version and image ref
+              id: vars
+              run: |
+                  echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+                  echo "REGISTRY_IMAGE=ghcr.io/${{ github.repository_owner }}/${{ matrix.name }}" >> "$GITHUB_OUTPUT"
+
+            # Authenticate to GHCR with the automatic GITHUB_TOKEN.
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v4.6.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            # Buildx is required for pushing to a registry and for the gha
+            # layer cache (type=gha) used across runs.
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4.3.0
+
+            # Turn the git tag into image tags + OCI labels (traceability:
+            # org.opencontainers.image.source/revision/created point back at
+            # the exact repo commit). type=semver strips the leading "v".
+            - name: Extract image metadata (tags, labels)
+              id: meta
+              uses: docker/metadata-action@v6.2.0
+              with:
+                  images: ${{ steps.vars.outputs.REGISTRY_IMAGE }}
+                  tags: |
+                      type=semver,pattern={{version}}
+                      type=sha,format=short
+                      type=raw,value=latest
+              #   -> ghcr.io/<owner>/<name>:1.3.0
+              #   -> ghcr.io/<owner>/<name>:sha-<shortsha>
+              #   -> ghcr.io/<owner>/<name>:latest   (browsing only)
+
+            # ---- Pass 1: BUILD the exact artifact, but DO NOT push it.
+            # `load: true` exports it into the runner's docker daemon under
+            # ONE tag (the SemVer) so the Trivy step below can scan it.
+            - name: Build image (scan candidate, no push)
+              uses: docker/build-push-action@v7.3.0
+              with:
+                  context: ${{ matrix.context }}
+                  file: ${{ matrix.context }}/Dockerfile
+                  target: ${{ matrix.target }}
+                  push: false
+                  load: true
+                  tags: ${{ steps.vars.outputs.REGISTRY_IMAGE }}:${{ steps.vars.outputs.RELEASE_VERSION }}
+                  cache-from: type=gha,scope=${{ matrix.cache-scope }}
+                  cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
+
+            # ---- THE GATE: fail the release if this image has any
+            # fixable HIGH/CRITICAL vulnerability. Runs BEFORE the push, so
+            # a failing scan can never leave a :X.Y.Z tag on GHCR that
+            # "shouldn't exist". ignore-unfixed: known-unfixable OS CVEs in
+            # base images don't red-flag the release (nothing to act on).
+            - name: Trivy vulnerability scan
+              uses: aquasecurity/trivy-action@v0.36.0
+              with:
+                  image-ref: ${{ steps.vars.outputs.REGISTRY_IMAGE }}:${{ steps.vars.outputs.RELEASE_VERSION }}
+                  severity: HIGH,CRITICAL
+                  exit-code: '1'
+                  ignore-unfixed: true
+                  version: v0.74.0
+
+            # ---- Pass 2: PUSH the real tags. Layers come from the gha
+            # cache (and the just-built local cache), so this is fast.
+            - name: Build and push release tags
+              uses: docker/build-push-action@v7.3.0
+              with:
+                  context: ${{ matrix.context }}
+                  file: ${{ matrix.context }}/Dockerfile
+                  target: ${{ matrix.target }}
+                  push: true
+                  tags: ${{ steps.meta.outputs.tags }}
+                  labels: ${{ steps.meta.outputs.labels }}
+                  cache-from: type=gha,scope=${{ matrix.cache-scope }}
+                  cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
+
+            # ---- SBOM: syft inventories every OS/package dependency in
+            # the published image. github-token lets syft pull the (private)
+            # image from GHCR. Produced per image as a build artifact.
+            - name: Generate SBOM
+              uses: anchore/sbom-action@v0.24.2
+              with:
+                  image: ${{ steps.vars.outputs.REGISTRY_IMAGE }}:${{ steps.vars.outputs.RELEASE_VERSION }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  output-file: ${{ matrix.name }}-sbom.spdx.json
+
+            # Upload the SBOM artifact so it can be downloaded from
+            # the release page. The artifact is named per image so the two
+            # artifacts can be distinguished.
+            - name: Upload SBOM artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ matrix.name }}-sbom
+                  path: ${{ matrix.name }}-sbom.spdx.json

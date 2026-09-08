@@ -71,6 +71,13 @@ Notes:
 - The workflow needs the `RELEASE_PLEASE_TOKEN` secret (fine-grained PAT with
   Contents + Pull requests write access) so CI runs on the release PR and it can
   merge into the protected `main` branch.
+- Merging the release PR also **publishes the container images automatically**: when
+  release-please creates the `vX.Y.Z` git tag, the `publish-docker-images` workflow
+  (`.github/workflows/docker-publish.yml`) builds, Trivy-scans (fails on fixable
+  HIGH/CRITICAL), and pushes **both** images to GHCR —
+  `ghcr.io/paulocressoni/taylored-personal-assistant-backend` and `...-frontend` —
+  tagged `X.Y.Z`, `sha-<sha>`, plus `latest` for browsing only. No manual step:
+  the git tag IS the image tag, and prod never deploys `:latest` (golden rule).
 
 ## Workflow
 1. git checkout -b feat/your-feature

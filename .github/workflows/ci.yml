@@ -178,3 +178,62 @@ jobs:
               uses: gitleaks/gitleaks-action@v3.0.0
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    # Build BOTH production images and fail on any fixable HIGH/CRITICAL
+    # vulnerability BEFORE they can ever reach main or a release. No push,
+    # no registry login — this is the "does it build and is it clean" gate
+    # that runs on every PR and main push. Mirrors exactly what the
+    # docker-publish workflow will do on a release tag.
+    docker-image:
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+        strategy:
+            # One broken image shouldn't cancel the other's scan.
+            fail-fast: false
+            matrix:
+                include:
+                    # Each image names its EXPLICIT build target (never the
+                    # implicit last stage). gha cache is scoped per image so
+                    # the two never overwrite each other's cache entries.
+                    - name: taylored-personal-assistant-backend
+                      context: backend
+                      target: runtime
+                      cache-scope: backend
+                    - name: taylored-personal-assistant-frontend
+                      context: frontend
+                      target: prod
+                      cache-scope: frontend
+        steps:
+            # Checkout the repo
+            - uses: actions/checkout@v7.0.1
+
+            # Buildx is required for the GitHub Actions layer cache
+            # (type=gha) that build-push-action reads/writes.
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4.3.0
+
+            # Build the image but DO NOT push. `load: true` exports it into
+            # the runner's docker daemon so the Trivy step can scan it.
+            - name: Build image (no push)
+              uses: docker/build-push-action@v7.3.0
+              with:
+                  context: ${{ matrix.context }}
+                  file: ${{ matrix.context }}/Dockerfile
+                  target: ${{ matrix.target }}
+                  load: true
+                  tags: ${{ matrix.name }}:ci
+                  cache-from: type=gha,scope=${{ matrix.cache-scope }}
+                  cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
+
+            # Fail the PR on any fixable HIGH/CRITICAL finding.
+            # `ignore-unfixed: true` means known-unfixable OS CVEs in the
+            # base images don't red-flag the build (they can't be acted on).
+            - name: Trivy vulnerability scan
+              uses: aquasecurity/trivy-action@v0.36.0
+              with:
+                  image-ref: ${{ matrix.name }}:ci
+                  severity: HIGH,CRITICAL
+                  exit-code: '1'
+                  ignore-unfixed: true
+                  version: v0.74.0

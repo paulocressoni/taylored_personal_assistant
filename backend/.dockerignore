@@ -1,8 +1,14 @@
-# M07: keep the build context tiny
+# backend/.dockerignore — keep the build context tiny + secret-free
 .venv
 __pycache__
 .git
 node_modules
+
+# Secrets must never enter a build context or image. The image is built
+# from committed, secret-free source only — .env.dev / .env.prod are
+# injected at runtime via compose env_file, never baked at build time.
+.env*
+.env
 
 # safety extras (build artifacts, caches, editor junk)
 *.pyc

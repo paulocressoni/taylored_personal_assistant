@@ -2,9 +2,11 @@
 # ------------------------------------------------------------------
 # BASE compose file: the WHOLE stack, environment-agnostic.
 #
-# Overlay model (merged with -f flags):
-#   docker compose -f base.yml -f dev.yml up     # dev (hot reload)
-#   docker compose -f base.yml -f prod.yml up    # prod (future)
+# Overlay model (merged with -f flags). Each environment pins its OWN
+# project name with -p (the `name:` below is a neutral fallback only):
+#   docker compose -p taylored-assistant-dev -f base.yml -f dev.yml up   # dev
+#   docker compose -p taylored-assistant-prod -f base.yml -f prod.yml up # prod
+# Distinct project names => dev/prod never share volumes or data.
 #
 # Merge rules relied on below:
 #   - later files OVERRIDE scalar values (command, etc.)
