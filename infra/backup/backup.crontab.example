@@ -1,0 +1,9 @@
+# /etc/cron.d/taylored-backup  (root-owned; no blank lines before this one)
+# Run the encrypted prod backup daily at 03:15, logging to the backup root.
+# REPO_ROOT must match your DeskMini checkout of this repo.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+REPO_ROOT=/opt/taylored-personal-assistant
+
+15 3 * * * root cd "$REPO_ROOT" && /usr/bin/python3 "$REPO_ROOT/infra/backup/backup.py" --config "$REPO_ROOT/infra/backup/backup.conf" >> /var/backups/taylored-assistant/backup.log 2>&1
