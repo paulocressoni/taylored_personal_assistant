@@ -248,6 +248,11 @@ docker compose --profile observability up --build -d --wait
   across restarts.
 - **Port conflict on 3000?** An older stack (e.g. the M08 `langfuse-dev` project) is
   still holding the port — stop it: `docker compose -p langfuse-dev down`.
+- **Langfuse first login** (headless-init admin, created once on first boot): dev
+  `dev@localhost.local` / `dev-password-123` (`.env.dev`); prod `admin@home.local` / the
+  `LANGFUSE_INIT_USER_PASSWORD` from `.env.prod` (`prod.yml` defaults; overridable via
+  `LANGFUSE_INIT_USER_EMAIL` / `LANGFUSE_INIT_USER_NAME`). See
+  [observability.md](observability.md#verify-it-works).
 
 Full observability guide: [observability.md](observability.md).
 

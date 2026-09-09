@@ -111,8 +111,19 @@ Then open `http://localhost:3000` → **Traces** → newest run. You should see 
 metadata shows the mid-run values the final `telemetry` node stamped on it
 (`route`, `lang`, `tools_called`).
 
-Login: use the `LANGFUSE_INIT_USER_*` values from `infra/compose/.env` (defaults:
-`dev@localhost.local` / `dev-password-123`).
+**First login** — the headless init (M08) creates the first admin user once, on first
+boot:
+
+| Environment | Email | Name | Password (matching env file) |
+|---|---|---|---|
+| dev | `dev@localhost.local` | `Dev Admin` | `LANGFUSE_INIT_USER_PASSWORD` in `infra/compose/.env.dev` (default `dev-password-123`) |
+| prod | `admin@home.local` | `Prod Admin` | `LANGFUSE_INIT_USER_PASSWORD` in `infra/compose/.env.prod` |
+
+The dev email/name are the `docker-compose.base.yml` defaults; the prod overlay
+(`docker-compose.prod.yml`) swaps them for `admin@home.local` / `Prod Admin`, both
+overridable via `LANGFUSE_INIT_USER_EMAIL` / `LANGFUSE_INIT_USER_NAME` in
+`infra/compose/.env.prod`. Langfuse creates the admin only on first boot — set these
+before that first start.
 
 ## How the wiring works — `backend/app/core/observability.py`
 

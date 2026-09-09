@@ -568,6 +568,7 @@ make dev-up                        # M12: full stack incl. Langfuse (observabili
 cd backend
 ENV=dev uv run python -m scripts.smoke_07_langfuse   # verify a trace lands
 # open http://localhost:3000 -> Traces -> newest run
+# first login (dev): dev@localhost.local / dev-password-123 — see docs/observability.md
 ```
 
 M12 Makefile targets: `make dev-up` (full stack incl. Langfuse) · `make dev-up-light`
