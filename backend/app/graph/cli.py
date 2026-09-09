@@ -49,6 +49,9 @@ def main() -> None:
         "llm_calls": 0,
         "tool_iterations": 0,
         "tools_called": [],  # One seeded so the reducer has a base
+        "tool_outcomes": [],  # Reducer base for the M28 per-tool outcome log
+        "permission_denials": [],  # Reducer base for the M28 denial log
+        "usage": None,
     }
 
     # One telemetry instance per run. "callbacks" makes the events fire for

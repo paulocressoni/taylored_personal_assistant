@@ -32,3 +32,16 @@ class IPAState(TypedDict):
     llm_calls: int
     tool_iterations: int
     tools_called: Annotated[list[str], operator.add]
+    # --- Observability additions ---
+    # One dict per tool INVOCATION, appended by tool_exec_node through the
+    # reducer so every ReAct iteration this turn is recorded, e.g.
+    # {"tool": "calculate", "ok": false, "error_type": "ValueError",
+    #  "denied": false, "duration_ms": 12.4}.
+    tool_outcomes: Annotated[list[dict], operator.add]
+    # Permission-denial records: {"tool": str, "reason": str,
+    # "user_id": str | None}. Empty until authorization lands.
+    permission_denials: Annotated[list[dict], operator.add]
+    # Per-run LLM usage totals, written ONCE by telemetry_node at the end of a
+    # run: {llm_calls, input_tokens, output_tokens, cache_hit_tokens,
+    # cache_miss_tokens, cache_hit_ratio, error_types}. Read via .get().
+    usage: dict | None

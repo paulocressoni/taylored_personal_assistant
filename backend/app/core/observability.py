@@ -20,7 +20,10 @@ from app.core.config import settings
 
 # Versions the SHAPE of the metadata we attach to traces — not the prompt
 # text (langfuse reserves `prompt_version` for its Prompt Management).
-TRACE_SCHEMA_VERSION = "1.0"
+# Bumped to 2.0 when tool_outcomes / permission_denials / usage / error
+# taxonomies were added; raise it again whenever the metadata shape changes
+# so old and new traces are distinguishable in dashboards.
+TRACE_SCHEMA_VERSION = "2.0"
 
 _client: Langfuse | None = None
 
@@ -66,27 +69,79 @@ def langfuse_metadata(
     return metadata
 
 
+def _error_taxonomy(tool_outcomes: list[dict[str, Any]]) -> dict[str, int]:
+    """Bucket failed tool calls into the dashboard error taxonomy.
+
+    Args:
+        tool_outcomes: The run's `tool_outcomes` state records.
+
+    Returns:
+        error_type name -> count for each failed, non-denied call (denials are
+        counted under their own metric, not as tool errors).
+    """
+    taxonomy: dict[str, int] = {}
+    for outcome in tool_outcomes:
+        if outcome.get("ok") or outcome.get("denied"):
+            continue
+        key = str(outcome.get("error_type") or "unknown")
+        taxonomy[key] = taxonomy.get(key, 0) + 1
+    return taxonomy
+
+
 def enrich_trace(state: dict[str, Any]) -> None:
     """Update trace metadata mid-run. Call from the FINAL node.
 
-    route/lang/tools_called are only decided mid-run, so they can't be in the
-    invoke-time metadata. propagate_attributes writes onto the OpenTelemetry
-    baggage of the current trace; the handler's root propagation context is
-    active for the whole run, so these reach the trace before it flushes.
+    route/lang/tools_called/tool_outcomes are only decided mid-run, so they
+    can't be in the invoke-time metadata. propagate_attributes writes onto the
+    OpenTelemetry baggage of the current trace; the handler's root propagation
+    context is active for the whole run, so these reach the trace before it
+    flushes. Everything attached here is JSON-serialisable because Langfuse
+    stores trace metadata as JSON (clicked straight into ClickHouse).
+
+    The `status:*` tags are low-cardinality and let the UI filter traces by
+    run health without parsing the metadata JSON; the full detail lives in the
+    metadata dicts for the SQL ground-truth queries.
     """
     if not settings.langfuse_ready:
         return
+    tool_outcomes = state.get("tool_outcomes") or []
+    tool_denials = sum(1 for o in tool_outcomes if o.get("denied"))
+    tool_failures = sum(
+        1 for o in tool_outcomes if not o.get("ok") and not o.get("denied")
+    )
+    usage = state.get("usage")
+    llm_error_types = (usage or {}).get("error_types") or {}
+
+    status_tags: list[str] = []
+    if llm_error_types:
+        status_tags.append("status:llm_error")
+    if tool_failures:
+        status_tags.append("status:tool_error")
+    if tool_denials or state.get("permission_denials"):
+        status_tags.append("status:permission_denied")
+    if not status_tags:
+        status_tags.append("status:tool_ok" if tool_outcomes else "status:ok")
+
     with propagate_attributes(
         trace_name=f"assistant:{state.get('route') or 'unknown'}",
         metadata={
             "route": state.get("route"),
             "lang": state.get("lang"),
             "tools_called": state.get("tools_called") or [],
+            "tool_outcomes": tool_outcomes,
+            "permission_denials": state.get("permission_denials") or [],
+            "tool_error_taxonomy": _error_taxonomy(tool_outcomes),
+            "llm_error_taxonomy": llm_error_types,
+            "usage": usage,
             "schema_version": TRACE_SCHEMA_VERSION,
-            "llm_calls": state.get("llm_calls", 0),
+            "llm_calls": int((usage or {}).get("llm_calls", state.get("llm_calls", 0))),
             "tool_iterations": state.get("tool_iterations", 0),
         },
-        tags=[f"env:{settings.env}", f"channel:{state.get('channel') or 'cli'}"],
+        tags=[
+            f"env:{settings.env}",
+            f"channel:{state.get('channel') or 'cli'}",
+            *status_tags,
+        ],
     ):
         pass
 
