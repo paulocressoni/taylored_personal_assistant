@@ -41,18 +41,20 @@ types:
 dev-local:
     cd $(BACKEND) && ENV=$(ENV) uv run uvicorn app.main:app --reload
 
-# --- Compose overlay plumbing (M12) --------------------------------------
+# --- Compose overlay plumbing (M12, M28) ---------------------------------
 # base.yml + an overlay are merged by Compose; --env-file feeds the
-# ${VAR:?...} secrets used by the Langfuse services (infra/compose/.env).
+# ${VAR:?...} secrets used by the Langfuse services. Each environment reads
+# its OWN secrets file, so dev and prod never share values (M28):
+#   dev  -> infra/compose/.env.dev   (copy of .env.dev.example)
+#   prod -> infra/compose/.env.prod  (copy of .env.prod.example)
 #   dev overlay  = docker-compose.dev.yml  -> BUILD from source, hot reload
 #   prod overlay = docker-compose.prod.yml -> PULL the GHCR images, never build
 COMPOSE_DIR := infra/compose
-ENV_FILE := $(COMPOSE_DIR)/.env
 # Each environment pins its OWN project name via -p (overrides base.yml's
 # neutral `name:`), so dev/prod volumes, networks and container names never
 # collide and they NEVER share conversation data.
-COMPOSE_DEV := docker compose -p taylored-assistant-dev -f $(COMPOSE_DIR)/docker-compose.base.yml -f $(COMPOSE_DIR)/docker-compose.dev.yml --env-file $(ENV_FILE)
-COMPOSE_PROD := docker compose -p taylored-assistant-prod -f $(COMPOSE_DIR)/docker-compose.base.yml -f $(COMPOSE_DIR)/docker-compose.prod.yml --env-file $(ENV_FILE)
+COMPOSE_DEV := docker compose -p taylored-assistant-dev -f $(COMPOSE_DIR)/docker-compose.base.yml -f $(COMPOSE_DIR)/docker-compose.dev.yml --env-file $(COMPOSE_DIR)/.env.dev
+COMPOSE_PROD := docker compose -p taylored-assistant-prod -f $(COMPOSE_DIR)/docker-compose.base.yml -f $(COMPOSE_DIR)/docker-compose.prod.yml --env-file $(COMPOSE_DIR)/.env.prod
 
 # ============================ DEV ============================
 # THE M12 command: whole stack (backend + frontend + Langfuse + DBs), built
@@ -80,18 +82,22 @@ dev-ps:
 # NOTE: dev/prod run under SEPARATE project names (taylored-assistant-dev /
 # taylored-assistant-prod, set above) so volumes/network/containers never
 # collide and conversation data is never shared. Both can even run at once
-# (prod publishes :8080; dev uses 8000/5173/3000).
+# (prod publishes :8080 + :3000; dev uses 8000/5173/3000).
 # NOTE: local dev images are tagged taylored-assistant-*; prod pulls the
 # published taylored-personal-assistant-{backend,frontend} from GHCR.
+# NOTE: prod reads its secrets from infra/compose/.env.prod (never .env.dev).
 
-# Pull the exact release images (never :latest).
+# Pull the exact release images (never :latest). --profile observability
+# includes the Langfuse stack (M28) — without it `pull` silently skips those
+# services and prod-up would have nothing to start.
 prod-pull:
-    $(COMPOSE_PROD) pull
+    $(COMPOSE_PROD) --profile observability pull
 
 # Pull + run the release. --no-build guarantees we never compile locally.
+# --profile observability brings up the full Langfuse stack on prod (M28).
 prod-up:
-    $(COMPOSE_PROD) pull
-    $(COMPOSE_PROD) up -d --no-build --wait
+    $(COMPOSE_PROD) --profile observability pull
+    $(COMPOSE_PROD) --profile observability up -d --no-build --wait
 
 prod-down:
     $(COMPOSE_PROD) down
