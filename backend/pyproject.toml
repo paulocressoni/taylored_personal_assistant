@@ -10,8 +10,10 @@ dependencies = [
     "langchain-openai>=1.5.1",
     "langfuse>=4.14.4",
     "langgraph>=1.2.11",
+    "langgraph-checkpoint-postgres==3.1.2",
     "langgraph-checkpoint-sqlite>=3.1.1",
     "lingua-language-detector>=2.2.0",
+    "psycopg[binary]==3.3.5",
     "pydantic-settings>=2.15.0",
     "uvicorn[standard]>=0.52.3",
 ]
