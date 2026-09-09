@@ -63,13 +63,19 @@ class Settings(BaseSettings):
     # (CFG-02 — test_langdetect.py guards the two from drifting).
     supported_languages: list[str] = SUPPORTED_LANGS
 
-    # --- Runtime knobs (BE-04 / BE-05) ---
-    # Where the SQLite checkpointer DB file is created. Relative paths resolve
-    # against the process CWD: backend/ when run locally, /app inside the
-    # Docker image (the compose named volume mounts over /app). A FILE (not
-    # ":memory:") survives both `uvicorn --reload` restarts and container
-    # recreation.
+    # --- Runtime knobs ---
+    # Dev conversation memory: the SQLite checkpointer DB file. Relative
+    # paths resolve against the process CWD (backend/ locally, /app inside
+    # the Docker image). A FILE (not ":memory:") survives both
+    # `uvicorn --reload` restarts and container recreation.
     checkpoint_db_path: str = "checkpoints.db"
+
+    # PROD conversation memory: when set, the graph switches to a Postgres
+    # checkpointer (AsyncPostgresSaver) using this DSN and the SQLite file
+    # above is ignored. The prod compose file injects this automatically;
+    # leaving it unset keeps dev on plain SQLite with zero extra
+    # infrastructure.
+    checkpoint_db_url: str | None = None
 
     # Hard deadline (seconds) for ONE graph run, applied in POST /chat and the
     # /ws/chat stream so a hung upstream model can never hold a request open.
