@@ -114,7 +114,12 @@ M12 replaced the M08 "observability only" compose file with **one stack for the 
 |---|---|
 | `infra/compose/docker-compose.base.yml` | **Base** — every service in every environment (backend, frontend, the M08 Langfuse stack). No host ports here. |
 | `infra/compose/docker-compose.dev.yml` | **Dev overlay** — bind mounts for hot reload, `uvicorn --reload`, the Vite dev server, and the host ports (8000 / 5173 / 3000). |
-| `infra/compose/docker-compose.prod.yml` | **Prod overlay** — pulls the GHCR-published images pinned to `:${APP_VERSION}` (never `latest`); the frontend's nginx publishes the browser port and proxies API/WS to the backend. |
+| `infra/compose/docker-compose.prod.yml` | **Prod overlay** — pulls the GHCR-published images pinned to `:${APP_VERSION}` (never `latest`); the frontend's nginx publishes the browser port and proxies API/WS to the backend; adds the `app-db` Postgres (graph checkpointer) and brings up the full Langfuse stack via `--profile observability`. |
+
+**Environment files (two-env split):** `infra/compose/.env.dev` and
+`infra/compose/.env.prod` hold each environment's secrets/knobs — both are
+copied from `.env.example`. Always pass the matching one with `--env-file`
+(`.env.dev` for dev, `.env.prod` for prod); the two never share one `.env`.
 
 **How overlays merge** (Compose `-f` rules): later files **override** scalars
 (`command`, …), `environment` maps merge per key, and `ports` / `volumes` lists
@@ -122,11 +127,19 @@ M12 replaced the M08 "observability only" compose file with **one stack for the 
 
 **Profiles:** all six Langfuse services are tagged `profiles: ["observability"]`. Pass
 `--profile observability` to include them; omit it for a lightweight stack. The backend
-depends on `langfuse-web` with `required: false`, so it starts fine without them.
+depends on `langfuse-web` with `required: false`, so it starts fine without them. Dev
+normally runs WITH the profile; prod ALWAYS runs with it (see the prod commands below).
 
 **Image tags:** each service builds and tags `taylored-assistant-<service>:${APP_VERSION:-latest}`.
 `APP_VERSION` is derived from `backend/app/_version.py` by the Makefile (`make dev-up`);
 unset → falls back to `latest`.
+
+**Graph checkpointer (dev vs prod):** dev persists LangGraph state in a SQLite file on the
+`checkpoints_data` named volume — that mount lives in the dev overlay only. Prod replaces
+SQLite with the **`app-db` Postgres service** (prod overlay only, own named volume): the
+backend gets `CHECKPOINT_DB_URL` pointing at `app-db` and the async Postgres checkpointer
+runs its idempotent `setup()` at boot, gated by `depends_on: app-db (healthy)`. `app-db`
+is exactly the database the nightly backup dumps (`pg_dump` of the `assistant` DB).
 
 ### Published images (GHCR)
 
@@ -155,15 +168,23 @@ docker login ghcr.io -u paulocressoni
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 
-# Run the production stack: two containers, images from GHCR (never built).
-# `-p taylored-assistant-prod` gives prod its OWN compose project -> separate
-# volumes/networks/containers from dev (taylored-assistant-dev), so
-# conversation data is never shared. Both can even run at once (prod
-# publishes :8080; dev uses 8000/5173/3000).
+# Run the production stack. `-p taylored-assistant-prod` gives prod its OWN
+# compose project -> separate volumes/networks/containers from dev
+# (taylored-assistant-dev), so conversation data is never shared. Both can
+# even run at once (prod publishes :8080; dev uses 8000/5173/3000).
+#
+# Since the prod overlay gained observability, prod runs the FULL stack:
+# app images + the Langfuse profile (`--profile observability`) + the
+# `app-db` Postgres that backs the production graph checkpointer. Secrets
+# come from `.env.prod`. All services carry `restart: unless-stopped`, so a
+# full DeskMini reboot brings the whole stack back by itself.
 $env:APP_VERSION = '0.3.0'
-docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env pull
-docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env up -d --no-build --wait
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability pull
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability up -d --no-build --wait
 # open http://localhost:8080  (nginx) — chat streams over /ws through the proxy
+#     http://<host>:<langfuse-port>  Langfuse UI (port published by the prod overlay;
+#                                    see infra/compose/.env.prod and docs/production-langfuse.md)
+# after a reboot, confirm everything came back: `docker compose ... ps` shows all "Up"
 ```
 
 ### One command (Linux / macOS — `make`, repo root)
@@ -182,22 +203,22 @@ docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.y
 ```powershell
 # Full stack incl. Langfuse (the M12 command). DEV runs as its own project
 # `taylored-assistant-dev` (-p) so its volumes never mix with prod.
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait
 
 # Lightweight stack without Langfuse
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env up --build -d --wait
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev up --build -d --wait
 
 # Status / logs / stop
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability down
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev ps
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev logs -f
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability down
 ```
 
 Shortcut — set once per terminal, then plain `docker compose` works:
 
 ```powershell
 $env:COMPOSE_FILE = "infra/compose/docker-compose.base.yml;infra/compose/docker-compose.dev.yml"
-$env:COMPOSE_ENV_FILES = "infra/compose/.env"
+$env:COMPOSE_ENV_FILES = "infra/compose/.env.dev"
 $env:COMPOSE_PROJECT_NAME = "taylored-assistant-dev"   # isolate dev from prod
 docker compose --profile observability up --build -d --wait
 ```
@@ -211,14 +232,17 @@ docker compose --profile observability up --build -d --wait
 | `http://localhost:8000/docs` | FastAPI interactive docs |
 | `http://localhost:3000` | Langfuse UI (observability profile only) |
 
-- **Secrets** come from `infra/compose/.env` (copy from `.env.example`; generate
-  `SALT` / `ENCRYPTION_KEY` / `NEXTAUTH_SECRET` with `openssl rand -hex 32`). Backend
-  secrets come from `backend/.env.dev` (referenced via `env_file` in `dev.yml`).
+- **Secrets** are split by environment: `infra/compose/.env.dev` (dev) and
+  `infra/compose/.env.prod` (prod), each copied from `.env.example` (generate
+  `SALT` / `ENCRYPTION_KEY` / `NEXTAUTH_SECRET` with `openssl rand -hex 32`; prod needs
+  its OWN fresh values, never the dev ones). Backend secrets come from `backend/.env.dev`
+  (referenced via `env_file` in `dev.yml`).
 - Compose's `.env` parser treats `#` as a comment **only at line start** — keep comments
   on their own lines.
 - Inside the stack, services talk to each other **by service name** (`backend`,
-  `langfuse-web`, `postgres`, …) — never `localhost`. Only browser-facing URLs
-  (`NEXTAUTH_URL`, the published ports) use `localhost`.
+  `frontend`, `app-db`, `langfuse-web`, `clickhouse`, `postgres`, …) — never
+  `localhost`. Only browser-facing URLs (`NEXTAUTH_URL`, the published ports) use
+  `localhost`.
 - **Bind mounts** (dev) = live code, hot reload; **named volumes** (`postgres_data`,
   `clickhouse_data`, `clickhouse_logs`, `redis_data`, `minio_data`) = persistent data
   across restarts.
@@ -226,6 +250,24 @@ docker compose --profile observability up --build -d --wait
   still holding the port — stop it: `docker compose -p langfuse-dev down`.
 
 Full observability guide: [observability.md](observability.md).
+
+## Running commands inside a service (compose exec)
+
+`docker compose exec` runs a command in a *running* service container without
+a shell on the host. Add `-T` when the command is driven by a script or cron
+(no TTY attached). Examples below use the prod project; swap the project /
+`--env-file` for the dev one.
+
+```powershell
+# Interactive shell in the backend container
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod exec backend sh
+
+# Dump the checkpointer DB to stdout (this is what the nightly backup runs)
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod exec -T app-db pg_dump -U assistant assistant
+
+# Ask ClickHouse (Langfuse's store) for a ground-truth number
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod exec -T clickhouse clickhouse-client --query "SHOW TABLES"
+```
 
 ## Cleanup
 
@@ -240,9 +282,15 @@ Project-level cleanup (PowerShell — the `make` equivalents are `dev-down` / `d
 ```powershell
 # stop the dev stack, keep named volumes
 # (dev runs as its own project, taylored-assistant-dev)
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev down
 # ...or also delete the volumes (wipes the DB/trace data)
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env down -v
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev down -v
+
+# Same for the prod project — pass `--profile observability` so the Langfuse
+# services started under that profile are stopped too. Add `-v` to also wipe
+# the prod named volumes (checkpointer + Langfuse data — which is why the
+# nightly backups exist).
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability down
 ```
 
 **Full wipe — everything on the machine** (containers, volumes, images, networks):
