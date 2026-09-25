@@ -410,7 +410,7 @@ Run the full dev stack (backend + frontend + Langfuse + DBs — M12):
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant   # from the repo root
 make dev-up                  # full compose stack with hot reload (Linux/macOS)
 # Windows/PowerShell equivalent:
-#   docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+#   docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait
 # Backend only, no Docker:  make dev-local
 ```
 
@@ -764,7 +764,7 @@ Run everything from `backend/` unless noted.
 | Lint + fix | `uv run ruff check --fix .` |
 | Format | `uv run ruff format .` |
 | Run tests | `uv run pytest` |
-| Run the full dev stack (M12) | `make dev-up` (repo root) · PowerShell: `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait` |
+| Run the full dev stack (M12) | `make dev-up` (repo root) · PowerShell: `docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait` |
 | Run the full stack without Langfuse | `make dev-up-light` (repo root) |
 | Stop the stack / tail logs | `make dev-down` · `make dev-logs` (repo root) |
 | Run the API dev server only (no Docker) | `make dev-local` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |

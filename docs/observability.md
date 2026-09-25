@@ -168,14 +168,94 @@ Runtime settings live in `backend/app/core/config.py`:
 | `langfuse_secret_key` | `""` | Project secret key (`sk-lf-…`) |
 | `langfuse_base_url` | `http://localhost:3000` | SDK endpoint (host-published port) |
 
+## Upgrading
+
+Two versions move independently: the **app** (the GHCR image, pinned by
+`APP_VERSION`) and the **observability stack** (image tags pinned in
+`docker-compose.base.yml`).
+
+### App — a tag bump, nothing else
+
+The git tag IS the image tag, so a release is `APP_VERSION` + the prod targets
+(the DeskMini runs Linux, so `make` is available there):
+
+```bash
+APP_VERSION=0.5.0 make prod-up     # pull + up -d --no-build --wait
+```
+
+On a Windows dev machine `make` needs a POSIX shell, so set `$env:APP_VERSION`
+and run the raw `pull` / `up -d --no-build --wait` pair from the usage block at
+the top of `infra/compose/docker-compose.prod.yml`.
+
+`--no-build` on purpose: prod runs the published, Trivy-scanned image and never
+compiles the working tree. Note that `/health` reports the **source** version
+(`backend/app/_version.py`), not the image tag — the two only agree once
+release-please bumps that file, so a `-test` tag legitimately shows the previous
+released version.
+
+### Observability stack — back up, then bump both Langfuse images
+
+1. **Back up first** (runbook: `infra/backup/BACKUP.md`). Langfuse's Postgres holds
+   your dashboards, alerts and project config; ClickHouse holds the traces. An
+   upgrade migrates both, so last night's dump is the cheapest possible undo.
+2. Bump `langfuse-web` **and** `langfuse-worker` in `docker-compose.base.yml` to the
+   **same** version — they cooperate over Redis, and a mismatch shows up as events
+   that never finish ingesting.
+3. Bump the other pinned images (postgres / clickhouse / redis / minio) only
+   deliberately: a ClickHouse upgrade can rewrite parts of `clickhouse_data`, and a
+   downgrade is not supported.
+4. `make prod-up`. Langfuse applies its Postgres and ClickHouse migrations when
+   `langfuse-web` starts.
+5. Verify: log in ("First login"), **Traces** shows a new run, and a fresh assistant
+   turn appears within a few seconds.
+
+`langfuse-worker` has no healthcheck by design, so `--wait` has nothing to wait on
+for it and `ps` shows it as merely `Up`.
+
+## Reboot survival
+
+The DeskMini should behave like an appliance, so the stack has to come back on its
+own after a power cut.
+
+- Every service sets `restart: unless-stopped`, so Docker restarts them on boot —
+  **provided the daemon itself starts at boot**: `sudo systemctl enable --now docker`
+  (verify with `systemctl is-enabled docker`).
+- `unless-stopped` means "restart unless *you* stopped it". `make prod-down` runs
+  `docker compose down`, which REMOVES the containers (volumes are kept), so after a
+  `down` a reboot has nothing to restart until you `make prod-up`. To pause the stack
+  and still have it return by itself, use `stop` instead of `down`.
+- State lives in **named volumes**, never in the containers: `postgres_data`,
+  `clickhouse_data`, `clickhouse_logs`, `redis_data` and `minio_data` for Langfuse,
+  plus `app_db_data` for the conversation checkpoints. Rebooting or recreating a
+  container never touches them.
+- **Always pass `--profile observability`.** Without it Compose's model contains only
+  `app-db`, `backend` and `frontend` — the six Langfuse services are not part of the
+  command at all, so it neither starts nor stops them (they surface as orphan
+  containers). Confirm with `... config --services` before trusting a command.
+- **Cold-boot ordering is not guaranteed.** `depends_on` is honoured by `up`, not by
+  the daemon restarting containers after a reboot, so `backend` can start before
+  `app-db` is accepting connections. `open_checkpointer()` runs `setup()` on every
+  start, so the lifespan raises and uvicorn exits — `restart: unless-stopped` then
+  retries until Postgres is ready. Expect a brief crash-loop in the logs and a healthy
+  stack within a minute; if it never settles, check `app-db` health first.
+
+After a reboot, check in this order:
+
+1. `make prod-ps` — every service `Up (healthy)` except `langfuse-worker`.
+2. `http://<deskmini>:8080` serves the UI and `/health` answers.
+3. `http://<deskmini>:3000` accepts a login.
+4. One assistant turn produces a new `assistant:<route>` trace — that single check
+   covers backend → Langfuse ingest → ClickHouse end to end.
+
 ## Troubleshooting
 
-- **Stack not healthy:** `make dev-logs` (PowerShell: `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env logs -f`); check each service with `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env ps` (the worker has no healthcheck by design).
+- **Stack not healthy:** `make dev-logs` to tail the logs (Linux/macOS), or the raw `docker compose … logs -f` from "Start the stack" with `--env-file infra/compose/.env.dev`; check status with the matching `ps`. `langfuse-worker` has no healthcheck by design, so it never reports healthy.
 - **Traces missing:** confirm `LANGFUSE_ENABLED=true` + matching keys in
   `backend/.env.dev`, and that the stack is up. The SDK path is best-effort — check the
   backend logs for Langfuse errors, not the app failing.
 - **Headless init doesn't rerun:** the org/project/admin user are created **once** on
-  first boot. If you change the keys in `infra/compose/.env`, reset the stack volumes
-  (`docker compose down -v`) to re-provision from scratch.
+  first boot. If you change the keys in `infra/compose/.env.dev` (prod: `.env.prod`),
+  reset that environment's volumes with `down -v` — this DELETES its Langfuse data —
+  to re-provision from scratch.
 - **`ENCRYPTION_KEY` invalid:** must be exactly 64 hex characters.
 - **Timezone:** Postgres and ClickHouse must be UTC (already set in the compose file).
