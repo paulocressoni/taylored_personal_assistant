@@ -5,6 +5,7 @@ Usage:
     make cli MSG='capital of France?'
 """
 
+import datetime
 import sys
 import uuid
 
@@ -78,6 +79,7 @@ def main() -> None:
                 "callbacks": callbacks,
                 "configurable": configurable,
                 "metadata": metadata,  # <- v4 reads langfuse_* from here
+                "checked_at": datetime.now(datetime.utc).isoformat(),
             },
         )
         enrich_trace(final)
