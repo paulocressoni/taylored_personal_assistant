@@ -210,12 +210,17 @@ ORDER BY day;
 
 -- 9. PROMPT-CACHE: which usage types actually arrive? ------------------------
 -- Run this first; Q10 assumes the app-computed keys, not provider keys.
+-- Verified on Langfuse 4.30 / ClickHouse 25.12: the app's DeepSeek calls report
+-- `input`, `output`, `total` and `input_cache_read`, so provider-reported cache
+-- tokens are available to dashboard 4.5 step 2 as well.
+-- NB: `ARRAY JOIN usage_details AS (k, v)` is NOT valid on a Map here — join on
+-- mapKeys(...) and look the value back up by key.
 SELECT
-    k                          AS usage_type,
-    count()                    AS observations,
-    sum(v)                     AS tokens
+    k                     AS usage_type,
+    count()               AS observations,
+    sum(usage_details[k]) AS tokens
 FROM default.events_full
-ARRAY JOIN usage_details AS (k, v)
+ARRAY JOIN mapKeys(usage_details) AS k
 WHERE type = 'GENERATION'
   AND is_deleted = 0
   AND start_time >= now() - INTERVAL 7 DAY

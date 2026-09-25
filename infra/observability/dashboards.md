@@ -11,15 +11,25 @@ lets you prove the panel number is right.
 ## 1. Prerequisites
 
 - The app is running against the production stack (Postgres checkpointer, the
-  observability profile is up) and the `telemetry_node` runs last in the graph.
-- Each run's trace carries `schema_version = "2.0"` metadata, `tags` with
-  `env:*`, `channel:*` and `status:*`, `tool_outcomes`, `permission_denials`,
-  `usage` (incl. `cache_hit_ratio`) and the error taxonomies. Confirm once:
+  observability profile is up). The run's trace identity is stamped by the
+  invoke site AFTER the graph returns, so nothing here depends on the graph's
+  node order.
+- Each run's trace carries `schema_version = "2.1"` metadata, `tags` with
+  `env:*`, `channel:*` and `status:*`, the token counters (incl. the flat
+  `cache_hit_ratio`), `tool_outcomes` (per-call summary) and the error
+  taxonomies. That identity is written onto the run's own **app-root span** —
+  the only row Langfuse reads a trace's name/tags/metadata from. Confirm once:
   1. Run a single assistant turn with tools.
-  2. Open the resulting trace (or use the `trace_url` the API returns).
-  3. In **Trace details → Metadata**, verify `schema_version = "2.0"` and the
+  2. Open the trace in **Project → Traces**; it is named `assistant:<route>`
+     (e.g. `assistant:knowledge`).
+  3. In **Trace details → Metadata**, verify `schema_version = "2.1"` and the
      keys above. In the trace **Tags**, verify `status:tool_ok` (or
-     `status:tool_error`).
+     `status:tool_error`) plus `env:prod` and `channel:*`.
+- Ground truth lives in the **`default.events_full`** ClickHouse table, NOT in
+  the legacy `traces` / `observations` tables (empty on Langfuse 4.30). Trace
+  level fields exist only on the app-root row, so the matching queries filter
+  `is_app_root = 1`; run the `queries.sql` §0 probes first if one returns
+  nothing.
 - **Cost needs pricing.** The DeepSeek API does not return cost in the
   response, so Langfuse can only infer it from a model definition.
   1. Project → **Settings → Models** → **New model definition**.
@@ -85,8 +95,9 @@ p50/p95, cost, …) → **Dimension** (group by: day, model, trace name, tag) �
 Each trace is named `assistant:<route>`, so trace name is a clean dimension.
 1. Widget: data source **traces**, metric **count**, dimension **trace name**,
    time range = this week → bar chart.
-2. Filter `env = prod` and, if you have multiple channels, split by
-   `channel:*` tag to see text vs voice vs CLI behaviour.
+2. Filter on the Langfuse **environment** attribute — the app sets it from
+   `ENV`, so the DeskMini emits `prod` — and, if you have multiple channels,
+   split by the `channel:*` tag to see text vs voice vs CLI behaviour.
 3. Expected shape for this assistant: the bulk on `knowledge`/`general`, with
    `control` absent until device-control routes exist — a sudden new route is
    itself a signal.
@@ -101,7 +112,9 @@ in each trace's `tool_outcomes` metadata (`ok`, `error_type`, `denied`,
 2. Widget: same with tag `status:tool_ok` (successes). Success rate ≈
    ok / (ok + error).
 3. To see WHICH tool failed: open a `status:tool_error` trace → Metadata →
-   `tool_error_taxonomy` (bucket → count) and `tool_outcomes` (per call).
+   `tool_error_taxonomy` (`name:count` buckets) and `tool_outcomes`, the
+   per-call summary `<tool>:<ok|denied|error_type>:<duration_ms>` (e.g.
+   `calculate:ok:2.4`).
    Remember: the calculator returns an error *string* on bad input instead of
    raising — those count as `status:tool_ok` by design. The failure taxonomy
    is about raised errors and unknown tools, not user-input mistakes.
@@ -116,19 +129,23 @@ first:
    and model = deepseek, metric **usage of cached** and **usage of input**
    over time. Hit ratio = cached ÷ (cached + fresh input).
 3. If the provider does not report it there, use the value the app computed
-   per run: it is stored as `usage.cache_hit_ratio` on every trace (Metadata)
-   and persisted in the Postgres checkpointer — open a trace and read it, or
-   average the field across a few traces.
+   per run: it is stored as the flat `cache_hit_ratio` metadata key on every
+   trace (next to `cache_hit_tokens` / `cache_miss_tokens`) and persisted in
+   the Postgres checkpointer — open a trace and read it, or average the field
+   across a few traces.
 Ground truth: Q9 lists which usage types actually arrive, then Q10 computes
 the ratio.
 
 ### 4.6 Permission-denial events
-Runs where a tool refused authorization are tagged `status:permission_denied`,
-and the denial records land in `permission_denials` trace metadata.
+Runs where a tool refused authorization are tagged `status:permission_denied`.
+The per-denial records live in the run's persisted state (LangGraph
+checkpointer), not in trace metadata — see step 2.
 1. Widget: data source **traces**, metric **count**, dimension **day**,
    filter tag `status:permission_denied`.
-2. On a spike: open a trace → Metadata → `permission_denials` for
-   `{tool, reason, user_id}`.
+2. On a spike: the tag is the trigger; the per-denial records
+   (`{tool, reason, user_id}`) are persisted in the run's session state — no
+   trace metadata key carries them today, so read them from the checkpointer
+   (`app-db`) when you need the detail.
 3. Today this stays at zero by design (authorization lands in a later
    milestone) — the dashboard existing now means the moment it becomes real,
    you will already see it without code changes.
@@ -139,9 +156,9 @@ Two independent views, by design:
   `level = ERROR` and the error text in `status_message`. Generations list →
   filter `level = ERROR`. Langfuse also flags the trace. Ground truth Q8.
 - **App-bucketed**: the app also buckets LLM failures (`rate_limit`, `auth`,
-  `timeout`, exception class) into `usage.error_types` and tool failures into
-  `tool_error_taxonomy`, both stored per trace. Open an errored trace →
-  Metadata.
+  `timeout`, exception class) into the flat `llm_error_taxonomy` metadata key,
+  and tool failures into `tool_error_taxonomy` — both `name:count` strings.
+  Open an errored trace → Metadata.
 - Quick triage dashboard: one widget counting `level = ERROR` generations per
   day, one counting traces with tag `status:tool_error` per day, one for
   `status:permission_denied` per day.
@@ -170,9 +187,12 @@ now — the goal is that a week of real usage makes these one-glance reads.
 ## 6. Keeping it trustworthy
 
 - Panels and `queries.sql` must agree. Any time you change the shape of trace
-  metadata (`schema_version`), re-check the dashboard filters and re-run the
-  matching queries; bump `TRACE_SCHEMA_VERSION` when you change the metadata
-  shape so old and new traces stay distinguishable.
+  metadata (`schema_version`), re-check the dashboard filters, re-run the
+  matching queries AND re-run the `queries.sql` §0 probes; bump
+  `TRACE_SCHEMA_VERSION` when you change the metadata shape so old and new
+  traces stay distinguishable. The layout to remember: trace fields live on
+  the app-root row of `default.events_full` (`is_app_root = 1`), and the
+  legacy `traces` / `observations` tables stay empty on Langfuse 4.30.
 - Dashboards are configuration stored by Langfuse, not code — back them up by
   backing up the Langfuse Postgres + ClickHouse volumes (see the backup
   runbook; both are already in `backup.conf` as items).

@@ -118,7 +118,8 @@ M12 replaced the M08 "observability only" compose file with **one stack for the 
 
 **Environment files (two-env split):** `infra/compose/.env.dev` and
 `infra/compose/.env.prod` hold each environment's secrets/knobs — both are
-copied from `.env.example`. Always pass the matching one with `--env-file`
+copied from their matching template (`.env.dev.example` / `.env.prod.example`).
+Always pass the matching one with `--env-file`
 (`.env.dev` for dev, `.env.prod` for prod); the two never share one `.env`.
 
 **How overlays merge** (Compose `-f` rules): later files **override** scalars
@@ -178,12 +179,13 @@ docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 # `app-db` Postgres that backs the production graph checkpointer. Secrets
 # come from `.env.prod`. All services carry `restart: unless-stopped`, so a
 # full DeskMini reboot brings the whole stack back by itself.
-$env:APP_VERSION = '0.3.0'
+$env:APP_VERSION = '0.4.1-test'   # the tag you deployed (git tag == image tag, never :latest)
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability pull
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability up -d --no-build --wait
 # open http://localhost:8080  (nginx) — chat streams over /ws through the proxy
-#     http://<host>:<langfuse-port>  Langfuse UI (port published by the prod overlay;
-#                                    see infra/compose/.env.prod and docs/production-langfuse.md)
+#     http://<host>:3000  Langfuse UI (port published by the prod overlay;
+#                         see infra/compose/.env.prod, infra/observability/dashboards.md
+#                         and infra/observability/alerts.md)
 # after a reboot, confirm everything came back: `docker compose ... ps` shows all "Up"
 ```
 
@@ -233,7 +235,8 @@ docker compose --profile observability up --build -d --wait
 | `http://localhost:3000` | Langfuse UI (observability profile only) |
 
 - **Secrets** are split by environment: `infra/compose/.env.dev` (dev) and
-  `infra/compose/.env.prod` (prod), each copied from `.env.example` (generate
+  `infra/compose/.env.prod` (prod), each copied from its matching template
+  (`.env.dev.example` / `.env.prod.example`) (generate
   `SALT` / `ENCRYPTION_KEY` / `NEXTAUTH_SECRET` with `openssl rand -hex 32`; prod needs
   its OWN fresh values, never the dev ones). Backend secrets come from `backend/.env.dev`
   (referenced via `env_file` in `dev.yml`).

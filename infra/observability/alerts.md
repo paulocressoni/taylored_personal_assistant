@@ -36,7 +36,10 @@ Two settings matter for a home box that goes quiet overnight:
 ## 2. Alert A — cost spike
 
 Cost alerts only work once DeepSeek model pricing is set (dashboards runbook
-§1), otherwise `totalCost` is always 0 and the alert never fires.
+§1), otherwise `totalCost` is always 0 and the alert never fires. The
+environment filter is the Langfuse **environment** attribute, which the app
+sets from `ENV` — that is `prod` on the DeskMini, so filtering on
+`production` matches nothing.
 
 Two flavours, pick what matches the spike you care about:
 
@@ -45,7 +48,7 @@ Two flavours, pick what matches the spike you care about:
 | **Name** | `Cost spike — daily budget` | `Cost spike — expensive generation` |
 | **Data source** | Observations | Observations |
 | **Metric** | `sum cost` (USD) | `p95 cost` (USD) |
-| **Filters** | environment = production | environment = production, model contains `deepseek` |
+| **Filters** | environment = prod | environment = prod, model contains `deepseek` |
 | **Window** | 1 day | 1 day |
 | **Warning** | your `WARN_DAY` | your `WARN_P95` |
 | **Alert** | your `ALERT_DAY` | your `ALERT_P95` |

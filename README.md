@@ -53,7 +53,8 @@ taylored_personal_assistant/
 │       ├── docker-compose.base.yml       # Base stack: backend + frontend + Langfuse (M12)
 │       ├── docker-compose.dev.yml        # Dev overlay: bind mounts, reload, ports (M12)
 │       ├── docker-compose.prod.yml       # Prod overlay: GHCR images pinned to APP_VERSION (M23)
-│       └── .env.example                  # Compose secrets template (M08)
+│       ├── .env.dev.example              # Compose secrets template — dev (M08/M28)
+│       └── .env.prod.example             # Compose secrets template — prod (M28)
 ├── backend/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
     ├── uv.lock                   # Locked dependency versions (COMMIT this)
@@ -561,7 +562,7 @@ Quick start (full guide: [docs/observability.md](docs/observability.md)):
 
 ```powershell
 cd infra/compose
-Copy-Item .env.example .env        # fill in secrets (openssl rand -hex 32)
+Copy-Item .env.dev.example .env.dev    # fill in secrets (openssl rand -hex 32)
 cd ../..
 make dev-up                        # M12: full stack incl. Langfuse (observability profile)
 # backend/.env.dev: LANGFUSE_ENABLED=true + pk-lf-* / sk-lf-* keys (see .env.dev.example)

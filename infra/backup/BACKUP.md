@@ -16,6 +16,14 @@ Docker CLI with the compose plugin, GNU `tar`, and root (to read
 `/var/lib/docker/volumes`). Never commit `backup.conf` - it references paths,
 not secrets, but keep it host-local alongside `.env.prod`.
 
+**Platform requirement (volume items).** `VOLUMES` is backed up by tarring the
+daemon's OWN filesystem (`/var/lib/docker/volumes/<name>/_data`), so the scripts
+must run on the host that runs the Docker daemon - a native Linux box, i.e. the
+DeskMini. From Docker Desktop / WSL2 that path does not exist (the daemon lives
+in a separate `docker-desktop` VM), so on Windows leave `VOLUMES` empty: the
+Postgres dumps, encryption, manifest and restore drill still run, and the volume
+items get their real test on the DeskMini.
+
 ## What is backed up
 
 | Item | Source | Method |
@@ -164,6 +172,7 @@ Spotify refresh tokens. Do this the same day the feature ships.
 | Symptom | Cause / fix |
 | --- | --- |
 | `volume '...' not found - is the stack up?` | Volume name in `VOLUMES` is wrong or the stack never ran. Check `docker volume ls` for the exact `taylored-assistant-prod_...` names. |
+| `tar: /var/lib/docker/volumes/...: Cannot open` | You are not on the daemon's host (Docker Desktop / WSL2). Run the scripts on the native Linux host, or leave `VOLUMES` empty. |
 | `AGE_RECIPIENT is empty ... refusing` | Run without `--allow-plaintext`; set `AGE_RECIPIENT` to the `.pub` file. |
 | `AGE_IDENTITY is empty` | Restore/verify requires the identity - mount the offline copy and set `AGE_IDENTITY`. |
 | `age: command not found` | `apt-get install -y age`. Root cron also needs `age` on its `PATH`. |
