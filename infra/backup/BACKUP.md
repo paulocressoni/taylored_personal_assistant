@@ -24,6 +24,15 @@ in a separate `docker-desktop` VM), so on Windows leave `VOLUMES` empty: the
 Postgres dumps, encryption, manifest and restore drill still run, and the volume
 items get their real test on the DeskMini.
 
+> **TODO (before the DeskMini goes live).** The M28 verification pass ran on
+> Windows/WSL2, which covers the config resolution, `age` encryption, both
+> `pg_dump` items, the manifest, `--verify` and the non-destructive restore
+> drill. Still to do on the host that runs the daemon:
+> 1. a real run WITH `VOLUMES` set (the ClickHouse + MinIO volume tars),
+> 2. the one-time setup with the identity moved to offline media,
+> 3. the cron line, and a first `--verify` from cron's environment,
+> 4. the monthly drill end to end (including `volume-*` extraction).
+
 ## What is backed up
 
 | Item | Source | Method |
