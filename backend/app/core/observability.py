@@ -41,6 +41,12 @@ TRACE_SCHEMA_VERSION = "2.1"
 # longer than this, so only short scalars belong in trace metadata.
 MAX_METADATA_VALUE_LEN = 200
 
+# Fallback trace/span name used BEFORE the router has decided the route. The
+# invoke site stamps it as `langfuse_trace_name` so a run that crashes, times
+# out or is abandoned still appears named and filterable; `enrich_trace`
+# refines it to `assistant:<route>` once the run has actually finished.
+TURN_TRACE_NAME = "assistant:turn"
+
 _client: Langfuse | None = None
 
 
@@ -65,7 +71,7 @@ def _get_client() -> Langfuse | None:
 
 
 @contextmanager
-def turn_span(name: str = "assistant:turn") -> Generator[None, None, None]:
+def turn_span(name: str = TURN_TRACE_NAME) -> Generator[None, None, None]:
     """Open the app-owned root observation for ONE graph run.
 
     Langfuse reads a trace's name, tags and metadata from its app-root span,
@@ -97,15 +103,38 @@ def new_langfuse_handler() -> CallbackHandler | None:
 
 
 def langfuse_metadata(
-    session_id: str, user_id: str | None = None, **static: Any
+    session_id: str,
+    channel: str = "cli",
+    user_id: str | None = None,
+    **static: Any,
 ) -> dict[str, Any]:
     """Config['metadata'] dict the v4 handler understands.
 
     The reserved ``langfuse_*`` keys are consumed at root-run start; every
     other key is passed through as trace metadata automatically.
+
+    The STATIC half of the trace identity is stamped here — the fallback trace
+    name plus the `env:*` / `channel:*` tags — because it is known before the
+    run starts. A run that crashes, times out or is abandoned then still shows
+    up named and filterable; `enrich_trace` later overwrites the name with
+    `assistant:<route>` and merges the `status:*` tag on success.
+
+    Args:
+        session_id: Conversation id, written as `langfuse_session_id` so the
+            run's traces group into one Langfuse session.
+        channel: Where the turn came from (`api` / `cli`); also stored as plain
+            `channel` trace metadata for the dashboards.
+        user_id: Optional user id, written as `langfuse_user_id`.
+        **static: Extra keys stored as trace metadata.
+
+    Returns:
+        The metadata dict to pass in the invoke config.
     """
     metadata: dict[str, Any] = {
         "langfuse_session_id": session_id,
+        "langfuse_trace_name": TURN_TRACE_NAME,
+        "langfuse_tags": [f"env:{settings.env}", f"channel:{channel}"],
+        "channel": channel,
         **static,
     }
     if user_id is not None:
