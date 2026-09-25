@@ -39,6 +39,7 @@ from app.api.schemas import (
     SessionHistoryResponse,
 )
 from app.core.config import settings
+from app.core.observability import enrich_trace, turn_span
 from app.graph.utils import get_last_message
 
 logger = logging.getLogger(__name__)
@@ -104,10 +105,14 @@ async def chat(
     # only a coarse request-level safety net.
     try:
         async with asyncio.timeout(settings.graph_timeout_seconds):
-            # The graph.ainvoke method runs the graph with the initial state and configuration.
-            # it must wait for the async graph to complete and return the final state (async
-            # like the checkpointer).
-            final = await graph.ainvoke(initial, config=config)
+            # turn_span() owns the app-root span, so enrich_trace() has a
+            # recording span to write the trace name/tags/metadata onto.
+            with turn_span():
+                # The graph.ainvoke method runs the graph with the initial state and configuration.
+                # it must wait for the async graph to complete and return the final state (async
+                # like the checkpointer).
+                final = await graph.ainvoke(initial, config=config)
+                enrich_trace(final)
     except TimeoutError:
         raise HTTPException(
             status_code=503,
@@ -292,41 +297,50 @@ async def chat_ws(websocket: WebSocket) -> None:
         # its thread-executor thread. ROLE_CONFIG's per-role timeout is the
         # real bound on each DeepSeek call.
         async with asyncio.timeout(settings.graph_timeout_seconds):
-            async for event in graph.astream_events(
-                initial, config=config, version="v2"
-            ):
-                kind = event["event"]
-
-                # The graph emits "on_chat_model_stream" events for each token chunk
-                # produced by the model.
-                if kind == "on_chat_model_stream":
-                    node = event.get("metadata", {}).get("langgraph_node")
-                    if node == "responder":
-                        chunk = event["data"]["chunk"]
-                        if isinstance(chunk, AIMessageChunk):
-                            text = _content_to_str(chunk.content)
-                            if text:
-                                streamed.append(text)
-                                await websocket.send_json(
-                                    {"type": "token", "content": text}
-                                )
-
-                # Status frame when the router's model call begins
-                if kind == "on_chat_model_start":
-                    node = event.get("metadata", {}).get("langgraph_node")
-                    if node == "router" and not thinking_sent:
-                        thinking_sent = True
-                        await websocket.send_json(
-                            {"type": "status", "detail": "classifying intent..."}
-                        )
-
-                if (
-                    kind == "on_chain_end"
-                    and event.get("name") == "LangGraph"
-                    and not event.get("parent_ids")
+            # turn_span() must wrap the WHOLE stream: our span has to exist
+            # before the callback handler creates the run's root chain span.
+            with turn_span():
+                async for event in graph.astream_events(
+                    initial, config=config, version="v2"
                 ):
-                    final_state = event["data"]["output"]
-                    completed = True
+                    kind = event["event"]
+
+                    # The graph emits "on_chat_model_stream" events for each token chunk
+                    # produced by the model.
+                    if kind == "on_chat_model_stream":
+                        node = event.get("metadata", {}).get("langgraph_node")
+                        if node == "responder":
+                            chunk = event["data"]["chunk"]
+                            if isinstance(chunk, AIMessageChunk):
+                                text = _content_to_str(chunk.content)
+                                if text:
+                                    streamed.append(text)
+                                    await websocket.send_json(
+                                        {"type": "token", "content": text}
+                                    )
+
+                    # Status frame when the router's model call begins
+                    if kind == "on_chat_model_start":
+                        node = event.get("metadata", {}).get("langgraph_node")
+                        if node == "router" and not thinking_sent:
+                            thinking_sent = True
+                            await websocket.send_json(
+                                {"type": "status", "detail": "classifying intent..."}
+                            )
+
+                    if (
+                        kind == "on_chain_end"
+                        and event.get("name") == "LangGraph"
+                        and not event.get("parent_ids")
+                    ):
+                        final_state = event["data"]["output"]
+                        completed = True
+
+                # The stream is over and no callback span is active any more:
+                # stamp the trace while our app-root span is still open. This
+                # sits OUTSIDE the loop on purpose — one enrichment per run.
+                if final_state is not None:
+                    enrich_trace(final_state)
 
     # We only catch WebSocketDisconnect here because it indicates that the client has disconnected.
     except WebSocketDisconnect:
