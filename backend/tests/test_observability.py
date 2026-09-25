@@ -4,9 +4,30 @@ from app.core.config import settings
 from app.core.observability import (
     MAX_METADATA_VALUE_LEN,
     TRACE_SCHEMA_VERSION,
+    TURN_TRACE_NAME,
     _error_taxonomy,
+    langfuse_metadata,
     trace_attributes,
 )
+
+
+def test_langfuse_metadata_carries_static_trace_identity() -> None:
+    metadata = langfuse_metadata(session_id="s-1", channel="api")
+
+    assert metadata["langfuse_session_id"] == "s-1"
+    assert metadata["langfuse_trace_name"] == TURN_TRACE_NAME
+    assert metadata["langfuse_tags"] == [f"env:{settings.env}", "channel:api"]
+    assert metadata["channel"] == "api"
+    assert "langfuse_user_id" not in metadata
+
+
+def test_langfuse_metadata_adds_user_id_only_when_given() -> None:
+    without = langfuse_metadata(session_id="s-1", channel="cli")
+    with_user = langfuse_metadata(session_id="s-1", channel="cli", user_id="u-9")
+
+    assert "langfuse_user_id" not in without
+    assert with_user["langfuse_user_id"] == "u-9"
+    assert with_user["langfuse_tags"] == [f"env:{settings.env}", "channel:cli"]
 
 
 def test_error_taxonomy_ignores_ok_and_denied_calls() -> None:
