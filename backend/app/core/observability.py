@@ -148,6 +148,29 @@ def _join_counts(counts: dict[str, Any] | None) -> str:
     return ",".join(f"{key}:{value}" for key, value in sorted(counts.items()))
 
 
+def _tool_outcomes_summary(tool_outcomes: list[dict[str, Any]]) -> str:
+    """Render each tool call as `name:outcome:duration_ms`, comma-joined.
+
+    Args:
+        tool_outcomes: The run's `tool_outcomes` state records.
+
+    Returns:
+        One entry per invocation (`calculate:ok:2.4`, `x:ValueError:0.0`,
+        `x:denied:1.2`), truncated to `MAX_METADATA_VALUE_LEN` so the SDK
+        never drops the whole value.
+    """
+    parts: list[str] = []
+    for outcome in tool_outcomes:
+        if outcome.get("denied"):
+            state = "denied"
+        elif outcome.get("ok"):
+            state = "ok"
+        else:
+            state = str(outcome.get("error_type") or "error")
+        parts.append(f"{outcome.get('tool')}:{state}:{outcome.get('duration_ms')}")
+    return ",".join(parts)[:MAX_METADATA_VALUE_LEN]
+
+
 class TraceAttributes(NamedTuple):
     """One finished run's trace identity, ready to be stamped on the trace."""
 
@@ -206,6 +229,7 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
         "cache_miss_tokens": str(usage.get("cache_miss_tokens", 0)),
         "cache_hit_ratio": str(usage.get("cache_hit_ratio", 0.0)),
         "tools_called": ",".join(state.get("tools_called") or []),
+        "tool_outcomes": _tool_outcomes_summary(tool_outcomes),
         "tool_error_taxonomy": _join_counts(_error_taxonomy(tool_outcomes)),
         "llm_error_taxonomy": _join_counts(llm_error_types),
     }

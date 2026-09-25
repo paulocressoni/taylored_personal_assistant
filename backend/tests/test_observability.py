@@ -83,3 +83,39 @@ def test_trace_attributes_values_fit_the_sdk_limit() -> None:
     assert all(
         len(value) <= MAX_METADATA_VALUE_LEN for value in attributes.metadata.values()
     )
+
+
+def test_trace_attributes_summarises_per_call_tool_outcomes() -> None:
+    attributes = trace_attributes(
+        {
+            "route": "knowledge",
+            "channel": "api",
+            "tool_outcomes": [
+                {"tool": "calculate", "ok": True, "denied": False, "duration_ms": 2.4},
+                {"tool": "x", "ok": False, "denied": True, "duration_ms": 0.1},
+                {
+                    "tool": "y",
+                    "ok": False,
+                    "denied": False,
+                    "error_type": "ValueError",
+                    "duration_ms": 1.0,
+                },
+            ],
+        }
+    )
+    assert (
+        attributes.metadata["tool_outcomes"]
+        == "calculate:ok:2.4,x:denied:0.1,y:ValueError:1.0"
+    )
+
+
+def test_trace_attributes_truncates_a_long_tool_outcome_summary() -> None:
+    outcomes = [
+        {"tool": "calculate", "ok": True, "denied": False, "duration_ms": 1.0}
+    ] * 20
+    attributes = trace_attributes(
+        {"route": "knowledge", "channel": "api", "tool_outcomes": outcomes}
+    )
+    summary = attributes.metadata["tool_outcomes"]
+    assert len(summary) == MAX_METADATA_VALUE_LEN
+    assert summary.startswith("calculate:ok:1.0,calculate:ok:1.0")
