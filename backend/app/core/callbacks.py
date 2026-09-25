@@ -133,8 +133,19 @@ class RunTelemetry(BaseCallbackHandler):
         input_tokens = int(usage.get("input_tokens", 0))
         self.input_tokens += input_tokens
         self.output_tokens += int(usage.get("output_tokens", 0))
-        hit = _first_key(usage, _CACHE_HIT_KEYS)
-        miss = _first_key(usage, _CACHE_MISS_KEYS)
+        # Cache counts arrive NESTED on most providers — langchain normalises
+        # them into `input_token_details`, raw openai-style responses use
+        # `prompt_tokens_details` — and FLAT on a few. Scanning only the top
+        # level silently booked every cached token as a miss.
+        hit = 0
+        miss = 0
+        for detail_key in ("input_token_details", "prompt_tokens_details"):
+            detail = usage.get(detail_key)
+            if isinstance(detail, dict):
+                hit = hit or _first_key(detail, _CACHE_HIT_KEYS)
+                miss = miss or _first_key(detail, _CACHE_MISS_KEYS)
+        hit = hit or _first_key(usage, _CACHE_HIT_KEYS)
+        miss = miss or _first_key(usage, _CACHE_MISS_KEYS)
         if hit and not miss:
             # Vendor reports cache reads but no explicit miss field: the rest
             # of the prompt was served uncached, so derive the miss portion.
@@ -219,36 +230,3 @@ class RunTelemetry(BaseCallbackHandler):
             "cache_hit_ratio": ratio,
             "error_types": dict(self.error_types),
         }
-
-    def _add_usage(self, usage: dict[str, Any] | None) -> None:
-        """Accumulate one response's token usage, including prompt-cache fields.
-
-        Args:
-            usage: A generation's `usage_metadata` dict, or None when absent.
-        """
-        usage = usage or {}
-        input_tokens = int(usage.get("input_tokens", 0))
-        self.input_tokens += input_tokens
-        self.output_tokens += int(usage.get("output_tokens", 0))
-        # Cache counts arrive NESTED on most providers — langchain normalises
-        # them into `input_token_details`, raw openai-style responses use
-        # `prompt_tokens_details` — and FLAT on a few. Scanning only the top
-        # level silently booked every cached token as a miss.
-        hit = 0
-        miss = 0
-        for detail_key in ("input_token_details", "prompt_tokens_details"):
-            detail = usage.get(detail_key)
-            if isinstance(detail, dict):
-                hit = hit or _first_key(detail, _CACHE_HIT_KEYS)
-                miss = miss or _first_key(detail, _CACHE_MISS_KEYS)
-        hit = hit or _first_key(usage, _CACHE_HIT_KEYS)
-        miss = miss or _first_key(usage, _CACHE_MISS_KEYS)
-        if hit and not miss:
-            # Vendor reports cache reads but no explicit miss field: the rest
-            # of the prompt was served uncached, so derive the miss portion.
-            miss = max(0, input_tokens - hit)
-        elif not hit and not miss:
-            # No cache reporting at all — every input token is a cache miss.
-            miss = input_tokens
-        self.cache_hit_tokens += hit
-        self.cache_miss_tokens += miss

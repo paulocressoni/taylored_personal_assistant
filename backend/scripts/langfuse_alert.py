@@ -48,7 +48,7 @@ import sys
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("langfuse-alert")
@@ -114,7 +114,7 @@ def metrics_query(
     Returns:
         The parsed JSON response of the metrics endpoint.
     """
-    now = datetime.now(datetime.utc)
+    now = datetime.now(UTC)
     query = {
         "view": "observations",
         "metrics": [{"measure": measure, "aggregation": aggregation}],
@@ -293,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "title": "taylored-assistant alert probe",
                 "findings": findings,
-                "checked_at": datetime.now(datetime.utc).isoformat(),
+                "checked_at": datetime.now(UTC).isoformat(),
             },
         )
     return severity
