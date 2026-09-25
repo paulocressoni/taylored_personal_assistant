@@ -30,10 +30,12 @@ conf file:
     ERROR_ALERT=10
     NOTIFY_WEBHOOK_URL=https://ntfy.sh/your-secret-topic
 
-The Metrics API v2 response format varies slightly by build. If a run reports
-"unexpected response shape", re-run with --show-response and compare against
-the curl examples in infra/observability/alerts.md, then adjust the field-name
-tokens at the top of `_sum_rows`.
+The Metrics API v2 response format varies slightly by build: 4.30 returns the
+row array under `data`, older builds under `rows` (both are accepted below).
+If a run still reports "unexpected response shape", re-run with
+--show-response and compare against the curl examples in
+infra/observability/alerts.md, then adjust the field-name tokens at the top of
+`_sum_rows`.
 
 Requires Python 3.10+ and the prod stack being up (the API it queries).
 """
@@ -154,7 +156,11 @@ def _sum_rows(payload: dict, tokens: tuple[str, ...]) -> tuple[float, str | None
         (total, matched_field_name). ``matched_field_name`` is None and total 0
         when no row carried a recognised field.
     """
-    rows = payload.get("rows") or []
+    # Langfuse 4.30 nests the rows under `data`; older builds used `rows`.
+    # Reading the missing key yields no rows, which is indistinguishable from
+    # a genuinely unrecognised shape — so every probe run exited 1 instead of
+    # reporting the real severity.
+    rows = payload.get("data") or payload.get("rows") or []
     if not isinstance(rows, list) or not rows:
         return 0.0, None
     lowered = [key.lower() for key in rows[0]]

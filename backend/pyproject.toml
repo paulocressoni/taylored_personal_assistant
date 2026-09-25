@@ -48,6 +48,12 @@ markers = [
     "integration: live DeepSeek API smoke tests (excluded from the fast suite by default)",
 ]
 python_files = ["test_*.py", "smoke_*.py"]
+# `scripts/` is deliberately NOT part of the built distribution — the
+# setuptools config below packages only `app*` (and the Docker image copies
+# only `app/`), so the ops/cron scripts are never installable. Putting the
+# project root on sys.path lets tests import them directly (e.g.
+# `from scripts.langfuse_alert import _sum_rows`).
+pythonpath = ["."]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
