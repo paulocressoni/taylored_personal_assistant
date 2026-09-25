@@ -136,7 +136,11 @@ before that first start.
 - Langfuse v4 is **OpenTelemetry-based**: the LangChain `CallbackHandler` is constructed
   with no args and binds to the process-wide singleton client.
 - Per-trace attributes are passed through the invoke `config["metadata"]` using reserved
-  `langfuse_*` keys (session id, user id); the handler propagates them via OTel baggage.
+  `langfuse_*` keys: `langfuse_session_id`, `langfuse_user_id`, and the STATIC half of the
+  trace identity — `langfuse_trace_name` (fallback `assistant:turn`) and `langfuse_tags`
+  (`env:*`, `channel:*`). Stamping those at invoke time means a run that crashes, times out
+  or is abandoned still lands named and filterable; `enrich_trace` refines the name to
+  `assistant:<route>` and merges the `status:*` tag once the run finishes.
 - `turn_span()` opens an **app-owned root span** around the graph call at every invoke
   site (HTTP `/chat`, the WebSocket handler, the CLI and the smoke test). Langfuse reads
   a trace's name/tags/metadata from its app-root span, and `propagate_attributes` only

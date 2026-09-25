@@ -30,6 +30,10 @@ lets you prove the panel number is right.
   level fields exist only on the app-root row, so the matching queries filter
   `is_app_root = 1`; run the `queries.sql` §0 probes first if one returns
   nothing.
+- A run that never finished (crash, timeout, abandoned socket) keeps the fallback
+  trace name `assistant:turn`: it still carries `env:*` / `channel:*` but has no
+  `status:*` tag and no route metadata. `assistant:turn` rows in the routing
+  distribution are therefore a signal worth reading, not a bug.
 - **Cost needs pricing.** The DeepSeek API does not return cost in the
   response, so Langfuse can only infer it from a model definition.
   1. Project → **Settings → Models** → **New model definition**.
