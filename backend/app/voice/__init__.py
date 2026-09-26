@@ -1,1 +1,1 @@
-"""Voice / speech handling (added in later milestones)."""
+"""Voice pipeline: PCM helpers, VAD endpointing, speech-to-text and text-to-speech."""
