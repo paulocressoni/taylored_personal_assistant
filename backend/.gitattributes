@@ -1,0 +1,3 @@
+# Vendored model weights are opaque binaries: never apply text conversion
+# (CRLF rewriting would corrupt them) and never attempt a text diff.
+*.onnx binary
