@@ -1,6 +1,6 @@
 [project]
 name = "backend"
-version = "0.3.0"
+version = "0.3.1"
 description = "Smart home assistant backend"
 requires-python = ">=3.12,<3.14"
 dependencies = [
