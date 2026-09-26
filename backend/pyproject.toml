@@ -40,6 +40,12 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*"]
 
+# Ship the vendored VAD graph with the package. Neither the Docker image (which
+# copies `app/` wholesale) nor the editable dev install needs this, but a plain
+# wheel build would silently omit the .onnx and only fail at the first turn.
+[tool.setuptools.package-data]
+"app.voice" = ["models/*.onnx"]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
