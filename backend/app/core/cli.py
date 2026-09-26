@@ -17,6 +17,10 @@ def main() -> None:
     print(f"supported_languages: {', '.join(settings.supported_languages)}")
     print(f"deepseek_api_key   : {'<set>' if settings.has_deepseek else '<MISSING>'}")
     print(f"assistant_api_key  : {'<set>' if settings.has_assistant else '<MISSING>'}")
+    print(f"voice_enabled      : {settings.voice_enabled}")
+    print(f"voice_ready        : {settings.voice_ready}")
+    print(f"voice_stt_api_key  : {'<set>' if settings.has_voice_stt else '<MISSING>'}")
+    print(f"voice_tts_api_key  : {'<set>' if settings.has_voice_tts else '<MISSING>'}")
 
 
 if __name__ == "__main__":
