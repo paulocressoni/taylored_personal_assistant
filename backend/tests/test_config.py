@@ -44,3 +44,24 @@ def test_fail_fast_on_missing_api_key() -> None:
     """An empty DEEPSEEK_API_KEY must raise loudly at construction time."""
     with pytest.raises(ValueError, match="DEEPSEEK_API_KEY is required"):
         Settings(_env_file=None, deepseek_api_key="")
+
+
+def test_voice_disabled_by_default() -> None:
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+    )
+    assert settings.voice_enabled is False
+    assert settings.voice_ready is False
+
+
+def test_voice_enabled_requires_stt_key() -> None:
+    """Switching voice on without keys must fail loudly at construction time."""
+    with pytest.raises(ValueError, match="VOICE_STT_API_KEY"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+        )
