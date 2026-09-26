@@ -24,8 +24,16 @@ on:
         tags:
             - 'v*'
 
+# The SBOM step attaches the SBOMs it generated onto the GitHub Release, so
+# this workflow needs more than a read-only token: `actions: read` to download
+# the artifact it just uploaded (the artifacts API is NOT granted by default
+# once a `permissions:` block exists) and `contents: write` to delete/re-upload
+# the release asset. Dropping either one fails "Generate SBOM" with a 403 — and
+# it fails AFTER the images are already pushed, so the run is red while the
+# release images exist.
 permissions:
-    contents: read
+    contents: write
+    actions: read
     # GITHUB_TOKEN can push packages to GHCR because the repo owner is a
     # personal account (no org PAT needed).
     packages: write
