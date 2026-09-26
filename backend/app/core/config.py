@@ -174,10 +174,21 @@ class Settings(BaseSettings):
     # so a hardware session declares 16 kHz for both directions and needs no
     # resampling anywhere; only the browser plays back at the TTS-native 24 kHz.
 
-    # Server-side endpointing (Silero VAD). min_silence_ms is the main dial:
-    # lower feels snappier, higher clips less of the user's sentence.
+    # Server-side endpointing (Silero VAD).
+    # Thresholds mirror the upstream wrapper's defaults (0.5 / threshold-0.15):
+    # speech starts ABOVE threshold and only ends once it drops BELOW
+    # neg_threshold, so a probability hovering near 0.5 cannot chop one
+    # sentence into several.
     voice_vad_threshold: float = 0.5
+    voice_vad_neg_threshold: float = 0.35
+    # Short blips below this are discarded as noise rather than treated as a
+    # turn; padding re-adds a few ms around a segment so the first and last
+    # phoneme survive for STT.
     voice_vad_min_speech_ms: int = 150
+    voice_vad_speech_pad_ms: int = 30
+    # The main latency/robustness dial, and deliberately 5x the upstream
+    # default of 100 ms: we would rather wait out a thinking pause than cut
+    # the user off mid-thought, and pay for it in ~400 ms of extra latency.
     voice_vad_min_silence_ms: int = 500
     voice_vad_max_utterance_s: float = 30.0
 
@@ -217,7 +228,9 @@ class Settings(BaseSettings):
     @property
     def has_voice_tts(self) -> bool:
         """True when a TTS key is present, whatever the provider."""
-        return bool(self.voice_tts_api_key.get_secret_value())
+        return bool(self.voice_tts_api_key.get_secret_value()) and not _is_placeholder(
+            self.voice_tts_api_key.get_secret_value()
+        )
 
     @property
     def voice_ready(self) -> bool:

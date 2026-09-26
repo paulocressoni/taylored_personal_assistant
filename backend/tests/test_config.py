@@ -78,3 +78,15 @@ def test_voice_enabled_requires_a_voice_per_language() -> None:
             voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
             voice_tts_voices={"en": "marin"},
         )
+
+
+def test_placeholder_keys_do_not_count_as_configured() -> None:
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+        voice_stt_api_key="gsk_REPLACE_ME",  # pragma: allowlist secret
+        voice_tts_api_key="sk-REPLACE_ME",  # pragma: allowlist secret
+    )
+    assert settings.has_voice_stt is False
+    assert settings.has_voice_tts is False
