@@ -18,6 +18,12 @@ from app.language.detector import SUPPORTED_LANGS
 
 VALID_ENVS = ("dev", "prod")
 
+
+def _is_placeholder(value: str) -> bool:
+    """Treat the .env template's REPLACE_ME sentinels as "not configured"."""
+    return "REPLACE_ME" in value
+
+
 # Step 1 — chicken-and-egg: ENV must exist in the OS environment BEFORE
 # pydantic runs, because it decides which .env file to load.
 _APP_ENV = os.environ.get("ENV")
@@ -164,7 +170,9 @@ class Settings(BaseSettings):
     # server resamples only when they differ from the provider's output.
     voice_input_sample_rate: int = 16000
     voice_output_sample_rate: int = 24000
-    # TODO: check whether the frquencies are a match for the respeaker.
+    # The reSpeaker XVF3800's I2S interface runs at 16 kHz (stereo, 32-bit),
+    # so a hardware session declares 16 kHz for both directions and needs no
+    # resampling anywhere; only the browser plays back at the TTS-native 24 kHz.
 
     # Server-side endpointing (Silero VAD). min_silence_ms is the main dial:
     # lower feels snappier, higher clips less of the user's sentence.
@@ -202,7 +210,9 @@ class Settings(BaseSettings):
     @property
     def has_voice_stt(self) -> bool:
         """True when an STT key is present, whatever the provider."""
-        return bool(self.voice_stt_api_key.get_secret_value())
+        return bool(self.voice_stt_api_key.get_secret_value()) and not _is_placeholder(
+            self.voice_stt_api_key.get_secret_value()
+        )
 
     @property
     def has_voice_tts(self) -> bool:

@@ -65,3 +65,16 @@ def test_voice_enabled_requires_stt_key() -> None:
             assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
             voice_enabled=True,
         )
+
+
+def test_voice_enabled_requires_a_voice_per_language() -> None:
+    with pytest.raises(ValueError, match="no voice for supported language"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+            voice_stt_api_key="gsk-test",  # pragma: allowlist secret
+            voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
+            voice_tts_voices={"en": "marin"},
+        )
