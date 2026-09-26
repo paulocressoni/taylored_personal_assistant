@@ -263,12 +263,23 @@ class Settings(BaseSettings):
                     f"OpenAI). Add it to .env.{_APP_ENV} or set the "
                     "VOICE_STT_API_KEY env var."
                 )
+
             if not self.has_voice_tts:
                 raise ValueError(
                     "VOICE_ENABLED=true requires VOICE_TTS_API_KEY (OpenAI). "
                     f"Add it to .env.{_APP_ENV} or set the VOICE_TTS_API_KEY "
                     "env var."
                 )
+
+            # Hysteresis needs the stop threshold at or below the start
+            # threshold: speech begins above the higher value and only ends
+            # below the lower one.
+            if self.voice_vad_neg_threshold > self.voice_vad_threshold:
+                raise ValueError(
+                    "VOICE_VAD_NEG_THRESHOLD must be at or below "
+                    "VOICE_VAD_THRESHOLD, otherwise endpointing is undefined."
+                )
+
             # A language we can recognise but cannot speak is a config bug, and
             # it is far cheaper to catch here than mid-conversation.
             missing_voices = [
@@ -281,6 +292,7 @@ class Settings(BaseSettings):
                     "VOICE_TTS_VOICES has no voice for supported language(s): "
                     f"{', '.join(missing_voices)}. Add one entry per language."
                 )
+
         return self
 
 

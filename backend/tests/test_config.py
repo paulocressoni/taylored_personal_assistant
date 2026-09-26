@@ -90,3 +90,17 @@ def test_placeholder_keys_do_not_count_as_configured() -> None:
     )
     assert settings.has_voice_stt is False
     assert settings.has_voice_tts is False
+
+
+def test_voice_vad_thresholds_must_be_ordered() -> None:
+    with pytest.raises(ValueError, match="VOICE_VAD_NEG_THRESHOLD"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+            voice_stt_api_key="gsk-test",  # pragma: allowlist secret
+            voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
+            voice_vad_threshold=0.3,
+            voice_vad_neg_threshold=0.6,
+        )
