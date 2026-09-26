@@ -150,17 +150,24 @@ backup verifies instead.
 ## Real recovery (only after data loss)
 
 ```bash
-# 1. stop the whole stack so nothing writes during the restore
+# 1. stop the whole stack so nothing writes during the restore.
+#    --profile observability is REQUIRED here: without it Compose stops only
+#    backend / frontend / app-db and leaves Langfuse's Postgres, ClickHouse,
+#    MinIO and Redis writing while you restore — the torn-restore this step
+#    exists to prevent.
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml \
-  -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod stop
+  -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod \
+  --profile observability stop
 
 # 2. mount identity, point AGE_IDENTITY at it, then:
 python3 infra/backup/restore.py --config infra/backup/backup.conf restore \
   --date 2026-09-09 --to-live --yes
 
 # 3. restart and let the app recreate the Postgres checkpointer schema if needed
+#    (same profile: `start` is as profile-bound as `stop`)
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml \
-  -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod start
+  -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod \
+  --profile observability start
 ```
 
 `--to-live` replaces existing objects in the real databases/volumes

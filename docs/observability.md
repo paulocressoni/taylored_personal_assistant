@@ -228,10 +228,14 @@ own after a power cut.
   `clickhouse_data`, `clickhouse_logs`, `redis_data` and `minio_data` for Langfuse,
   plus `app_db_data` for the conversation checkpoints. Rebooting or recreating a
   container never touches them.
-- **Always pass `--profile observability`.** Without it Compose's model contains only
-  `app-db`, `backend` and `frontend` — the six Langfuse services are not part of the
-  command at all, so it neither starts nor stops them (they surface as orphan
-  containers). Confirm with `... config --services` before trusting a command.
+- **Every lifecycle command needs `--profile observability`, including the ones that
+  STOP things.** Compose only acts on services in the active profile set, so a plain
+  `down` removes `backend`, `frontend` and `app-db` and leaves all six Langfuse
+  containers running — and `ps` lists them either way, which is what hides the
+  mistake. The `Makefile` targets (`dev-down` / `prod-down` / `dev-logs` / `prod-logs`
+  / `dev-ps` / `prod-ps`) always pass it, so prefer those; if you type the command
+  yourself, pass it too. Leftovers from an earlier profile-less run:
+  `... down --remove-orphans` once.
 - **Cold-boot ordering is not guaranteed.** `depends_on` is honoured by `up`, not by
   the daemon restarting containers after a reboot, so `backend` can start before
   `app-db` is accepting connections. `open_checkpointer()` runs `setup()` on every

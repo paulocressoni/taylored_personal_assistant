@@ -290,14 +290,16 @@ Project-level cleanup (PowerShell — the `make` equivalents are `dev-down` / `d
 ```powershell
 # stop the dev stack, keep named volumes
 # (dev runs as its own project, taylored-assistant-dev)
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev down
+# NOTE the --profile on BOTH: Compose only acts on services in the ACTIVE
+# profile set, so without it `down` removes backend / frontend / app-db and
+# leaves all six Langfuse containers running — while `ps` lists them anyway,
+# which is what hides the mistake. The make targets already pass it.
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability down
 # ...or also delete the volumes (wipes the DB/trace data)
-docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev down -v
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability down -v
 
-# Same for the prod project — pass `--profile observability` so the Langfuse
-# services started under that profile are stopped too. Add `-v` to also wipe
-# the prod named volumes (checkpointer + Langfuse data — which is why the
-# nightly backups exist).
+# Same for the prod project. Add `-v` to also wipe the prod named volumes
+# (checkpointer + Langfuse data — which is why the nightly backups exist).
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability down
 ```
 
@@ -328,10 +330,16 @@ network taylored-assistant_default has active endpoints (name:"taylored-assistan
 A network can only be deleted when **zero** containers (running or stopped) are connected
 to it — the attached containers are the network's "endpoints".
 
-> **Observed quirk (Compose v5.4.0):** `docker compose down` can skip the container-removal
-> step entirely and jump straight to `Network ... Removing`, so it never frees the network —
-> even though `docker compose ps` still lists the containers. If `down` keeps failing with
-> this message, don't loop on it; remove the containers directly:
+> **Check this first — a missing `--profile observability`.** This is the usual cause, and
+> it is not a Compose bug: `down` acts only on services in the active profile set, so a
+> profile-less `down` deliberately skips the six Langfuse containers — `postgres` among
+> them, which is precisely the endpoint named in the message above. Re-run `down` with the
+> profile and the network is released.
+
+> **Observed quirk (Compose v5.4.0):** once the profile is confirmed correct, `down` can
+> still skip the container-removal step entirely and jump straight to `Network ... Removing`,
+> so it never frees the network — even though `docker compose ps` still lists the containers.
+> If `down` keeps failing with this message, don't loop on it; remove the containers directly:
 
 ```powershell
 # 1. Stop + remove every project container (force = the reliable fallback)
@@ -343,7 +351,8 @@ docker network rm taylored-assistant_default
 
 - `docker rm` **never** deletes named volumes — `postgres_data`, `clickhouse_data`, etc.
   survive, so the next `up` reuses them.
-- To also wipe the volumes: `docker compose ... down -v` (after the containers are gone).
+- To also wipe the volumes: `docker compose ... --profile observability down -v`
+  (after the containers are gone).
 
 ## Common gotchas
 - **`curl: (7) Failed to connect to localhost:8000`** → the container is fine, but its port isn't published; re-run with `-p 8000:8000` (the healthcheck passes even when the host can't reach it, because it runs inside the container).

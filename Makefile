@@ -20,26 +20,26 @@ export APP_VERSION
 .PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps
 
 config:
-    cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
+	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
 
 cli:
-    cd $(BACKEND) && ENV=$(ENV) uv run python -m app.graph.cli "$(MSG)"
+	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.graph.cli "$(MSG)"
 
 test:
-    cd $(BACKEND) && ENV=$(ENV) uv run pytest
+	cd $(BACKEND) && ENV=$(ENV) uv run pytest
 
 lint:
-    cd $(BACKEND) && uv run ruff check .
-    cd $(BACKEND) && uv run ruff format --check .
-    cd frontend && npm run lint
-    cd frontend && npx prettier --check .
+	cd $(BACKEND) && uv run ruff check .
+	cd $(BACKEND) && uv run ruff format --check .
+	cd frontend && npm run lint
+	cd frontend && npx prettier --check .
 
 types:
-    cd $(BACKEND) && uv run mypy app
+	cd $(BACKEND) && uv run mypy app
 
 # --- Local (non-Docker) uvicorn — the pre-M12 quick dev loop ---
 dev-local:
-    cd $(BACKEND) && ENV=$(ENV) uv run uvicorn app.main:app --reload
+	cd $(BACKEND) && ENV=$(ENV) uv run uvicorn app.main:app --reload
 
 # --- Compose overlay plumbing (M12, M28) ---------------------------------
 # base.yml + an overlay are merged by Compose; --env-file feeds the
@@ -60,20 +60,26 @@ COMPOSE_PROD := docker compose -p taylored-assistant-prod -f $(COMPOSE_DIR)/dock
 # THE M12 command: whole stack (backend + frontend + Langfuse + DBs), built
 # from source. The frontend builds its `dev` Dockerfile target (hot reload).
 dev-up:
-    $(COMPOSE_DEV) --profile observability up --build -d --wait
+	$(COMPOSE_DEV) --profile observability up --build -d --wait
 
 # Same stack WITHOUT Langfuse (lighter/faster; observability skipped).
 dev-up-light:
-    $(COMPOSE_DEV) up --build -d --wait
+	$(COMPOSE_DEV) up --build -d --wait
 
+# IMPORTANT: every lifecycle target carries --profile observability, including
+# the ones that STOP things. `docker compose down` only acts on the services in
+# the active model, so without the profile it removes backend/frontend/app-db
+# and leaves the six Langfuse containers running. `ps` shows them either way,
+# which is what makes the mistake invisible. (Leftovers from a profile-less
+# run: add --remove-orphans once.)
 dev-down:
-    $(COMPOSE_DEV) down
+	$(COMPOSE_DEV) --profile observability down
 
 dev-logs:
-    $(COMPOSE_DEV) logs -f
+	$(COMPOSE_DEV) --profile observability logs -f
 
 dev-ps:
-    $(COMPOSE_DEV) ps
+	$(COMPOSE_DEV) --profile observability ps
 
 # ============================ PROD ============================
 # Runs the CI-published GHCR images pinned to :$(APP_VERSION) — nothing is
@@ -91,19 +97,21 @@ dev-ps:
 # includes the Langfuse stack (M28) — without it `pull` silently skips those
 # services and prod-up would have nothing to start.
 prod-pull:
-    $(COMPOSE_PROD) --profile observability pull
+	$(COMPOSE_PROD) --profile observability pull
 
 # Pull + run the release. --no-build guarantees we never compile locally.
 # --profile observability brings up the full Langfuse stack on prod (M28).
 prod-up:
-    $(COMPOSE_PROD) --profile observability pull
-    $(COMPOSE_PROD) --profile observability up -d --no-build --wait
+	$(COMPOSE_PROD) --profile observability pull
+	$(COMPOSE_PROD) --profile observability up -d --no-build --wait
 
+# See the note above dev-down: `down` MUST carry the profile or the Langfuse
+# containers survive the teardown. This is the prod half of that rule.
 prod-down:
-    $(COMPOSE_PROD) down
+	$(COMPOSE_PROD) --profile observability down
 
 prod-logs:
-    $(COMPOSE_PROD) logs -f
+	$(COMPOSE_PROD) --profile observability logs -f
 
 prod-ps:
-    $(COMPOSE_PROD) ps
+	$(COMPOSE_PROD) --profile observability ps
