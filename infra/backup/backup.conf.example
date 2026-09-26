@@ -1,0 +1,52 @@
+# KEY=VALUE config for backup.py (M28). Copy this file to infra/backup/backup.conf
+# on the DeskMini and edit. Values here win over the built-in defaults.
+# Boolean-ish knobs are never needed: an empty value disables that item.
+
+# Where dated backup dirs (daily/YYYY-MM-DD/) are written.
+BACKUP_ROOT=/var/backups/taylored-assistant
+
+# The prod compose project name (matches `docker compose -p taylored-assistant-prod`).
+DOCKER_PROJECT=taylored-assistant-prod
+
+# Compose files, comma-separated, RELATIVE TO THE REPO ROOT. The cron job must
+# therefore cd into the repo checkout before running backup.py (see crontab).
+COMPOSE_FILES=infra/compose/docker-compose.base.yml,infra/compose/docker-compose.prod.yml
+
+# Compose env file (also relative to the repo root) so ${VAR:?...} resolves.
+COMPOSE_ENV_FILE=infra/compose/.env.prod
+
+# How many dated backup dirs to keep (0 = none, negative = keep everything).
+RETENTION_DAYS=14
+
+# ---- app-db: the M28 checkpointer Postgres (conversation memory + future scheduled_items) ----
+APP_DB_SERVICE=app-db
+APP_DB_USER=assistant
+APP_DB_NAME=assistant
+
+# ---- langfuse-postgres: Langfuse's own transactional Postgres ----
+LANGFUSE_DB_SERVICE=postgres
+LANGFUSE_DB_USER=postgres
+LANGFUSE_DB_NAME=postgres
+
+# Full Docker volume names (project prefix included) to tar, comma-separated.
+# ClickHouse = traces/metrics; MinIO = Langfuse media. Chroma goes here the day
+# the vector store exists. Do NOT tar the Postgres volumes - pg_dump above covers them.
+VOLUMES=taylored-assistant-prod_clickhouse_data,taylored-assistant-prod_minio_data
+
+# ---- extension slots (leave empty until the feature exists) ----
+# Host directory holding OAuth refresh tokens (Google Calendar / Spotify).
+# Back these up WITHOUT FAIL - losing them re-runs both consent flows from scratch.
+OAUTH_TOKEN_DIR=
+# Any other host dir you want in the backup (e.g. /etc/letsencrypt for TLS certs).
+EXTRA_HOST_DIR=
+
+# age recipient PUBLIC key file. The box can encrypt but NOT decrypt.
+# Generate with:  age-keygen -o /root/.config/age/backup-identity.txt
+#                 age-keygen -y /root/.config/age/backup-identity.txt
+#                 ... > /var/backups/taylored-assistant/backup-recipient.pub
+# Then copy backup-identity.txt to OFFLINE media and delete it from the box.
+AGE_RECIPIENT=/var/backups/taylored-assistant/backup-recipient.pub
+
+# age IDENTITY file - normally empty on the backup box. Set it only for a
+# verify/restore drill when the offline identity is mounted (e.g. /mnt/usb/key.txt).
+AGE_IDENTITY=

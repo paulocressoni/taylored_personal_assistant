@@ -53,7 +53,8 @@ taylored_personal_assistant/
 │       ├── docker-compose.base.yml       # Base stack: backend + frontend + Langfuse (M12)
 │       ├── docker-compose.dev.yml        # Dev overlay: bind mounts, reload, ports (M12)
 │       ├── docker-compose.prod.yml       # Prod overlay: GHCR images pinned to APP_VERSION (M23)
-│       └── .env.example                  # Compose secrets template (M08)
+│       ├── .env.dev.example              # Compose secrets template — dev (M08/M28)
+│       └── .env.prod.example             # Compose secrets template — prod (M28)
 ├── backend/
     ├── pyproject.toml            # Project manifest + deps (source of truth)
     ├── uv.lock                   # Locked dependency versions (COMMIT this)
@@ -409,7 +410,7 @@ Run the full dev stack (backend + frontend + Langfuse + DBs — M12):
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant   # from the repo root
 make dev-up                  # full compose stack with hot reload (Linux/macOS)
 # Windows/PowerShell equivalent:
-#   docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait
+#   docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait
 # Backend only, no Docker:  make dev-local
 ```
 
@@ -561,13 +562,14 @@ Quick start (full guide: [docs/observability.md](docs/observability.md)):
 
 ```powershell
 cd infra/compose
-Copy-Item .env.example .env        # fill in secrets (openssl rand -hex 32)
+Copy-Item .env.dev.example .env.dev    # fill in secrets (openssl rand -hex 32)
 cd ../..
 make dev-up                        # M12: full stack incl. Langfuse (observability profile)
 # backend/.env.dev: LANGFUSE_ENABLED=true + pk-lf-* / sk-lf-* keys (see .env.dev.example)
 cd backend
 ENV=dev uv run python -m scripts.smoke_07_langfuse   # verify a trace lands
 # open http://localhost:3000 -> Traces -> newest run
+# first login (dev): dev@localhost.local / dev-password-123 — see docs/observability.md
 ```
 
 M12 Makefile targets: `make dev-up` (full stack incl. Langfuse) · `make dev-up-light`
@@ -762,7 +764,7 @@ Run everything from `backend/` unless noted.
 | Lint + fix | `uv run ruff check --fix .` |
 | Format | `uv run ruff format .` |
 | Run tests | `uv run pytest` |
-| Run the full dev stack (M12) | `make dev-up` (repo root) · PowerShell: `docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env --profile observability up --build -d --wait` |
+| Run the full dev stack (M12) | `make dev-up` (repo root) · PowerShell: `docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait` |
 | Run the full stack without Langfuse | `make dev-up-light` (repo root) |
 | Stop the stack / tail logs | `make dev-down` · `make dev-logs` (repo root) |
 | Run the API dev server only (no Docker) | `make dev-local` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |

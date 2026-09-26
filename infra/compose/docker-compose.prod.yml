@@ -8,28 +8,34 @@
 #   - `pull_policy: always` forces docker compose to PULL that exact image
 #                         — prod never builds from the working tree and
 #                         never reuses a stale local copy.
-#   - `environment:`      merges per key (ENV: prod).
+#   - `environment:`      merges per key (ENV: prod, + M28 additions).
 #   - `ports:`            concatenate with base — only the browser-facing
-#                         port is published; the backend stays internal
-#                         (the browser reaches it ONLY through the
-#                         frontend's nginx proxy, M08 #4).
+#                         ports are published; the backend stays internal.
+#
+# M28 (Langfuse in production) adds to this overlay:
+#   - `app-db`: a dedicated Postgres for LangGraph conversation checkpoints
+#     (separate from Langfuse's own `postgres` service in base.yml).
+#   - backend CHECKPOINT_DB_URL + LANGFUSE_BASE_URL (service name — this was
+#     a bug: prod.yml previously left LANGFUSE_BASE_URL at the host URL).
+#   - langfuse-web browser port + NEXTAUTH_URL pointing at the DeskMini.
+#   - the observability profile is activated in the Makefile prod-up/prod-pull
+#     so the full Langfuse stack actually starts.
 #
 # GOLDEN RULE: the image tag IS the deployed version. The image ref is
 # pinned to :${APP_VERSION} and REQUIRES it — never :latest in prod.
-# `:latest` exists only for browsing convenience on GHCR.
 #
 # Usage (run from the repo root with Docker running). PROD runs under its
 # OWN project name -p taylored-assistant-prod (separate volumes/networks/
 # containers from dev - conversation data is never shared):
-#   $env:APP_VERSION = '1.3.0'
+#   $env:APP_VERSION = '0.9.0'
 #   docker compose -p taylored-assistant-prod `
 #                  -f infra/compose/docker-compose.base.yml `
 #                  -f infra/compose/docker-compose.prod.yml `
-#                  --env-file infra/compose/.env pull
+#                  --env-file infra/compose/.env.prod --profile observability pull
 #   docker compose -p taylored-assistant-prod `
 #                  -f infra/compose/docker-compose.base.yml `
 #                  -f infra/compose/docker-compose.prod.yml `
-#                  --env-file infra/compose/.env up -d --no-build --wait
+#                  --env-file infra/compose/.env.prod --profile observability up -d --no-build --wait
 #
 #   `pull` first + `up --no-build` guarantees you run the exact published,
 #   Trivy-scanned image — never something rebuilt locally.
@@ -40,19 +46,37 @@ services:
     # Replace base's local image/build with the release image from GHCR.
     # ${APP_VERSION:?...} fails fast instead of silently deploying a blank
     # or default tag.
-    image: ghcr.io/paulocressoni/taylored-personal-assistant-backend:${APP_VERSION:?set APP_VERSION to the release you deploy (e.g. 1.3.0, never latest)}
+    image: ghcr.io/paulocressoni/taylored-personal-assistant-backend:${APP_VERSION:?set APP_VERSION to the release you deploy (e.g. 0.9.0, never latest)}
     pull_policy: always
     environment:
       ENV: prod
+      # The SDK runs INSIDE the container network, so it must reach
+      # Langfuse by SERVICE NAME. Previously prod.yml left this unset and the
+      # SDK used backend/.env.prod's http://localhost:3000 (host-oriented) —
+      # wrong inside the container.
+      LANGFUSE_BASE_URL: http://langfuse-web:3000
+      # M28: conversation memory moves from SQLite to Postgres. The
+      # checkpointer (app/graph/checkpointer.py) selects Postgres whenever
+      # CHECKPOINT_DB_URL is set. IMPORTANT: keep APP_DB_PASSWORD
+      # ALPHANUMERIC (no ':', '@', '/') so it is safe to inline in a URL.
+      CHECKPOINT_DB_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@app-db:5432/${APP_DB_NAME}
     env_file:
       # Real secrets (DEEPSEEK_API_KEY, Langfuse keys) for prod.
       - ../../backend/.env.prod
-    # No published port: reachable only via the frontend nginx proxy. The
-    # base image's HEALTHCHECK + the checkpoints_data volume still apply
-    # (merged from base.yml, nothing to repeat here).
+    depends_on:
+      # base.yml already makes backend wait for Langfuse (required: false).
+      # We repeat it here (overlay depends_on merges per key) AND add the
+      # hard requirement on the checkpoint DB being healthy.
+      langfuse-web:
+        condition: service_healthy
+        required: false
+      app-db:
+        condition: service_healthy
+    # No published port: reachable only via the frontend nginx proxy. No
+    # volumes either — checkpoints live in Postgres (app-db), not on disk.
 
   frontend:
-    image: ghcr.io/paulocressoni/taylored-personal-assistant-frontend:${APP_VERSION:?set APP_VERSION to the release you deploy (e.g. 1.3.0, never latest)}
+    image: ghcr.io/paulocressoni/taylored-personal-assistant-frontend:${APP_VERSION:?set APP_VERSION to the release you deploy (e.g. 0.9.0, never latest)}
     pull_policy: always
     ports:
       # nginx inside the container listens on :80; publish to the host.
@@ -61,3 +85,51 @@ services:
       # which also guarantees nginx can resolve the `backend` upstream at
       # boot (nginx resolves proxy_pass hostnames at startup).
       - "8080:80"
+
+  # ===== M28: dedicated Postgres for LangGraph conversation checkpoints =====
+  app-db:
+    # Separate database from Langfuse's own `postgres` service (base.yml):
+    # distinct credentials, volume and backup scope. Only the backend talks
+    # to it, over the project network — no host port published.
+    image: postgres:17.11
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${APP_DB_USER:?set APP_DB_USER in infra/compose/.env.prod}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD in infra/compose/.env.prod}
+      POSTGRES_DB: ${APP_DB_NAME:?set APP_DB_NAME in infra/compose/.env.prod}
+      TZ: UTC
+      PGTZ: UTC
+    volumes:
+      - app_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USER} -d ${APP_DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ===== M28: Langfuse browser access + prod identities =====
+  langfuse-web:
+    ports:
+      # Publish the Langfuse UI to the host so dashboards are reachable from
+      # any LAN machine: http://<deskmini-host>:3000 (dev also uses 3000,
+      # but dev and prod run on different hosts).
+      - "3000:3000"
+    environment:
+      # Browser-facing URL. base.yml hardcodes http://localhost:3000, which is
+      # only correct when the BROWSER runs on the same host as Langfuse (dev).
+      # On the DeskMini the dashboards are opened from other machines on the
+      # LAN, so point this at the DeskMini's reachable hostname/IP.
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL (e.g. http://deskmini.local:3000) in infra/compose/.env.prod}
+      # Prod-flavoured headless-init identities (base.yml defaults say "Dev").
+      # Idempotent: Langfuse creates them once, on first boot.
+      LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-prod-org}
+      LANGFUSE_INIT_ORG_NAME: ${LANGFUSE_INIT_ORG_NAME:-Prod Org}
+      LANGFUSE_INIT_PROJECT_ID: ${LANGFUSE_INIT_PROJECT_ID:-prod-project}
+      LANGFUSE_INIT_PROJECT_NAME: ${LANGFUSE_INIT_PROJECT_NAME:-Prod Project}
+      LANGFUSE_INIT_USER_EMAIL: ${LANGFUSE_INIT_USER_EMAIL:-admin@home.local}
+      LANGFUSE_INIT_USER_NAME: ${LANGFUSE_INIT_USER_NAME:-Prod Admin}
+
+volumes:
+  # Checkpoint DB data for the app-db service above. Survives `docker compose
+  # down`; included in the nightly pg_dump backup (infra/backup/).
+  app_db_data:

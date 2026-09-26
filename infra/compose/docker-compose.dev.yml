@@ -1,10 +1,12 @@
-# infra/compose/docker-compose.dev.yml  (M12)
+# infra/compose/docker-compose.dev.yml  (M12, M28)
 # ------------------------------------------------------------------
-# DEV overlay ON TOP of base.yml. Contains ONLY dev differences:
+# DEV overlay ON TOP OF base.yml. Contains ONLY dev differences:
 #   - bind mounts  : live code, no rebuild on every edit
 #   - --reload     : uvicorn restarts on every .py change
 #   - vite dev     : frontend HMR
 #   - ports        : open services to the host browser
+#   - checkpoints  : DEV-only SQLite memory volume (M28 — base.yml no
+#                    longer ships it; prod uses Postgres instead)
 #
 # Merge semantics in action:
 #   - `command:`       overrides base (scalar wins)
@@ -33,6 +35,11 @@ services:
       # git-ignored backend/.env.dev, injected as container env vars.
       - ../../backend/.env.dev
     volumes:
+      # DEV-only SQLite conversation memory (M28). The named volume persists
+      # checkpoints.db across container recreation. It mounts over the whole
+      # image /app — harmless here because the bind mount below layers live
+      # source over the code paths.
+      - checkpoints_data:/app
       # Bind-mount ONLY app/ so the image's /app/.venv (Linux) is NOT
       # shadowed by the host's Windows .venv. uvicorn --reload watches
       # /app/app and restarts on every .py edit.
@@ -69,3 +76,9 @@ services:
     # Langfuse services stay internal (no host port needed).
     ports:
       - "3000:3000"
+
+volumes:
+  # DEV-only SQLite checkpoints volume (base.yml no longer declares it —
+  # prod checkpoints live in the app-db Postgres, see prod.yml). Named
+  # volume so `docker compose down` keeps it; `down -v` resets all dev data.
+  checkpoints_data:

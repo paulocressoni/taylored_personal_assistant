@@ -19,10 +19,12 @@ from langchain_core.messages import HumanMessage
 from app.core.callbacks import RunTelemetry
 from app.core.config import settings
 from app.core.observability import (
+    enrich_trace,
     flush,
     langfuse_metadata,
     new_langfuse_handler,
     trace_url,
+    turn_span,
 )
 from app.graph.graph import build_graph
 from app.graph.state import IPAState
@@ -62,14 +64,16 @@ def _invoke(user_input: str) -> tuple[dict, Any]:
         callbacks.append(langfuse)
 
     graph = build_graph()
-    result = graph.invoke(
-        initial,
-        config={
-            "callbacks": callbacks,
-            "configurable": configurable,
-            "metadata": metadata,
-        },
-    )
+    with turn_span():
+        result = graph.invoke(
+            initial,
+            config={
+                "callbacks": callbacks,
+                "configurable": configurable,
+                "metadata": metadata,
+            },
+        )
+        enrich_trace(result)
     if langfuse is not None:
         flush()  # v4: client.flush(), so the trace lands before we print
     return result, langfuse

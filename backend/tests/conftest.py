@@ -65,6 +65,9 @@ def make_state(**overrides) -> dict:
         "llm_calls": 0,
         "tool_iterations": 0,
         "tools_called": [],
+        "tool_outcomes": [],
+        "permission_denials": [],
+        "usage": None,
     }
     state.update(overrides)
     return state

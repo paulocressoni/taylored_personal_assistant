@@ -13,10 +13,12 @@ from langchain_core.messages import HumanMessage
 
 from app.core.callbacks import RunTelemetry
 from app.core.observability import (
+    enrich_trace,
     flush,
     langfuse_metadata,
     new_langfuse_handler,
     trace_url,
+    turn_span,
 )
 from app.graph.graph import build_graph
 from app.graph.state import IPAState
@@ -49,6 +51,9 @@ def main() -> None:
         "llm_calls": 0,
         "tool_iterations": 0,
         "tools_called": [],  # One seeded so the reducer has a base
+        "tool_outcomes": [],  # Reducer base for the M28 per-tool outcome log
+        "permission_denials": [],  # Reducer base for the M28 denial log
+        "usage": None,
     }
 
     # One telemetry instance per run. "callbacks" makes the events fire for
@@ -64,17 +69,18 @@ def main() -> None:
     if langfuse is not None:
         callbacks.append(langfuse)
 
-    # TODO: implement pre-warm at boot for get_chat_model when serving the agent
-
     graph = build_graph()
-    final = graph.invoke(
-        initial,
-        config={
-            "callbacks": callbacks,
-            "configurable": configurable,
-            "metadata": metadata,  # <- v4 reads langfuse_* from here
-        },
-    )
+    # turn_span() opens the app-root span the trace's identity is written to.
+    with turn_span():
+        final = graph.invoke(
+            initial,
+            config={
+                "callbacks": callbacks,
+                "configurable": configurable,
+                "metadata": metadata,  # <- v4 reads langfuse_* from here
+            },
+        )
+        enrich_trace(final)
 
     print(final)
     print("=== last message ===")
