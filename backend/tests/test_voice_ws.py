@@ -1,4 +1,5 @@
-"""Tests for the /ws/voice route: handshake policy, framing and slot accounting.
+"""Tests for the /ws/voice route: handshake policy, framing, slot accounting,
+idle timeout and rate limiting.
 
 The real app is booted through the lifespan, exactly as test_api.py does, and only
 the graph and the voice providers are swapped for fakes — so what is under test
@@ -7,12 +8,15 @@ is the route's own policy plus the real session behind it.
 
 import json
 import time
+from typing import Any
 
 import pytest
 from conftest import FakeSynthesizer, FakeTranscriber, ScriptedVad, transcript
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk
 
+from app.api.ratelimit import SlidingWindowLimiter
 from app.api.schemas import VoiceStartRequest
 from app.core.config import settings
 from app.main import app
@@ -26,9 +30,13 @@ START = {"session_id": "voice-1", "output_sample_rate": 24000}
 
 
 class FakeGraph:
-    """Duck-typed graph: one English reply, in the shape the session streams."""
+    """Duck-typed graph: one English reply, plus a record of its input state."""
+
+    def __init__(self) -> None:
+        self.initial: list[dict[str, Any]] = []
 
     async def astream_events(self, initial, config=None, version="v2"):
+        self.initial.append(initial)
         yield {
             "event": "on_chat_model_stream",
             "metadata": {"langgraph_node": "responder"},
@@ -63,10 +71,16 @@ def _wait_for_release(slots: SessionSlots) -> None:
 
 
 @pytest.fixture
-def client():
+def fake_graph() -> FakeGraph:
+    """The graph the `client` fixture installs, exposed for input assertions."""
+    return FakeGraph()
+
+
+@pytest.fixture
+def client(fake_graph: FakeGraph):
     """Boot the app and swap the graph and the voice providers for fakes."""
     with TestClient(app) as test_client:
-        app.state.graph = FakeGraph()
+        app.state.graph = fake_graph
         app.state.voice_providers = _providers(0.9, 0.9, 0.1, 0.1)
         app.state.voice_slots = SessionSlots(1)
         yield test_client
@@ -175,3 +189,75 @@ def test_the_slot_is_held_while_open_and_released_on_close(
 
     _wait_for_release(slots)
     assert slots.active == 0
+
+
+def test_a_spoken_turn_reaches_the_graph_as_a_voice_turn(
+    client: TestClient,
+    fake_graph: FakeGraph,
+    fast_endpointing: None,
+) -> None:
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        socket.send_text(json.dumps({**START, "device_id": "kitchen"}))
+        assert socket.receive_json()["type"] == "ready"
+
+        socket.send_bytes(UTTERANCE_PCM)
+
+        assert socket.receive_json()["type"] == "speech_start"
+        assert socket.receive_json()["type"] == "transcript"
+        assert socket.receive_json()["type"] == "token"
+        socket.receive_bytes()  # the spoken answer
+        assert socket.receive_json()["type"] == "audio_end"
+
+    # Seeding the turn is the route's whole job, and `channel` is what selects
+    # the spoken-answer prompt downstream and tags the trace.
+    (seeded,) = fake_graph.initial
+    assert seeded["channel"] == "voice"
+    assert seeded["user_input"] == "turn on the light"
+    assert seeded["session_id"] == "voice-1"
+    assert seeded["device_id"] == "kitchen"
+    assert seeded["stt_lang"] is None  # the first turn has nothing to bias it
+
+
+def test_an_idle_socket_is_closed_and_its_slot_released(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "voice_idle_timeout_seconds", 0.2)
+    slots = SessionSlots(1)
+    app.state.voice_slots = slots
+
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        socket.send_text(json.dumps(START))
+        assert socket.receive_json()["type"] == "ready"
+        assert slots.active == 1
+
+        # Nothing follows: no audio and no keepalive. The SERVER has to hang up,
+        # because a vanished client would otherwise hold a slot — and a provider
+        # quota — until the operating system notices. Asserting the close (rather
+        # than only the release below) is what makes this a real test: leaving the
+        # `with` block releases the slot whatever the route does.
+        assert socket.receive()["type"] == "websocket.close"
+
+    _wait_for_release(slots)
+    assert slots.active == 0
+
+
+def test_a_rate_limited_socket_is_refused_before_it_takes_a_slot(
+    client: TestClient,
+) -> None:
+    app.state.rate_limiter = SlidingWindowLimiter(limit=1, window_seconds=60)
+
+    # The one allowed connection spends the whole budget.
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as first:
+        first.send_text(json.dumps(START))
+        assert first.receive_json()["type"] == "ready"
+
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as second,
+    ):
+        assert second.receive_json()["detail"] == "rate limit exceeded"
+        second.receive_json()  # surfaces the close as WebSocketDisconnect
+
+    assert exc_info.value.code == 1013
+    assert app.state.voice_slots.active == 0
