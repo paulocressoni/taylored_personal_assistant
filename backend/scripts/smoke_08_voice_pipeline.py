@@ -26,6 +26,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
+from app.core.observability import flush
 from app.core.timing import monotonic_now
 from app.graph.graph import build_graph
 from app.voice.audio import (
@@ -143,7 +144,12 @@ async def run(lang: str, out: Path) -> None:
     )
 
     print(f"fixture       : {fixture.name} ({duration_s(pcm, rate):.2f}s @ {rate} Hz)")
-    await session.run(_frames(pcm, recorder))
+    try:
+        await session.run(_frames(pcm, recorder))
+    finally:
+        # Same reason app/graph/cli.py flushes: v4 batches spans, and a process
+        # that exits without flushing loses the trace and logs an OTLP timeout.
+        flush()
     if not recorder.audio:
         raise SystemExit("no audio came back — see the log above")
 
