@@ -280,6 +280,15 @@ class Settings(BaseSettings):
                     "VOICE_VAD_THRESHOLD, otherwise endpointing is undefined."
                 )
 
+            # Silero's analysis window is 512 samples, which is 32 ms only at
+            # 16 kHz, and app/voice/vad.py is built around that. Any other rate
+            # would mis-window every utterance without raising anything.
+            if self.voice_input_sample_rate != 16000:
+                raise ValueError(
+                    "VOICE_INPUT_SAMPLE_RATE must be 16000: the Silero VAD "
+                    "window and the capture contract both assume it."
+                )
+
             # A language we can recognise but cannot speak is a config bug, and
             # it is far cheaper to catch here than mid-conversation.
             missing_voices = [

@@ -104,3 +104,16 @@ def test_voice_vad_thresholds_must_be_ordered() -> None:
             voice_vad_threshold=0.3,
             voice_vad_neg_threshold=0.6,
         )
+
+
+def test_voice_input_sample_rate_is_pinned_to_the_vad_window() -> None:
+    with pytest.raises(ValueError, match="VOICE_INPUT_SAMPLE_RATE"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+            voice_stt_api_key="gsk-test",  # pragma: allowlist secret
+            voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
+            voice_input_sample_rate=48000,
+        )
