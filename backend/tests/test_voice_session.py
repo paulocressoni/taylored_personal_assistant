@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable
 from typing import Any
 
 import pytest
+from conftest import FakeSynthesizer, FakeTranscriber, ScriptedVad, transcript
 from langchain_core.messages import AIMessageChunk
 
 from app.core.config import settings
@@ -19,7 +20,6 @@ from app.voice.session import VoiceSession
 from app.voice.stt import Transcript
 from app.voice.tts import PCM_SAMPLE_RATE
 from app.voice.vad import WINDOW_BYTES
-from conftest import FakeSynthesizer, FakeTranscriber, ScriptedVad, transcript
 
 # Four 32 ms windows: two loud enough to open a segment, two quiet enough to
 # close it. The contents are irrelevant — the scripted VAD ignores the audio.
