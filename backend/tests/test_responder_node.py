@@ -2,7 +2,8 @@
 
 Complements test_responder.py (history-capping) with the node's other
 contracts: the reply passthrough, the default-language fallback when ``lang``
-was never resolved, and the promise not to mutate the persisted history.
+was never resolved, the spoken-answer addendum on voice turns, and the promise
+not to mutate the persisted history.
 """
 
 from conftest import FakeChatModel, make_state
@@ -53,3 +54,38 @@ def test_responder_leaves_state_history_untouched(patch_llm) -> None:
 
     # Identical object list — nothing was trimmed or replaced in place.
     assert state["messages"] == history
+
+
+def test_responder_switches_to_the_spoken_addendum_on_a_voice_turn(patch_llm) -> None:
+    fake = FakeChatModel(AIMessage(content="ok"))
+    patch_llm(lambda role: fake)
+
+    responder_node(make_state(channel="voice"), config=None)
+
+    system = fake.calls[0][0]
+    assert "SPOKEN ANSWER MODE" in system.content
+    # The addendum must come AFTER the base prompt: adherence degrades with
+    # distance from the response, and brevity is the rule we most need obeyed.
+    assert system.content.index("SPOKEN ANSWER MODE") > system.content.index(
+        "CAPABILITY HONESTY"
+    )
+
+
+def test_responder_keeps_the_base_rules_on_a_voice_turn(patch_llm) -> None:
+    fake = FakeChatModel(AIMessage(content="ok"))
+    patch_llm(lambda role: fake)
+
+    responder_node(make_state(channel="voice"), config=None)
+
+    system = fake.calls[0][0]
+    assert "Never claim to have performed an action" in system.content
+    assert "Reply in en." in system.content
+
+
+def test_responder_keeps_text_turns_out_of_spoken_mode(patch_llm) -> None:
+    fake = FakeChatModel(AIMessage(content="ok"))
+    patch_llm(lambda role: fake)
+
+    responder_node(make_state(channel="text"), config=None)
+
+    assert "SPOKEN ANSWER MODE" not in fake.calls[0][0].content
