@@ -10,11 +10,15 @@ import pytest
 
 from app.voice.stt import OpenAICompatibleTranscriber, Transcript
 
-# TODO: should we get the model name, base, url and other stt configuration from
-# the Settings object instead of hardcoding them here?
-MODEL_NAME = "whisper-large-v3-turbo"
-BASE_URL = "https://api.groq.com/openai/v1"
-SAMPLE_RATE = 16000
+# Arbitrary inputs for the plumbing assertions below — deliberately NOT the
+# shipped defaults, which are pinned once in test_config.py. Keeping them
+# synthetic is also what makes the assertions meaningful: a value that differs
+# from the default proves the constructor honours what it is given rather than
+# something hardcoded inside the transcriber.
+PROVIDER = "test-provider"
+MODEL_NAME = "test-whisper"
+BASE_URL = "http://stt.invalid/v1"
+SAMPLE_RATE = 8000
 ONE_SECOND = bytes(2 * SAMPLE_RATE)
 
 
@@ -58,7 +62,7 @@ def build_transcriber(monkeypatch: pytest.MonkeyPatch) -> BuildTranscriber:
 
         monkeypatch.setattr("app.voice.stt.AsyncOpenAI", _make_client)
         transcriber = OpenAICompatibleTranscriber(
-            provider="groq",
+            provider=PROVIDER,
             model=MODEL_NAME,
             base_url=BASE_URL,
             api_key="gsk-test",  # pragma: allowlist secret
@@ -92,7 +96,7 @@ async def test_transcribe_reports_the_audio_duration_and_provider(
     transcript = await transcriber.transcribe(ONE_SECOND * 2)
 
     assert transcript.duration_s == pytest.approx(2.0)
-    assert transcript.provider == "groq"
+    assert transcript.provider == PROVIDER
 
 
 async def test_transcribe_sends_a_wav_container_and_the_configured_model(
