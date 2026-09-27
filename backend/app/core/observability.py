@@ -293,6 +293,45 @@ def enrich_trace(state: dict[str, Any]) -> None:
         pass
 
 
+def timing_metadata(deltas_ms: dict[str, float]) -> dict[str, str]:
+    """Render stage timings as flat string values for trace metadata.
+
+    Pure, so the mapping is testable without Langfuse. Every trace metadata value
+    is coerced to a string and silently DROPPED above `MAX_METADATA_VALUE_LEN`, so
+    the numbers go out as short scalars rather than as one blob.
+
+    Args:
+        deltas_ms: Stage metric -> milliseconds, from `StageMarks.deltas_ms()`.
+
+    Returns:
+        The same keys mapped to one-decimal strings.
+    """
+    return {name: f"{value:.1f}" for name, value in deltas_ms.items()}
+
+
+def stamp_voice_timing(deltas_ms: dict[str, float]) -> None:
+    """Write one voice turn's stage timings onto the current observation.
+
+    MUST be called while an app-owned span is open, for the same reason
+    `enrich_trace` carries that constraint: `propagate_attributes` only affects
+    the span that is current when the context is entered. No-op when
+    observability is switched off.
+
+    A dedicated timing span is deliberately NOT opened: the SDK fixes an
+    observation's start time at creation, so a span created after the turn would
+    report a duration near zero and sit in the wrong place on the timeline. The
+    marks are attached to the span that was already open instead.
+
+    Args:
+        deltas_ms: Stage metric -> milliseconds, from `StageMarks.deltas_ms()`.
+    """
+    if not settings.langfuse_ready or not deltas_ms:
+        return
+    # Empty body is intentional: ENTERING the context is what writes the values.
+    with propagate_attributes(metadata=timing_metadata(deltas_ms)):
+        pass
+
+
 def trace_url(handler: CallbackHandler) -> str | None:
     """Human URL for the last trace this handler created (v4 property)."""
     if handler.last_trace_id is None:

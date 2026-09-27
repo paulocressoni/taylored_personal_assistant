@@ -7,6 +7,7 @@ from app.core.observability import (
     TURN_TRACE_NAME,
     _error_taxonomy,
     langfuse_metadata,
+    timing_metadata,
     trace_attributes,
 )
 
@@ -140,3 +141,10 @@ def test_trace_attributes_truncates_a_long_tool_outcome_summary() -> None:
     summary = attributes.metadata["tool_outcomes"]
     assert len(summary) == MAX_METADATA_VALUE_LEN
     assert summary.startswith("calculate:ok:1.0,calculate:ok:1.0")
+
+
+def test_timing_metadata_flattens_milliseconds_to_one_decimal_strings() -> None:
+    assert timing_metadata({"stt_ms": 200.04, "first_audio_ms": 930.0}) == {
+        "stt_ms": "200.0",
+        "first_audio_ms": "930.0",
+    }
