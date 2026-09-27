@@ -12,6 +12,7 @@ import io
 import math
 import wave
 from collections.abc import Iterator
+from pathlib import Path
 
 import numpy as np
 
@@ -164,6 +165,36 @@ def wrap_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:
         wav.setframerate(sample_rate)
         wav.writeframes(pcm)
     return buffer.getvalue()
+
+
+def read_wav(path: Path) -> tuple[bytes, int, int]:
+    """Read a 16-bit WAV file back into raw PCM.
+
+    The counterpart of `wrap_wav`, and the reason the smoke scripts and the
+    hardware simulator can feed a fixture through the pipeline without an
+    external decoder: the stdlib parses the header and hands the samples over
+    untouched.
+
+    Args:
+        path: The WAV file to read.
+
+    Returns:
+        A `(pcm, sample_rate, channels)` tuple, where `pcm` is little-endian
+        signed 16-bit samples, interleaved when there is more than one channel.
+
+    Raises:
+        ValueError: if the file's sample width is not 16-bit.
+    """
+    with wave.open(str(path), "rb") as wav:
+        if wav.getsampwidth() != SAMPLE_WIDTH_BYTES:
+            raise ValueError(
+                f"{path} must be 16-bit PCM, got {wav.getsampwidth() * 8}-bit"
+            )
+        return (
+            wav.readframes(wav.getnframes()),
+            wav.getframerate(),
+            wav.getnchannels(),
+        )
 
 
 def _anti_alias_kernel(from_rate: int, to_rate: int) -> np.ndarray | None:

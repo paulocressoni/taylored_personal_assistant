@@ -11,6 +11,7 @@ from app.voice.audio import (
     duration_s,
     int16_view,
     iter_frames,
+    read_wav,
     resample_pcm,
     rms_level,
     sample_count,
@@ -180,3 +181,30 @@ def test_resample_pcm_rejects_a_tone_above_the_target_nyquist() -> None:
     above_nyquist = resample_pcm(_sine(11000.0, 24000, 0.5), 24000, 16000)
     in_band = resample_pcm(_sine(1000.0, 24000, 0.5), 24000, 16000)
     assert rms_level(above_nyquist) < 0.05 * rms_level(in_band)
+
+
+# --- read_wav ----------------------------------------------------------------
+
+
+def test_read_wav_round_trips_the_samples_it_wrapped(tmp_path) -> None:
+    pcm = _sine(440.0, 16000, 0.1)
+    path = tmp_path / "tone.wav"
+    path.write_bytes(wrap_wav(pcm, 16000))
+
+    read_pcm, rate, channels = read_wav(path)
+
+    assert read_pcm == pcm
+    assert rate == 16000
+    assert channels == 1
+
+
+def test_read_wav_rejects_a_sample_width_it_cannot_trust(tmp_path) -> None:
+    path = tmp_path / "eight_bit.wav"
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(1)
+        wav.setframerate(16000)
+        wav.writeframes(b"\x80" * 160)
+
+    with pytest.raises(ValueError, match="16-bit"):
+        read_wav(path)

@@ -1,3 +1,7 @@
 # Vendored model weights are opaque binaries: never apply text conversion
 # (CRLF rewriting would corrupt them) and never attempt a text diff.
 *.onnx binary
+
+# Committed voice fixtures, for the same reason: CRLF rewriting would corrupt
+# the sample data and a line-based diff of audio is meaningless.
+*.wav binary
