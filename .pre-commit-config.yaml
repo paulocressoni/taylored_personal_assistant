@@ -25,8 +25,9 @@ repos:
         args: ["--baseline", ".secrets.baseline"]
         # The only hook here WITHOUT `types: [text]` — its upstream config is
         # `files: .*`, so it reads every file including binaries and would report
-        # high-entropy noise from the model weights as a secret.
-        exclude: ^backend/app/voice/models/
+        # high-entropy noise from the model weights AND the audio fixtures as
+        # secrets.
+        exclude: ^backend/(app/voice/models|tests/fixtures)/
 
   - repo: https://github.com/commitizen-tools/commitizen
     rev: v3.29.0
