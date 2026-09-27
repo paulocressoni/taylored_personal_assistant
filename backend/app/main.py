@@ -22,6 +22,7 @@ from app.core.logging import configure_logging
 from app.core.observability import flush
 from app.graph.checkpointer import open_checkpointer
 from app.graph.graph import build_graph
+from app.voice.registry import SessionSlots, build_voice_providers
 
 logger = logging.getLogger(__name__)
 
@@ -55,15 +56,27 @@ async def lifespan(app: FastAPI):
         # graph is a callable that takes an IPAState and returns an IPAState.
         app.state.graph = build_graph(checkpointer=checkpointer)
 
-        # Pprocess-wide per-key rate limiter (in-memory, single worker).
+        # Process-wide per-key rate limiter (in-memory, single worker).
         app.state.rate_limiter = build_rate_limiter()
+
+        # Voice is optional. The provider clients own HTTP connection pools, so
+        # they are built ONCE here and shared by every socket; the slot counter is
+        # what stops a leaked connection from holding a provider quota for ever.
+        app.state.voice_providers = build_voice_providers()
+        app.state.voice_slots = SessionSlots(settings.voice_max_sessions)
+        if app.state.voice_providers is None:
+            logger.info("voice is off; voice sockets will be refused")
 
         # Pre-warm the @cache'd chat models (they're created lazily inside the
         # nodes). The FIRST request now skips the one-time model construction.
         for role in ROLE_CONFIG:
             get_chat_model(role)
 
-        logger.info("graph compiled, checkpointer open, chat models pre-warmed")
+        logger.info(
+            "graph compiled, checkpointer open, chat models pre-warmed, voice=%s",
+            "on" if app.state.voice_providers else "off",
+        )
+
         yield
     # --- shutdown ---------------------------------------------------------
     # The `async with` above already closed the SQLite connection. Now flush
