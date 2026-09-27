@@ -64,6 +64,7 @@ def make_state(**overrides) -> dict:
         "device_id": None,
         "principal": None,
         "lang": "en",
+        "stt_lang": None,
         "route": None,
         "pending_action": None,
         "llm_calls": 0,

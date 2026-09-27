@@ -35,7 +35,10 @@ from app.core.config import settings
 # so old and new traces are distinguishable in dashboards.
 # 2.1: the run's identity is written onto an app-owned root span as FLAT
 # scalars (the SDK coerces values to str and drops anything over 200 chars).
-TRACE_SCHEMA_VERSION = "2.1"
+# 2.2: voice turns add `stt_lang` and the per-stage timing metrics. ONE bump
+# for the whole voice metadata generation — neither half has shipped yet, so
+# two bumps would only churn the dashboards.
+TRACE_SCHEMA_VERSION = "2.2"
 
 # Any single metadata VALUE is coerced to a string and silently DROPPED when
 # longer than this, so only short scalars belong in trace metadata.
@@ -249,6 +252,7 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
         "schema_version": TRACE_SCHEMA_VERSION,
         "route": route,
         "lang": str(state.get("lang") or ""),
+        "stt_lang": str(state.get("stt_lang") or ""),
         "channel": str(state.get("channel") or ""),
         "tool_iterations": str(state.get("tool_iterations", 0)),
         "llm_calls": str(usage.get("llm_calls", state.get("llm_calls", 0))),

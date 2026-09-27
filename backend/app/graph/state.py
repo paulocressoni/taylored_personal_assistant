@@ -26,7 +26,14 @@ class IPAState(TypedDict):
     device_id: str | None  # which device this turn came from
     principal: dict | None  # {user_id, role, confidence, auth_method}
     lang: NotRequired[str | None]  # "en" | "de" | "pt-BR"; absent until
-    # detect_lang_node fills it (BE-08) — ALWAYS read via state.get("lang")
+    # detect_lang_node fills it — ALWAYS read via state.get("lang")
+    # The language the speech-to-text request was BIASED with. An input to this
+    # turn rather than its outcome, so it can differ from `lang`: a German
+    # utterance transcribed while the bias was English. Required, not
+    # NotRequired — LangGraph overwrites non-reducer channels from the input, so
+    # a text turn seeding None CLEARS the previous voice turn's hint, whereas an
+    # absent key would let that stale hint leak into the next trace.
+    stt_lang: str | None
     route: str | None
     pending_action: dict | None
     llm_calls: int

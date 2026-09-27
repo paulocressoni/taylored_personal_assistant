@@ -148,3 +148,19 @@ def test_timing_metadata_flattens_milliseconds_to_one_decimal_strings() -> None:
         "stt_ms": "200.0",
         "first_audio_ms": "930.0",
     }
+
+
+def test_trace_attributes_records_the_transcription_bias() -> None:
+    attributes = trace_attributes(
+        {"route": "responder", "lang": "de", "stt_lang": "en"}
+    )
+
+    assert attributes.metadata["stt_lang"] == "en"
+
+
+def test_trace_attributes_leaves_the_bias_empty_on_a_text_turn() -> None:
+    attributes = trace_attributes(
+        {"route": "responder", "lang": "en", "stt_lang": None}
+    )
+
+    assert attributes.metadata["stt_lang"] == ""
