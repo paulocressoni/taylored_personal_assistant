@@ -1,8 +1,8 @@
-# HTTP + WebSocket API (M09, M11)
+# HTTP + WebSocket API (M09, M11, M29)
 
-Reference for the FastAPI serving layer added in M09 and extended in M11 (checkpointing).
-This is the bridge between the LangGraph backend and any client (CLI, React frontend
-(M10/M11), voice devices).
+Reference for the FastAPI serving layer added in M09, extended in M11 (checkpointing) and
+M29 (voice). This is the bridge between the LangGraph backend and any client (CLI, React
+frontend (M10/M11), voice devices (M29)).
 
 ## What M09 added
 
@@ -28,6 +28,22 @@ This is the bridge between the LangGraph backend and any client (CLI, React fron
 - `POST /chat` switched from sync `graph.invoke` to `graph.ainvoke` (required by the
   async checkpointer).
 - `get_checkpointer` dependency + `thread_id` added to `build_run_config` in `deps.py`.
+
+## What M29 added
+
+- `WS /ws/voice` — a **long-lived** socket for spoken turns: 16 kHz mono PCM in, PCM plus
+  control frames out, many turns per connection. The full protocol, the audio rationale and
+  the measured latency live in [`docs/voice.md`](./voice.md).
+- Voice providers behind thin Protocols (`backend/app/voice/`), built once per process in
+  the lifespan (`app.state.voice_providers`) along with a concurrent-session counter
+  (`app.state.voice_slots`). Building them is skipped entirely when voice is off, so a
+  text-only deployment never loads ONNX.
+- `VoiceStartRequest` in `backend/app/api/schemas.py` — the start frame every voice socket
+  must send first.
+- The same auth, rate-limiting and error-frame policy as `/ws/chat`, plus two checks only
+  voice needs: the feature must be configured, and a session slot must be free.
+- `backend/tests/test_voice_ws.py` — socket-level tests with fake providers (refusals,
+  framing, slot accounting, the seeded turn, the idle timeout).
 
 ## Running the server
 
@@ -60,6 +76,7 @@ Interactive docs (generated from the Pydantic schemas): `http://localhost:8000/d
 | `GET` | `/health` | Liveness probe for the Docker HEALTHCHECK | `{"status": "ok"}` |
 | `POST` | `/chat` | One-shot: run the graph, return the final answer | `ChatResponse` JSON |
 | `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame | `token` frames + `done` |
+| `WS` | `/ws/voice` | Always-listening voice socket (M29): PCM in, PCM + control frames out | `ready` / `speech_start` / `transcript` / `token` / `audio_end` / `error` + binary PCM |
 | `GET` | `/sessions/{id}/history` | Read a conversation's persisted messages (M11) | `SessionHistoryResponse` |
 | `DELETE` | `/sessions/{id}` | Delete a conversation's checkpoints (M11) | `{"session_id", "deleted"}` |
 
@@ -199,6 +216,54 @@ the shared API key from `app.core.config.settings` and appends it to the URI as
 cd backend
 uv run python scripts/ws_probe.py "tell me a short joke"
 ```
+
+## WS /ws/voice (M29)
+
+One long-lived socket for many spoken turns, so a client can stay always-listening. The
+handshake is `/ws/chat`'s (API key, then a rate limit) plus two checks only voice needs:
+the feature must be configured, and a session slot must be free — every socket holds a
+provider quota and its own ONNX VAD session.
+
+```javascript
+const ws = new WebSocket('ws://localhost:8000/ws/voice', [ASSISTANT_API_KEY])
+ws.binaryType = 'arraybuffer' // audio arrives as binary
+```
+
+**The first message must be the start frame** — the route reads the next message to
+validate the session before any audio is accepted:
+
+```json
+{ "session_id": "s1", "device_id": "kitchen", "output_sample_rate": 16000 }
+```
+
+| Field | Type | Rules |
+|---|---|---|
+| `session_id` | `str` | required, min 1 char — the conversation (shared with typed turns) |
+| `device_id` | `str \| null` | optional — which device this socket belongs to |
+| `output_sample_rate` | `16000 \| 24000` | optional, default `24000`; the rate the server speaks at |
+
+After that the socket carries **raw mono s16le PCM** (16 kHz) plus an occasional
+`{"type": "stop"}`. The full frame table, the audio-contract rationale and the latency
+data live in [`docs/voice.md`](./voice.md).
+
+| Close code | When |
+|---|---|
+| `1008` | Wrong/missing API key, or `VOICE_ENABLED=false` (an `error` frame says which) |
+| `1003` | The start frame is missing, not JSON, or fails validation |
+| `1013` | Rate limit exceeded, or all slots are busy (`VOICE_MAX_SESSIONS`, default 3) |
+| `1011` | Unexpected server error |
+
+Two voice-specific behaviours to know:
+
+- **Idle timeout.** A socket that sends neither audio nor a keepalive for
+  `VOICE_IDLE_TIMEOUT_SECONDS` (60 s) is closed by the server, which also releases its
+  slot. The browser streams continuously while listening; the hardware must ping (~20 s).
+- **Endpointing is the server's job.** The client never decides when speech ended: it sends
+  audio and reacts to `speech_start` (which also means "flush your playback — the user is
+  interrupting") and `audio_end`. A failed turn sends `error` and the socket stays open.
+
+Rate limiting and slots share the API key with `/ws/chat`: voice turn sockets draw on the
+same per-key budget, and a refused socket is closed with `1013` after an `error` frame.
 
 ## Sessions & checkpointing (M11)
 
