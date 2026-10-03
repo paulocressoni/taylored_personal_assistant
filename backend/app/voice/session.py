@@ -208,6 +208,12 @@ class VoiceSession:
         # checkpointer.
         self._last_lang: str | None = None
         self._turn: asyncio.Task[None] | None = None
+        # Diagnostics for whoever owns the session. These are the same durations
+        # that go to the log line and the trace; keeping them lets a caller (the
+        # latency tool, the route) read them instead of scraping the log. One
+        # entry per completed turn, oldest first — a failed turn publishes the
+        # stages it got to.
+        self.turn_timings: list[dict[str, float]] = []
 
     async def run(self, frames: AsyncIterator[Inbound]) -> None:
         """Serve one socket until the client stops or the frames run out.
@@ -326,6 +332,7 @@ class VoiceSession:
             # `done` is the last audio byte leaving; on a failed turn it is when
             # the turn gave up.
             marks.done = marks.done or monotonic_now()
+            self.turn_timings.append(marks.deltas_ms())
             log_stage_marks(logger, marks)
 
     async def _answer(self, utterance: Utterance, marks: StageMarks) -> None:

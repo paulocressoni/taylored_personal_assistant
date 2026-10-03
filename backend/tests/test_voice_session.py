@@ -460,3 +460,22 @@ async def test_a_16khz_client_gets_the_resampled_audio() -> None:
 def test_an_unsupported_output_rate_is_rejected() -> None:
     with pytest.raises(ValueError, match="output_sample_rate"):
         _session(_graph(), output_sample_rate=44100)
+
+
+async def test_each_turn_publishes_its_stage_timings() -> None:
+    session, recorder = _session(_graph())
+
+    await _drive(session, UTTERANCE_PCM, until=recorder.until("audio_end"))
+
+    (timings,) = session.turn_timings
+    # All six stages, because a happy turn sets every mark. A missing key would
+    # mean a stage silently stopped running rather than merely being slow.
+    assert set(timings) == {
+        "stt_ms",
+        "graph_ttft_ms",
+        "tts_ttfb_ms",
+        "first_audio_ms",
+        "tail_ms",
+        "turn_ms",
+    }
+    assert timings["turn_ms"] >= timings["first_audio_ms"]
