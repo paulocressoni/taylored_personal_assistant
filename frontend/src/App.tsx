@@ -3,6 +3,7 @@
 // (REPLACE the whole file — M11 Phase 1 adds the session sidebar)
 
 import { useChatStream } from './hooks/useChatStream'
+import { useVoiceSession } from './hooks/useVoiceSession'
 import { useEffect, useState } from 'react'
 import MessageList from './components/MessageList'
 import MessageInput from './components/MessageInput'
@@ -17,6 +18,7 @@ export default function App() {
     error,
     lang,
     sendMessage,
+    reloadHistory,
     sessions,
     activeSessionId,
     switchSession,
@@ -34,6 +36,16 @@ export default function App() {
       .then((d: { version?: string }) => setVersion(d.version ?? null))
       .catch(() => setVersion(null))
   }, [])
+
+  // The voice socket sits beside the chat socket and speaks into the SAME thread —
+  // the server persists a spoken turn as an ordinary conversation turn — so a
+  // completed turn refreshes the chat from history instead of duplicating the
+  // message state here.
+  const voice = useVoiceSession({
+    sessionId: activeSessionId,
+    onTurnComplete: reloadHistory,
+  })
+  const voiceActive = voice.phase !== 'idle'
 
   return (
     // h-screen = full viewport height; flex row puts the sidebar on the left.
@@ -57,16 +69,33 @@ export default function App() {
           <div className="flex items-center gap-3">
             <LanguageBadge lang={lang} />
             {isStreaming && status && <span className="text-xs text-gray-500">{status}</span>}
+            {voice.phase === 'thinking' && voice.transcript && (
+              <span className="text-xs text-gray-500">Heard: {voice.transcript}</span>
+            )}
           </div>
         </header>
 
-        {error && <div className="bg-red-100 px-4 py-2 text-sm text-red-700">{error}</div>}
+        {(error || voice.error) && (
+          <div className="bg-red-100 px-4 py-2 text-sm text-red-700">{error ?? voice.error}</div>
+        )}
 
         <main className="flex-1 overflow-hidden">
           <MessageList messages={messages} isStreaming={isStreaming} />
         </main>
 
-        <MessageInput disabled={isStreaming} onSend={sendMessage} />
+        <MessageInput
+          // Typing and talking are two transports into one thread: while a voice
+          // session is open the text composer is closed, and the microphone waits
+          // for a text reply to finish.
+          disabled={isStreaming || voiceActive}
+          onSend={sendMessage}
+          voice={{
+            phase: voice.phase,
+            latencyMs: voice.latencyMs,
+            disabled: isStreaming,
+            onToggle: voice.toggle,
+          }}
+        />
       </div>
     </div>
   )

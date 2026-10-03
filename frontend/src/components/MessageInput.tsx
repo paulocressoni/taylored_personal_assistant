@@ -1,14 +1,23 @@
-// MessageInput.tsx
-// A text input for sending messages, with a "Send" button and support for Shift+Enter to insert newlines.
+// frontend/src/components/MessageInput.tsx
+// The composer: a text input with a "Send" button, Shift+Enter for a newline, and
+// the microphone toggle that opens or closes a voice session.
 import { useEffect, useRef, useState } from 'react'
+import type { VoicePhase } from '../hooks/useVoiceSession'
+import MicButton from './MicButton'
 
 type Props = {
   disabled: boolean
   onSend: (text: string) => void
+  voice: {
+    phase: VoicePhase
+    latencyMs: number | null
+    disabled: boolean
+    onToggle: () => void
+  }
 }
 
 // The input is a controlled component, so the parent can clear it by changing the `key` prop.
-export default function MessageInput({ disabled, onSend }: Props) {
+export default function MessageInput({ disabled, onSend, voice }: Props) {
   const [text, setText] = useState('')
 
   // A ref gives us a direct handle to the DOM <textarea> element. React state
@@ -58,6 +67,14 @@ export default function MessageInput({ disabled, onSend }: Props) {
         placeholder="Message the assistant…"
         disabled={disabled}
         className="flex-1 resize-none rounded-xl border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      <MicButton
+        phase={voice.phase}
+        latencyMs={voice.latencyMs}
+        // Disabled while a TEXT turn streams: both transports write into the same
+        // thread, and letting them overlap would interleave two turns.
+        disabled={voice.disabled}
+        onToggle={voice.onToggle}
       />
       <button
         onClick={submit}
