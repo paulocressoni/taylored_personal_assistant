@@ -40,6 +40,7 @@ TURN_TIMEOUT_S = 60.0
 # The M29 acceptance criterion, in the metric it is written in.
 TARGET_MS = 1500.0
 
+# The session's own stages, in the order they happen.
 MEASURED = (
     "stt_ms",
     "graph_ttft_ms",
@@ -47,8 +48,17 @@ MEASURED = (
     "first_audio_ms",
     "tail_ms",
     "turn_ms",
-    "perceived_ms",
 )
+# `perceived_ms`, `generation_ms` and `tts_call_ms` are measured HERE, from the
+# frame clock, because the session cannot see the client's last speech frame or
+# the moment the reply stopped streaming. The last two split `tts_ttfb_ms`, which
+# otherwise hides the reply's own generation time whenever the first sentence
+# ends the reply — which is exactly what a one-sentence answer does.
+#
+# The per-run row carries the stages plus `perceived_ms`; the two diagnostics are
+# summary-only, so the table still fits a terminal.
+ROW_METRICS = MEASURED + ("perceived_ms",)
+SUMMARY_METRICS = ROW_METRICS + ("generation_ms", "tts_call_ms")
 
 
 class _Recorder:
@@ -57,6 +67,8 @@ class _Recorder:
     def __init__(self) -> None:
         self.audio = bytearray()
         self.speech_sent_at: float | None = None
+        self.first_token_at: float | None = None
+        self.last_token_at: float | None = None
         self.first_audio_at: float | None = None
         self.turn_done = asyncio.Event()
 
@@ -66,6 +78,12 @@ class _Recorder:
             if not self.audio:
                 self.first_audio_at = monotonic_now()
             self.audio.extend(frame)
+        elif frame["type"] == "token":
+            # The reply's own clock. Stamped here rather than in the session
+            # because only the frame stream knows when generation stopped.
+            if self.first_token_at is None:
+                self.first_token_at = monotonic_now()
+            self.last_token_at = monotonic_now()
         elif frame["type"] == "audio_end":
             self.turn_done.set()
 
@@ -75,6 +93,25 @@ class _Recorder:
         if self.speech_sent_at is None or self.first_audio_at is None:
             return None
         return (self.first_audio_at - self.speech_sent_at) * 1000.0
+
+    @property
+    def generation_ms(self) -> float | None:
+        """First token -> last token: how long the reply took to stream."""
+        if self.first_token_at is None or self.last_token_at is None:
+            return None
+        return (self.last_token_at - self.first_token_at) * 1000.0
+
+    @property
+    def tts_call_ms(self) -> float | None:
+        """Last token -> first audio byte: the TTS round trip, reply in hand.
+
+        Only meaningful when the reply did not stream a speakable sentence before
+        its last token; for a multi-sentence reply this can go negative, because
+        the first sentence was already being spoken while the rest generated.
+        """
+        if self.last_token_at is None or self.first_audio_at is None:
+            return None
+        return (self.first_audio_at - self.last_token_at) * 1000.0
 
 
 async def _sleep_until(deadline: float) -> None:
@@ -121,15 +158,17 @@ def _percentile(values: list[float], fraction: float) -> float:
 
 def _run_line(index: int, values: dict[str, float], warmup: bool) -> str:
     """Render one run as a table row."""
-    cells = "  ".join(f"{values.get(name, float('nan')):>13.1f}" for name in MEASURED)
+    cells = "  ".join(
+        f"{values.get(name, float('nan')):>13.1f}" for name in ROW_METRICS
+    )
     return f"{index:>3}  {cells}" + ("   (warm-up, discarded)" if warmup else "")
 
 
 def _summary(samples: dict[str, list[float]]) -> str:
     """Render the p50/p90 table for every metric that was measured."""
-    width = max(len(name) for name in MEASURED)
+    width = max(len(name) for name in SUMMARY_METRICS)
     lines = [f"{'metric':<{width}}  {'p50':>9}  {'p90':>9}"]
-    for name in MEASURED:
+    for name in SUMMARY_METRICS:
         values = samples[name]
         if not values:
             continue
@@ -171,13 +210,13 @@ async def measure(args: argparse.Namespace) -> None:
     # Built ONCE, outside the loop. This is the whole reason the tool exists: a
     # fresh provider client pays three TLS handshakes before it does any work.
     graph = build_graph()
-    samples: dict[str, list[float]] = {name: [] for name in MEASURED}
+    samples: dict[str, list[float]] = {name: [] for name in SUMMARY_METRICS}
     total = args.warmup + args.runs
 
     print(f"fixture  : {fixture.name} ({duration_s(pcm, rate):.2f}s @ {rate} Hz)")
     print(f"schedule : {total} runs, first {args.warmup} discarded as warm-up")
     print()
-    print(f"{'run':>3}  " + "  ".join(f"{name:>13}" for name in MEASURED))
+    print(f"{'run':>3}  " + "  ".join(f"{name:>13}" for name in ROW_METRICS))
     try:
         for index in range(1, total + 1):
             recorder = _Recorder()
@@ -201,16 +240,18 @@ async def measure(args: argparse.Namespace) -> None:
                 print(f"{index:>3}  (no completed turn)")
                 continue
             values = dict(session.turn_timings[0])
-            perceived = recorder.perceived_ms
-            values["perceived_ms"] = (
-                perceived if perceived is not None else float("nan")
-            )
+            for name, derived in (
+                ("perceived_ms", recorder.perceived_ms),
+                ("generation_ms", recorder.generation_ms),
+                ("tts_call_ms", recorder.tts_call_ms),
+            ):
+                values[name] = derived if derived is not None else float("nan")
 
             warmup = index <= args.warmup
             print(_run_line(index, values, warmup))
             if warmup:
                 continue
-            for name in MEASURED:
+            for name in SUMMARY_METRICS:
                 value = values.get(name)
                 if value is not None and not math.isnan(value):
                     samples[name].append(value)
