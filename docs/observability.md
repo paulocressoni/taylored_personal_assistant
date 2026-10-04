@@ -147,6 +147,29 @@ before that first start.
   touches the span that is current — so `enrich_trace(final_state)` runs after the graph
   returns, while that span is still open, and the attributes land on the trace instead
   of being silently dropped.
+- **Trace input/output** is written by a SECOND SDK call, `update_current_span(input=…,
+  output=…)`, because `propagate_attributes` carries only the trace IDENTITY (name, tags,
+  metadata) and has **no** input/output parameter — the reason every trace list entry used
+  to show blank IO while the LangChain callback's own child chain span held the messages.
+  The values come from the pure `turn_io(state)`: the LAST `HumanMessage` (a checkpointed
+  thread holds the whole history, so the first one belongs to an earlier turn) and the last
+  message's flattened text, each capped at `MAX_TRACE_IO_CHARS` (2000).
+- **Failures stay visible.** A crash or a graph timeout never reaches `enrich_trace`, so
+  each invoke site's error path calls `mark_turn_failed(detail, channel=…)` while the
+  app-root span is still open: the span gets `level=ERROR`, the cause in `status_message`,
+  and a `status:failed` trace tag. The `turn_span()` wrapper therefore sits OUTSIDE the
+  `asyncio.timeout` at each invoke site — the timeout only surfaces as `TimeoutError`
+  once its body has unwound, and the mark has to happen before the span closes.
+- **Barge-in is marked, not hidden.** A voice turn cut short by the user is unwound by
+  `CancelledError` — a `BaseException`, so a bare `except Exception` never sees it.
+  `VoiceSession._run_turn` catches it explicitly and stamps
+  `mark_turn_cancelled(..., channel="voice")` (`level=WARNING` + a `barge-in` status
+  message + a `status:cancelled` tag) before re-raising. That tag is what makes the
+  interruption rate queryable instead of every cut-off turn looking completed.
+- The marker helpers rebuild the FULL tag list (`env:*`, `channel:*`, then the marker tag)
+  instead of passing only the marker: by the time an error handler runs, the callback
+  handler has already exited its propagation context, so `propagate_attributes(tags=…)`
+  REPLACES the app-root span's tags — a marker-only list would drop `env:`/`channel:`.
 - The graph's terminal **`telemetry` node** no longer talks to Langfuse: it reconciles
   the run's usage (`llm_calls`, token + prompt-cache totals, error buckets) into
   `IPAState` from the `RunTelemetry` counter in
@@ -158,6 +181,23 @@ before that first start.
   queued events land before the process exits.
 - Everything is gated by `settings.langfuse_ready`; when off, helpers return `None` /
   no-op.
+
+### Trace IO and the metadata ordering invariant
+
+Two facts about the app-root span explain both the bug and the fix:
+
+1. Langfuse mirrors a trace's input/output from its **root observation's** input/output.
+   `turn_span()` creates that observation with no IO, and `propagate_attributes` cannot
+   carry IO, so `enrich_trace` fills it from the pure `turn_io(state)` via
+   `update_current_span(input=…, output=…)`. An empty or message-less state yields
+   `("", "")` rather than raising, so a failed run is still labelable.
+2. `enrich_trace` and `stamp_voice_timing` both write through `propagate_attributes`,
+   which writes each metadata key as its OWN span attribute
+   (`langfuse.trace.metadata.<key>`) — so the second call ADDS to the first instead of
+   replacing it. A voice turn therefore ends up with the run identity (`schema_version`,
+   `route`, …) AND the stage timings (`stt_ms`, `llm_first_token_ms`, …) on the same span.
+   That ordering is pinned by a unit test: a future refactor to a whole-blob write would
+   silently strip the identity from every voice trace.
 
 Runtime settings live in `backend/app/core/config.py`:
 
