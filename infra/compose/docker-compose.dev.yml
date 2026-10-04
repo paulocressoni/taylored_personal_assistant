@@ -35,10 +35,24 @@ services:
       # git-ignored backend/.env.dev, injected as container env vars.
       - ../../backend/.env.dev
     volumes:
-      # DEV-only SQLite conversation memory (M28). The named volume persists
-      # checkpoints.db across container recreation. It mounts over the whole
-      # image /app — harmless here because the bind mount below layers live
-      # source over the code paths.
+      # DEV-only SQLite conversation memory. The named volume persists
+      # checkpoints.db across container recreation.
+      #
+      # TODO: mounting it at /app hides the image's /app/.venv, so the
+      # container runs whatever venv this volume was FIRST seeded with.
+      # Docker copies image content into a named volume only when the volume
+      # is created, so any dependency added after that (e.g. the voice extras
+      # numpy/onnxruntime) is absent at runtime while the image itself is
+      # correct: startup dies with ModuleNotFoundError and `up --build`
+      # cannot fix it. Meanwhile, unblock by dropping the volume
+      # (`docker volume rm taylored-assistant-dev_checkpoints_data`) and
+      # bringing the stack back up, which reseeds it from the current image.
+      #
+      # PROPER FIX — do when the checkpointer path is next touched, then
+      # delete this TODO: keep the DB out of /app. Mount this volume at
+      # /app/data, set CHECKPOINT_DB_PATH=/app/data/checkpoints.db
+      # (see backend/.env.dev.example), and pre-create /app/data owned by
+      # appuser in backend/Dockerfile so the seeded volume stays writable.
       - checkpoints_data:/app
       # Bind-mount ONLY app/ so the image's /app/.venv (Linux) is NOT
       # shadowed by the host's Windows .venv. uvicorn --reload watches

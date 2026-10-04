@@ -1,9 +1,10 @@
-# React frontend — chat UI (M10, M11)
+# React frontend — chat UI (M10, M11) + voice (M29)
 
-Guide for the browser chat UI added in M10 and extended in M11 (multi-session support +
-unit tests). It streams the assistant's reply **token-by-token** over the `/ws/chat`
-WebSocket, talks to the FastAPI backend on `:8000` through a Vite dev proxy, and pins the
-API contract to the backend's OpenAPI schema so the two can't silently drift apart.
+Guide for the browser UI added in M10, extended in M11 (multi-session support + unit
+tests) and M29 (a spoken channel next to the typed one). It streams the assistant's reply
+**token-by-token** over the `/ws/chat` WebSocket, talks to the FastAPI backend on `:8000`
+through a Vite dev proxy, and pins the API contract to the backend's OpenAPI schema so the
+two can't silently drift apart.
 
 ## What M10 added
 
@@ -30,6 +31,21 @@ API contract to the backend's OpenAPI schema so the two can't silently drift apa
 - **First unit tests**: Vitest + jsdom covering the pure logic in `lib/sessions.ts` and
   `lib/history.ts` (`npm run test`).
 
+## What M29 added
+
+- **`useVoiceSession`** — the microphone session: capture through an AudioWorklet, the
+  `/ws/voice` frame protocol, and a gapless playback queue.
+- **`MicButton`** — the phase readout and toggle, wired into the composer.
+- **`lib/socket.ts`** — the API key, auth header, WebSocket URL and close-code messages,
+  extracted from `useChatStream` so both sockets share one implementation.
+- **`lib/voice.ts`** — pure PCM decoding, the gapless scheduling rule and latency
+  formatting, unit-tested (`src/lib/__tests__/voice.test.ts`).
+- **`public/worklets/pcm-capture.js`** — the capture worklet: mic samples in, fixed 20 ms
+  frames of little-endian int16 out.
+- **`reloadHistory()`** on `useChatStream` — a spoken turn is persisted into the same
+  thread, so the chat re-reads history when a turn completes rather than duplicating the
+  message state.
+
 ## File map
 
 ```
@@ -54,14 +70,18 @@ frontend/
     │   ├── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
     │   ├── sessions.ts      # Session registry in localStorage (M11)
     │   ├── history.ts       # Pure message-history mapping (M11)
-    │   └── __tests__/       # Vitest unit tests (sessions.test.ts, history.test.ts)
+    │   ├── socket.ts        # API key, auth header, WS URL, close-code text (M29)
+    │   ├── voice.ts         # PCM decoding, gapless scheduling, latency text (M29)
+    │   └── __tests__/       # Vitest unit tests (sessions, history, voice)
     ├── hooks/
     │   ├── useChatStream.ts # WS streaming + sessions + history loading (M10/M11)
+    │   ├── useVoiceSession.ts # Mic → worklet → /ws/voice + playback queue (M29)
     │   └── useAlarmSound.ts # Web Audio stub (wired up in M17)
     └── components/
         ├── SessionList.tsx  # Session sidebar: new / switch / delete (M11)
         ├── MessageList.tsx
-        ├── MessageInput.tsx
+        ├── MessageInput.tsx # Composer: text + the microphone toggle (M29)
+        ├── MicButton.tsx    # Voice phase + last reply latency (M29)
         ├── TypingIndicator.tsx
         └── LanguageBadge.tsx
 ```
@@ -185,6 +205,37 @@ conversation on the server (checkpointed history); a new id starts a fresh one.
   checkpoint (`adelete_thread`), then `removeSession()` unlinks it in localStorage.
 - **Refresh-safety:** because the ids live in localStorage and the history lives in the
   checkpointer, refreshing the tab keeps your conversations AND their memory.
+
+## Voice (M29) — talking to the assistant
+
+One long-lived `/ws/voice` socket per session, opened by the **Speak** button. Everything
+about the wire protocol is in [`docs/voice.md`](./voice.md); this section is the client's
+half.
+
+- **Two `AudioContext`s, on purpose.** Capture runs at **16 kHz** (what the contract and
+  the VAD window want) and playback at **24 kHz** (the TTS-native rate). Neither direction
+  needs resampling, and the browser does the microphone conversion where it can do it in
+  hardware. Both are created inside the click that starts the session — a context created
+  outside a user gesture starts suspended.
+- **`public/worklets/pcm-capture.js`** accumulates the 128-sample render quanta into
+  20 ms frames and posts them as *transferable* `ArrayBuffer`s. It is not in `src/`
+  because an AudioWorklet runs in its own global scope and cannot import modules.
+- **Capture is wired only after `ready`.** The route reads the first message as the start
+  frame; sending audio earlier gets the socket refused with `1003`.
+- **Playback is scheduled, not played.** Each chunk starts at
+  `nextPlaybackTime(context.currentTime, cursor)` — back-to-back while audio is buffered,
+  "now" when the queue ran dry — which is what keeps the seam between chunks inaudible.
+- **`speech_start` flushes the queue.** That is the barge-in path: the server heard the
+  user start talking, so the answer in flight is stale.
+- **The phase returns to `listening` when the queue drains**, not when `audio_end`
+  arrives: chunks are scheduled ahead of realtime, so the server finishing is not the same
+  as the audio finishing.
+- **A generation counter** makes `start()` safe against a `stop()` that lands while the
+  microphone permission prompt is still open, and switching session hangs the socket up —
+  one socket belongs to one conversation.
+
+Known gap: the voice socket does not report the detected language, so a spoken turn leaves
+`LanguageBadge` unchanged.
 
 ## Unit tests (Vitest)
 

@@ -44,3 +44,76 @@ def test_fail_fast_on_missing_api_key() -> None:
     """An empty DEEPSEEK_API_KEY must raise loudly at construction time."""
     with pytest.raises(ValueError, match="DEEPSEEK_API_KEY is required"):
         Settings(_env_file=None, deepseek_api_key="")
+
+
+def test_voice_disabled_by_default() -> None:
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+    )
+    assert settings.voice_enabled is False
+    assert settings.voice_ready is False
+
+
+def test_voice_enabled_requires_stt_key() -> None:
+    """Switching voice on without keys must fail loudly at construction time."""
+    with pytest.raises(ValueError, match="VOICE_STT_API_KEY"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+        )
+
+
+def test_voice_enabled_requires_a_voice_per_language() -> None:
+    with pytest.raises(ValueError, match="no voice for supported language"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+            voice_stt_api_key="gsk-test",  # pragma: allowlist secret
+            voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
+            voice_tts_voices={"en": "marin"},
+        )
+
+
+def test_placeholder_keys_do_not_count_as_configured() -> None:
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+        voice_stt_api_key="gsk_REPLACE_ME",  # pragma: allowlist secret
+        voice_tts_api_key="sk-REPLACE_ME",  # pragma: allowlist secret
+    )
+    assert settings.has_voice_stt is False
+    assert settings.has_voice_tts is False
+
+
+def test_voice_vad_thresholds_must_be_ordered() -> None:
+    with pytest.raises(ValueError, match="VOICE_VAD_NEG_THRESHOLD"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+            voice_stt_api_key="gsk-test",  # pragma: allowlist secret
+            voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
+            voice_vad_threshold=0.3,
+            voice_vad_neg_threshold=0.6,
+        )
+
+
+def test_voice_input_sample_rate_is_pinned_to_the_vad_window() -> None:
+    with pytest.raises(ValueError, match="VOICE_INPUT_SAMPLE_RATE"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_enabled=True,
+            voice_stt_api_key="gsk-test",  # pragma: allowlist secret
+            voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
+            voice_input_sample_rate=48000,
+        )

@@ -10,7 +10,9 @@ Error-handling policy:
 """
 
 import asyncio
+import json
 import logging
+from collections.abc import AsyncIterator, MutableMapping
 from typing import Any
 
 from fastapi import (
@@ -37,10 +39,13 @@ from app.api.schemas import (
     ChatResponse,
     HistoryMessage,
     SessionHistoryResponse,
+    VoiceStartRequest,
 )
 from app.core.config import settings
 from app.core.observability import enrich_trace, turn_span
 from app.graph.utils import get_last_message
+from app.voice.registry import SessionSlots, VoiceProviders
+from app.voice.session import Inbound, Outbound, Send, VoiceSession
 
 logger = logging.getLogger(__name__)
 
@@ -390,6 +395,211 @@ async def chat_ws(websocket: WebSocket) -> None:
         pass  # client left before receiving the terminal event
     finally:
         await websocket.close()
+
+
+@router.websocket("/ws/voice")
+async def voice_ws(websocket: WebSocket) -> None:
+    """Always-listening voice socket: PCM frames in, PCM and control frames out.
+
+    The handshake is /ws/chat's (subprotocol key, then a rate limit) plus two
+    checks only voice needs: the feature must be configured, and a slot must be
+    free, because every socket holds a provider quota and its own ONNX session.
+
+    Args:
+        websocket: The WebSocket connection.
+    """
+    providers: VoiceProviders | None = websocket.app.state.voice_providers
+    slots: SessionSlots = websocket.app.state.voice_slots
+
+    authorized, subprotocol = authorize_ws(websocket)
+    await websocket.accept(subprotocol=subprotocol)
+    if not authorized:
+        # Never log the key itself — only the transport that carried it.
+        logger.warning(
+            "ws voice auth rejected (transport=%s)",
+            "subprotocol" if subprotocol else "query",
+        )
+        await _close_with_error(websocket, "unauthorized", 1008)
+        return
+
+    # Checked BEFORE the rate limit so a switched-off feature cannot spend a
+    # client's budget, and answered with 1008 rather than 1011: this is policy,
+    # not a server fault.
+    if providers is None:
+        logger.info("voice socket refused: voice is not configured")
+        await _close_with_error(websocket, "voice is not enabled", 1008)
+        return
+
+    presented_key = subprotocol or websocket.query_params.get("api_key")
+    if not check_ws_rate_limit(websocket, presented_key):
+        logger.warning("ws voice rate limit exceeded")
+        await _close_with_error(websocket, "rate limit exceeded", 1013)
+        return
+
+    if not slots.acquire():
+        logger.warning(
+            "voice socket refused: all %d slots are busy",
+            settings.voice_max_sessions,
+        )
+        await _close_with_error(websocket, "too many voice sessions", 1013)
+        return
+
+    try:
+        await _serve_voice(websocket, providers)
+    finally:
+        # Released on every path, including a crash inside the session: a leaked
+        # slot would lower the cap for the rest of the process's life.
+        slots.release()
+
+
+async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
+    """Validate the start frame, then hand the socket to a voice session.
+
+    Args:
+        websocket: An accepted, authorized socket.
+        providers: The process-wide voice clients.
+    """
+    message = await _next_message(websocket)
+    if message is None:
+        logger.info("voice client never sent a start frame")
+        return
+    if message["type"] == "websocket.disconnect":
+        return
+
+    text = message.get("text")
+    if text is None:
+        await _close_with_error(websocket, "a start frame is required", 1003)
+        return
+    try:
+        start = VoiceStartRequest.model_validate(json.loads(text))
+    except ValueError as exc:
+        # json.JSONDecodeError and pydantic's ValidationError are both ValueError,
+        # so one branch covers "the start frame cannot be used".
+        await _close_with_error(websocket, f"invalid start frame: {exc}", 1003)
+        return
+
+    session = VoiceSession(
+        graph=websocket.app.state.graph,
+        transcriber=providers.transcriber,
+        synthesizer=providers.synthesizer,
+        vad=providers.vad_factory(),
+        send=_ws_send(websocket),
+        session_id=start.session_id,
+        device_id=start.device_id,
+        output_sample_rate=start.output_sample_rate,
+    )
+    logger.info("voice session starting (output_rate=%d)", start.output_sample_rate)
+
+    try:
+        await session.run(_inbound_frames(websocket))
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        # Same policy as the text socket: log it, tell the client best-effort,
+        # then re-raise so Starlette closes with 1011.
+        logger.exception("voice session failed")
+        try:
+            await websocket.send_json({"type": "error", "detail": "voice failed"})
+        except WebSocketDisconnect:
+            pass
+        raise
+    finally:
+        await websocket.close()
+
+
+async def _next_message(websocket: WebSocket) -> MutableMapping[str, Any] | None:
+    """Receive one raw ASGI message, or None when the client has gone quiet.
+
+    The idle bound is what stops a vanished client from holding a voice slot (and
+    a provider quota) until the operating system notices: the browser streams
+    audio continuously and the hardware pings every ~20 s, so silence means the
+    client is gone.
+
+    Args:
+        websocket: An accepted socket.
+
+    Returns:
+        The ASGI message, or None if the client sent nothing for
+        `voice_idle_timeout_seconds`.
+    """
+    try:
+        return await asyncio.wait_for(
+            websocket.receive(), timeout=settings.voice_idle_timeout_seconds
+        )
+    except TimeoutError:
+        return None
+
+
+async def _inbound_frames(websocket: WebSocket) -> AsyncIterator[Inbound]:
+    """Yield the client's frames: raw audio, or a control dict.
+
+    Read through `receive()` rather than `receive_bytes()`/`receive_json()`
+    because audio and control frames share one connection and each of those
+    helpers rejects the other kind.
+
+    Args:
+        websocket: An accepted socket.
+
+    Yields:
+        Binary audio frames and parsed control frames. A malformed text frame is
+        skipped rather than fatal: one bad frame must not end the conversation.
+    """
+    while True:
+        message = await _next_message(websocket)
+        if message is None:
+            logger.info("voice socket idle; closing")
+            return
+        if message["type"] == "websocket.disconnect":
+            return
+        audio = message.get("bytes")
+        if audio is not None:
+            yield audio
+            continue
+        text = message.get("text")
+        if text is None:
+            continue
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            logger.warning("ignoring a voice frame that is not JSON")
+            continue
+        if isinstance(payload, dict):
+            yield payload
+
+
+def _ws_send(websocket: WebSocket) -> Send:
+    """Adapt the socket to the session's `send` contract.
+
+    Args:
+        websocket: An accepted socket.
+
+    Returns:
+        A callable sending bytes as a binary frame and dicts as JSON. Audio stays
+        binary because base64 would add a third to every frame.
+    """
+
+    async def send(frame: Outbound) -> None:
+        if isinstance(frame, bytes):
+            await websocket.send_bytes(frame)
+        else:
+            await websocket.send_json(frame)
+
+    return send
+
+
+async def _close_with_error(websocket: WebSocket, detail: str, code: int) -> None:
+    """Tell the client why it is being rejected, then close with `code`.
+
+    Args:
+        websocket: The socket to refuse.
+        detail: Human-readable reason, sent as an error frame.
+        code: RFC 6455 close code.
+    """
+    try:
+        await websocket.send_json({"type": "error", "detail": detail})
+        await websocket.close(code=code)
+    except WebSocketDisconnect:
+        pass  # the client vanished while we were rejecting it
 
 
 def _content_to_str(content: Any) -> str:

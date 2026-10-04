@@ -13,6 +13,8 @@ Pydantic v2 notes:
     SERIALIZE our object and document it — we never hand-roll JSON.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -57,4 +59,25 @@ class SessionHistoryResponse(BaseModel):
     session_id: str = Field(description="The thread_id this history belongs to.")
     messages: list[HistoryMessage] = Field(
         description="All persisted messages for the session, oldest first.",
+    )
+
+
+class VoiceStartRequest(BaseModel):
+    """Body of /ws/voice's first frame: which conversation, and the audio contract."""
+
+    session_id: str = Field(
+        min_length=1,
+        description="Stable id that groups turns into one conversation.",
+    )
+    device_id: str | None = Field(
+        default=None,
+        description="Which device is speaking (optional).",
+    )
+    output_sample_rate: Literal[16000, 24000] = Field(
+        default=24000,
+        description=(
+            "Rate for the reply audio: 24000 for a browser (TTS-native, no "
+            "resampling), 16000 for the reSpeaker XVF3800. Kept in step with "
+            "app.voice.session.OUTPUT_SAMPLE_RATES by a test."
+        ),
     )

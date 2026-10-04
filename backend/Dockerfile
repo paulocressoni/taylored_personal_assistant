@@ -19,6 +19,17 @@ FROM python:3.12-slim AS runtime
 
 WORKDIR /app
 
+# Pull Debian's security updates at build time. The python:slim tag can lag
+# behind the security archive -- it still ships libpcre2-8-0 10.46-1~deb13u2
+# after 10.46-1~deb13u3 was published -- and CI fails the build on any
+# fixable HIGH/CRITICAL finding. Never ship a runtime image holding a known
+# CVE when the fix is one apt-get away.
+# Cached like any other layer: if Trivy reports a stale OS package again,
+# touch this line or build with `--no-cache-filter runtime`.
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get upgrade --yes \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create a dedicated non-root user (least privilege): the process must not
 # run as root so a compromise inside the container isn't root in it.
 RUN useradd --create-home --shell /usr/sbin/nologin appuser

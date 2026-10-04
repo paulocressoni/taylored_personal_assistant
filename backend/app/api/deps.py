@@ -69,6 +69,10 @@ def build_initial_state(
     before any reader runs. The user's text becomes a HumanMessage so the
     responder model sees a proper message list.
 
+    ``stt_lang`` IS seeded, as None, even though ``lang`` is not: it records this
+    turn's transcription bias, so a text turn has to CLEAR whatever a previous
+    voice turn set, and an absent key would let the checkpointer keep it.
+
     Args:
         user_input: The user's text input.
         session_id: The ID of the user's session.
@@ -85,6 +89,7 @@ def build_initial_state(
         "channel": channel,
         "device_id": device_id,
         "principal": None,
+        "stt_lang": None,
         "route": None,
         "pending_action": None,
         "llm_calls": 0,

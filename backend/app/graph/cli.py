@@ -46,6 +46,7 @@ def main() -> None:
         "channel": "cli",
         "device_id": None,
         "principal": None,
+        "stt_lang": None,  # No transcription bias on a typed turn
         "route": None,
         "pending_action": None,
         "llm_calls": 0,

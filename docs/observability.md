@@ -10,8 +10,8 @@ fail-fast.
 - A trace per graph run: spans for `detect_lang` / `router` / `knowledge` / `responder`
   and tool calls, plus LLM generations with real token counts.
 - Session grouping (`session_id`), user id, and the run's own name/tags/metadata
-  (`schema_version`, `route`, `lang`, token + prompt-cache counters, tool outcomes and
-  the error taxonomies) on every trace.
+  (`schema_version`, `route`, `lang`, `stt_lang` on voice turns, token + prompt-cache
+  counters, tool outcomes and the error taxonomies) on every trace.
 - A browser UI at `http://localhost:3000`.
 
 ## Architecture — the compose stack
@@ -112,7 +112,7 @@ Then open `http://localhost:3000` → **Traces** → newest run. You should see 
 `assistant:knowledge` trace with spans for `detect_lang` / `router` / `knowledge` /
 `responder` / `telemetry` and an LLM generation with token counts. The trace's name,
 its tags (`env:dev`, `channel:cli`, `status:*`) and its metadata
-(`schema_version = "2.1"`, `route`, `lang`, token counters, `tool_outcomes`, the error
+(`schema_version = "2.2"`, `route`, `lang`, token counters, `tool_outcomes`, the error
 taxonomies) are written by the invoke site AFTER the graph returns — see "How the
 wiring works" below. Production dashboards, alerts and the ClickHouse ground-truth
 queries live in `infra/observability/`.

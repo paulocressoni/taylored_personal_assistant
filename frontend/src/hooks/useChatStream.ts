@@ -16,6 +16,7 @@ import {
   removeSession,
   type Session,
 } from '../lib/sessions'
+import { apiKey, authHeaders, wsErrorMessage, wsUrl } from '../lib/socket'
 import { newUuid } from '../lib/uuid'
 
 // Re-export so components can keep importing ChatMessage from the hook
@@ -26,53 +27,8 @@ export type { ChatMessage } from '../lib/history'
 // The generated type for backend's ChatRequest pydantic model.
 type ChatRequest = components['schemas']['ChatRequest']
 
-// Map WebSocket close codes to human-friendly messages.
-//
-// These are the codes the backend (routes.py chat_ws) actually uses:
-//   1008 auth failed, 1003 invalid payload, 1013 rate-limited/timeout,
-//   1011 internal error. 1006 = the connection never completed (backend
-//   down) -> generic network message. 1000/1005 (normal) and anything else
-//   -> null, meaning "no error message".
-function wsErrorMessage(code: number): string | null {
-  switch (code) {
-    case 1008:
-      return 'Authentication failed — check VITE_API_KEY.'
-    case 1003:
-      return 'The server rejected this message (invalid payload).'
-    case 1013:
-      return 'The assistant is busy — please try again in a moment.'
-    case 1011:
-      return 'The assistant hit an internal error.'
-    case 1006:
-      return 'Connection failed — is the backend running?'
-    default:
-      return null
-  }
-}
-
-// The backend requires a shared API key. Read once from Vite env and send it
-// two ways: X-API-Key on the session HTTP calls, and as the WebSocket
-// subprotocol (Sec-WebSocket-Protocol) so it never lands in the URL / proxy /
-// access logs. Browsers can't set headers on a WS handshake, but they
-// CAN pass subprotocols.
-function apiKey(): string {
-  return import.meta.env.VITE_API_KEY ?? ''
-}
-
-// Auth header object for the session HTTP calls. Return type is annotated on
-// purpose: without it, the `{}` branch of the ternary would infer as
-// `{ 'X-API-Key'?: undefined }`, which fails fetch's HeadersInit check.
-function authHeaders(): HeadersInit {
-  const key = apiKey()
-  return key ? { 'X-API-Key': key } : {}
-}
-
-function wsUrl(): string {
-  // Relative to the Vite dev server, which proxies /ws/chat to the backend.
-  // The key is NOT in the URL — it travels as a subprotocol instead.
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${proto}//${location.host}/ws/chat`
-}
+// The socket plumbing — API key, auth header, URL, close-code messages — lives in
+// lib/socket.ts, because the voice hook needs exactly the same four things.
 
 export function useChatStream() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -91,6 +47,12 @@ export function useChatStream() {
   // Re-read the registry from localStorage into React state after a
   // create/delete, so the sidebar stays in sync with storage.
   const refreshSessions = useCallback(() => setSessions(listSessions()), [])
+
+  // Bumping this token re-runs the history effect below. A spoken turn is persisted
+  // into the SAME thread as a typed one, so it reaches the chat by re-reading the
+  // history rather than by pushing messages into state here.
+  const [historyToken, setHistoryToken] = useState(0)
+  const reloadHistory = useCallback(() => setHistoryToken((token) => token + 1), [])
 
   const socketRef = useRef<WebSocket | null>(null)
 
@@ -168,7 +130,7 @@ export function useChatStream() {
     return () => {
       cancelled = true
     }
-  }, [activeSessionId])
+  }, [activeSessionId, historyToken])
 
   // Click a session in the sidebar -> switch to it.
   const switchSession = useCallback(
@@ -264,7 +226,9 @@ export function useChatStream() {
       // with no subprotocol — the backend still rejects with 1008, which
       // turns into the "check VITE_API_KEY" message.
       const key = apiKey()
-      const socket = key ? new WebSocket(wsUrl(), [key]) : new WebSocket(wsUrl())
+      const socket = key
+        ? new WebSocket(wsUrl('/ws/chat'), [key])
+        : new WebSocket(wsUrl('/ws/chat'))
       socketRef.current = socket
 
       // Per-connection flags for. They live in this closure (not React
@@ -394,6 +358,7 @@ export function useChatStream() {
     lang,
     route,
     sendMessage,
+    reloadHistory,
     sessions,
     activeSessionId,
     switchSession,

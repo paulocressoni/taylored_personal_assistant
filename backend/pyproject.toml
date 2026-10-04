@@ -14,8 +14,15 @@ dependencies = [
     "langgraph-checkpoint-postgres==3.1.2",
     "langgraph-checkpoint-sqlite>=3.1.1",
     "lingua-language-detector>=2.2.0",
+    "numpy>=2.5.3",
+    "onnxruntime>=1.30.0",
+    "openai>=3.1.0",
     "psycopg[binary]==3.3.5",
     "pydantic-settings>=2.15.0",
+    # Security floor, not a direct import: `requests` (reached through langsmith
+    # and langfuse) pulls urllib3 in, and anything below 2.8.0 carries two HIGH
+    # CVEs -- an HTTPS proxy TLS override and a chunk-parser DoS.
+    "urllib3>=2.8.0",
     "uvicorn[standard]>=0.52.3",
 ]
 
@@ -37,6 +44,12 @@ build-backend = "setuptools.build_meta"
 where = ["."]
 include = ["app*"]
 
+# Ship the vendored VAD graph with the package. Neither the Docker image (which
+# copies `app/` wholesale) nor the editable dev install needs this, but a plain
+# wheel build would silently omit the .onnx and only fail at the first turn.
+[tool.setuptools.package-data]
+"app.voice" = ["models/*.onnx"]
+
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
@@ -47,6 +60,11 @@ addopts = "-m 'not integration'"
 markers = [
     "integration: live DeepSeek API smoke tests (excluded from the fast suite by default)",
 ]
+# Voice providers and the voice session are async: run async tests without a
+# per-test marker, and pin the fixture loop scope to silence pytest-asyncio's
+# "unset" deprecation warning.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 python_files = ["test_*.py", "smoke_*.py"]
 # `scripts/` is deliberately NOT part of the built distribution — the
 # setuptools config below packages only `app*` (and the Docker image copies

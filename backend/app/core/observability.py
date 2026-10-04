@@ -35,7 +35,10 @@ from app.core.config import settings
 # so old and new traces are distinguishable in dashboards.
 # 2.1: the run's identity is written onto an app-owned root span as FLAT
 # scalars (the SDK coerces values to str and drops anything over 200 chars).
-TRACE_SCHEMA_VERSION = "2.1"
+# 2.2: voice turns add `stt_lang` and the per-stage timing metrics. ONE bump
+# for the whole voice metadata generation — neither half has shipped yet, so
+# two bumps would only churn the dashboards.
+TRACE_SCHEMA_VERSION = "2.2"
 
 # Any single metadata VALUE is coerced to a string and silently DROPPED when
 # longer than this, so only short scalars belong in trace metadata.
@@ -249,6 +252,7 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
         "schema_version": TRACE_SCHEMA_VERSION,
         "route": route,
         "lang": str(state.get("lang") or ""),
+        "stt_lang": str(state.get("stt_lang") or ""),
         "channel": str(state.get("channel") or ""),
         "tool_iterations": str(state.get("tool_iterations", 0)),
         "llm_calls": str(usage.get("llm_calls", state.get("llm_calls", 0))),
@@ -290,6 +294,45 @@ def enrich_trace(state: dict[str, Any]) -> None:
         metadata=attributes.metadata,
         tags=attributes.tags,
     ):
+        pass
+
+
+def timing_metadata(deltas_ms: dict[str, float]) -> dict[str, str]:
+    """Render stage timings as flat string values for trace metadata.
+
+    Pure, so the mapping is testable without Langfuse. Every trace metadata value
+    is coerced to a string and silently DROPPED above `MAX_METADATA_VALUE_LEN`, so
+    the numbers go out as short scalars rather than as one blob.
+
+    Args:
+        deltas_ms: Stage metric -> milliseconds, from `StageMarks.deltas_ms()`.
+
+    Returns:
+        The same keys mapped to one-decimal strings.
+    """
+    return {name: f"{value:.1f}" for name, value in deltas_ms.items()}
+
+
+def stamp_voice_timing(deltas_ms: dict[str, float]) -> None:
+    """Write one voice turn's stage timings onto the current observation.
+
+    MUST be called while an app-owned span is open, for the same reason
+    `enrich_trace` carries that constraint: `propagate_attributes` only affects
+    the span that is current when the context is entered. No-op when
+    observability is switched off.
+
+    A dedicated timing span is deliberately NOT opened: the SDK fixes an
+    observation's start time at creation, so a span created after the turn would
+    report a duration near zero and sit in the wrong place on the timeline. The
+    marks are attached to the span that was already open instead.
+
+    Args:
+        deltas_ms: Stage metric -> milliseconds, from `StageMarks.deltas_ms()`.
+    """
+    if not settings.langfuse_ready or not deltas_ms:
+        return
+    # Empty body is intentional: ENTERING the context is what writes the values.
+    with propagate_attributes(metadata=timing_metadata(deltas_ms)):
         pass
 
 

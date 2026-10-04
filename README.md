@@ -25,7 +25,8 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 17. [Daily command cheat sheet](#daily-command-cheat-sheet)
 18. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
 19. [Troubleshooting](#troubleshooting)
-20. [Roadmap](#roadmap)
+20. [Voice pipeline (M29)](#voice-pipeline-m29)
+21. [Roadmap](#roadmap)
 
 ---
 
@@ -47,7 +48,8 @@ taylored_personal_assistant/
 │   ├── docker-cheatsheet.md      # Docker command reference (M07)
 │   ├── observability.md          # Self-hosted Langfuse guide (M08)
 │   ├── api.md                    # HTTP + WebSocket API reference (M09)
-│   └── frontend.md               # React chat UI guide (M10)
+│   ├── frontend.md               # React chat UI guide (M10)
+│   └── voice.md                  # Voice pipeline: contract, budgets, hardware (M29)
 ├── infra/
 │   └── compose/
 │       ├── docker-compose.base.yml       # Base stack: backend + frontend + Langfuse (M12)
@@ -71,12 +73,17 @@ taylored_personal_assistant/
     │   ├── smoke_05_multilingual.py
     │   ├── smoke_06_multilingual_routing.py
     │   ├── smoke_07_langfuse.py  # M08: a CLI run becomes a Langfuse trace
-    │   └── ws_probe.py           # M09: WS client to watch token streaming
+    │   ├── ws_probe.py           # M09: WS client to watch token streaming
+    │   ├── make_voice_fixtures.py # M29: writes tests/fixtures/voice_{en,de,pt}.wav
+    │   ├── smoke_08_voice_pipeline.py # M29: WAV → STT → graph → TTS → WAV, no socket
+    │   ├── smoke_09_voice_ws.py  # M29: the ESP32 simulator (a WAV over /ws/voice)
+    │   └── voice_latency.py      # M29: N warm turns, p50/p90 per stage
     ├── tests/                    # Fast unit tests (no network, no LLM)
     │   ├── test_calculator.py
     │   ├── test_config.py
     │   ├── test_langdetect.py
-    │   └── test_api.py           # M09/M11: HTTP/WS tests with fakes (graph + checkpointer)
+    │   ├── test_api.py           # M09/M11: HTTP/WS tests with fakes (graph + checkpointer)
+    │   └── test_voice_*.py       # M29: resampler, VAD, STT, TTS, session, /ws/voice
     └── app/                      # Importable Python package ("app")
         ├── __init__.py
         ├── main.py               # FastAPI app + lifespan (M09, M11)
@@ -108,7 +115,14 @@ taylored_personal_assistant/
         ├── tools/                # Tool registry + calculator
         │   ├── calculator.py
         │   └── registry.py
-        └── voice/                # (future)
+        └── voice/                # Speech pipeline (M29)
+            ├── audio.py          # PCM framing, WAV, resampling (incl. streaming)
+            ├── vad.py            # Silero VAD (ONNX) + the endpointing state machine
+            ├── stt.py            # Transcriber Protocol + OpenAI-compatible adapter
+            ├── tts.py            # Synthesizer Protocol + the sentence splitter
+            ├── session.py        # One socket: turn loop, barge-in, stage timings
+            ├── registry.py       # Process-wide providers + session slots
+            └── models/           # Vendored silero_vad.onnx (+ README, MIT)
 └── frontend/                    # React + TypeScript chat UI (M10, M11)
     ├── package.json             # Manifest + npm scripts (dev, build, test, lint, types, format)
     ├── package-lock.json        # Locked deps (COMMIT this — npm ci uses it)
@@ -117,6 +131,9 @@ taylored_personal_assistant/
     ├── eslint.config.js         # ESLint flat config (lint, not format)
     ├── .prettierrc.json         # Prettier style (format)
     ├── index.html               # Page shell
+    ├── public/
+    │   └── worklets/
+    │       └── pcm-capture.js   # M29: mic → 20 ms Int16 frames (loaded by URL)
     ├── tsconfig*.json           # TypeScript project references
     └── src/
         ├── main.tsx             # React root + <StrictMode>
@@ -129,14 +146,18 @@ taylored_personal_assistant/
         │   ├── deviceId.ts      # Stable UUID in localStorage (M17 alarms)
         │   ├── sessions.ts      # Session registry in localStorage (M11)
         │   ├── history.ts       # Pure message-history mapping (M11, unit-tested)
-        │   └── __tests__/       # Vitest unit tests (sessions, history)
+        │   ├── socket.ts        # API key, auth header, WS URL, close-code text (M29)
+        │   ├── voice.ts         # PCM decoding, gapless scheduling, latency text (M29)
+        │   └── __tests__/       # Vitest unit tests (sessions, history, voice)
         ├── hooks/
         │   ├── useChatStream.ts # WS streaming + sessions + history loading (M10/M11)
+        │   ├── useVoiceSession.ts # Mic → worklet → /ws/voice + playback queue (M29)
         │   └── useAlarmSound.ts # Web Audio stub (wired up in M17)
         └── components/
             ├── SessionList.tsx  # Session sidebar: new / switch / delete (M11)
             ├── MessageList.tsx
-            ├── MessageInput.tsx
+            ├── MessageInput.tsx # Composer: text + the microphone toggle (M29)
+            ├── MicButton.tsx    # Voice phase + last reply latency (M29)
             ├── TypingIndicator.tsx
             └── LanguageBadge.tsx
 ```
@@ -842,6 +863,31 @@ git commit                             # pre-commit hooks fire automatically
 
 ---
 
+## Voice pipeline (M29)
+
+Talking to the assistant uses a second, **long-lived** WebSocket (`WS /ws/voice`): 16 kHz
+mono PCM in, PCM plus control frames out, many turns per socket. The server owns
+endpointing (a vendored Silero VAD), so the browser and the future reSpeaker device behave
+identically; the reply is synthesised sentence by sentence while the graph is still
+generating, and speaking over the answer cuts the turn off. Voice turns land in the SAME
+conversation as typed ones.
+
+It is **off by default**. To try it:
+
+```powershell
+# 1. backend/.env.dev: VOICE_ENABLED=true, VOICE_STT_API_KEY (Groq), VOICE_TTS_API_KEY (OpenAI)
+# 2. regenerate the spoken fixtures once, then run the pipeline with no socket involved
+cd backend
+uv run python scripts/make_voice_fixtures.py
+uv run python scripts/smoke_08_voice_pipeline.py --lang en
+
+# 3. or in the browser: backend + frontend running, then press "Speak" in the composer
+```
+
+`scripts/voice_latency.py` reports where the time actually goes (p50/p90 per stage), and
+[`docs/voice.md`](docs/voice.md) records the frame contract, the measured latency against
+the budget, and everything the ESP32/reSpeaker firmware will need.
+
 ## Roadmap
 
 | Phase | Scope | Status |
@@ -849,5 +895,5 @@ git commit                             # pre-commit hooks fire automatically
 | 1. Core graph & API | LangGraph agent (M02–M06), FastAPI endpoints + WS streaming (M09), pytest suite | ✅ core done |
 | 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Images built, scanned & published to GHCR (M23); Mini PC deploy in progress |
 | 3. Observability & memory | Self-hosted Langfuse traces (M08), Qdrant/Chroma vector store | Langfuse done; vector memory future |
-| 4. Omni-channel UI | Vite/React chat UI with WS streaming (M10), voice via reSpeaker/ESP32 | chat UI done; voice future |
+| 4. Omni-channel UI | Vite/React chat UI with WS streaming (M10), voice via reSpeaker/ESP32 | chat UI done; voice pipeline done (M29), firmware next |
 | 5. Session memory | LangGraph SQLite checkpointing (M11) + frontend multi-session sidebar | ✅ done |
