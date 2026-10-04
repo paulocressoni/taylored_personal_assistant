@@ -73,10 +73,15 @@ RUN npm run build
 FROM nginx:1.30.4-alpine AS prod
 
 # Pull the latest alpine security fixes at build time. The stock
-# nginx:alpine base image can lag behind alpine's package repository.
+# nginx:alpine base image can lag behind alpine's package repository -- it
+# still ships pcre2 10.48-r0 after 10.49-r0 was published to v3.24/main.
 # `apk upgrade` installs the already-released fixes, so the shipped image
 # starts clean instead of shipping a known-vulnerable base.
-RUN apk upgrade --no-cache
+# The explicit pcre2 floor guards CVE-2026-103111: it keeps the base from
+# regressing below the fixed release, and it makes this layer re-run instead
+# of being served from the build cache with the vulnerable package inside.
+RUN apk upgrade --no-cache \
+    && apk add --no-cache 'pcre2>=10.49'
 
 # Replace the stock server block with ours (serves dist/ + proxies /ws,
 # /sessions, /health, /openapi.json to the backend service).
