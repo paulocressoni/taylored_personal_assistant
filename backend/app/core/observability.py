@@ -20,9 +20,10 @@ and the graph behaves exactly as it did before M08.
 
 from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
-from langfuse import Langfuse, propagate_attributes
+from langchain_core.messages import HumanMessage
+from langfuse import Langfuse, get_client, propagate_attributes
 from langfuse.langchain import CallbackHandler
 
 from app._version import __version__
@@ -43,6 +44,17 @@ TRACE_SCHEMA_VERSION = "2.2"
 # Any single metadata VALUE is coerced to a string and silently DROPPED when
 # longer than this, so only short scalars belong in trace metadata.
 MAX_METADATA_VALUE_LEN = 200
+
+# The app-root span mirrors the trace's input and output, so a runaway reply
+# would bloat every trace row. Each side is capped to this many characters.
+MAX_TRACE_IO_CHARS = 2000
+
+# `status_message` is free text on the observation: keep it short enough to
+# read at a glance in the trace list.
+MAX_STATUS_MESSAGE_CHARS = 300
+
+# The Level values the v4 SDK accepts in `update_current_span`.
+SpanLevel = Literal["DEBUG", "DEFAULT", "WARNING", "ERROR"]
 
 # Fallback trace/span name used BEFORE the router has decided the route. The
 # invoke site stamps it as `langfuse_trace_name` so a run that crashes, times
@@ -274,12 +286,64 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
     return TraceAttributes(f"assistant:{route}", metadata, tags)
 
 
+def _flatten_content(content: Any) -> str:
+    """Flatten a message's content to plain text.
+
+    Mirrors the same helper in `app.api.routes` and `app.voice.session`; kept
+    local so `turn_io` stays pure and importable with no running stack.
+
+    Args:
+        content: A message's content: a string, or a list of content blocks.
+
+    Returns:
+        The message text, empty when there is none.
+    """
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    for block in content or []:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    return "".join(parts)
+
+
+def turn_io(state: dict[str, Any]) -> tuple[str, str]:
+    """Extract the turn's question and reply for the trace's input/output.
+
+    Pure — no Langfuse call — so it is unit-testable without a running stack.
+    Langfuse mirrors a trace's IO from its root observation, which `turn_span`
+    creates with no IO, so `enrich_trace` fills it from here.
+
+    The question is the LAST `HumanMessage`, not the first: on a checkpointed
+    thread the state carries the whole history, and the first one belongs to an
+    earlier turn. The reply is the last message's flattened text.
+
+    Args:
+        state: The final graph state of the run. May be empty.
+
+    Returns:
+        `(question, reply)`, each truncated to `MAX_TRACE_IO_CHARS`. An empty
+        or message-less state returns `("", "")` rather than raising, because a
+        failed run still has to be labelable.
+    """
+    messages = state.get("messages") or []
+    question = ""
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            question = _flatten_content(message.content)
+            break
+    reply = _flatten_content(messages[-1].content) if messages else ""
+    return question[:MAX_TRACE_IO_CHARS], reply[:MAX_TRACE_IO_CHARS]
+
+
 def enrich_trace(state: dict[str, Any]) -> None:
-    """Stamp a finished run's name, tags and metadata onto the trace.
+    """Stamp a finished run's name, tags, metadata and IO onto the trace.
 
     MUST be called inside `turn_span()`: the app-root span is the only place
-    Langfuse reads a trace's identity from, and the values have to be set
-    before that span ends. No-op when observability is switched off.
+    Langfuse reads a trace's identity and IO from, and the values have to be
+    set before that span ends. No-op when observability is switched off.
 
     Args:
         state: The final graph state of the run.
@@ -295,6 +359,94 @@ def enrich_trace(state: dict[str, Any]) -> None:
         tags=attributes.tags,
     ):
         pass
+    # A SEPARATE call on purpose: `propagate_attributes` carries only the trace
+    # IDENTITY (name, metadata, tags) and has no input/output parameter, so the
+    # trace IO stayed blank while the LangChain callback's own child chain span
+    # was the only place the messages appeared. Langfuse mirrors a trace's IO
+    # from its root observation, and `update_current_span` is the only v4
+    # surface that writes IO there.
+    question, reply = turn_io(state)
+    if question or reply:
+        get_client().update_current_span(input=question, output=reply)
+
+
+def _mark_current_span(
+    *,
+    level: SpanLevel,
+    status_message: str,
+    marker_tag: str,
+    channel: str | None,
+) -> None:
+    """Stamp a failure or interruption marker on the current observation.
+
+    Best-effort: no-op when observability is switched off.
+
+    Args:
+        level: Observation level: `ERROR` for a crash, `WARNING` for a barge-in.
+        status_message: Short human-readable cause.
+        marker_tag: Trace tag naming the outcome, e.g. `status:failed`.
+        channel: Turn channel, when the caller knows it.
+    """
+    if not settings.langfuse_ready:
+        return
+    # Rebuild the FULL tag list instead of passing only the marker: the
+    # callback handler exits its propagation context before an error handler
+    # runs, so `propagate_attributes(tags=...)` REPLACES the app-root span's
+    # tags — a marker-only list would drop `env:`/`channel:` from the trace.
+    tags = [f"env:{settings.env}"]
+    if channel:
+        tags.append(f"channel:{channel}")
+    tags.append(marker_tag)
+    with propagate_attributes(tags=tags):
+        pass
+    get_client().update_current_span(
+        level=level,
+        status_message=status_message[:MAX_STATUS_MESSAGE_CHARS],
+    )
+
+
+def mark_turn_failed(detail: str, *, channel: str | None = None) -> None:
+    """Flag the current observation as a failed turn.
+
+    MUST be called inside `turn_span()`, while the app-root span is still open.
+    A crash or a graph timeout never reaches `enrich_trace`, so without this
+    call the trace looks healthy — the opposite of an error signal.
+
+    Best-effort: no-op when observability is switched off.
+
+    Args:
+        detail: Short human-readable cause, e.g. the exception class name.
+        channel: Turn channel, when the caller knows it.
+    """
+    _mark_current_span(
+        level="ERROR",
+        status_message=detail,
+        marker_tag="status:failed",
+        channel=channel,
+    )
+
+
+def mark_turn_cancelled(detail: str, *, channel: str | None = None) -> None:
+    """Flag the current observation as an interrupted turn.
+
+    A voice turn cut short by barge-in unwinds through `CancelledError`, which
+    derives from `BaseException` — a broad `except Exception` never sees it.
+    Stamping the interruption is what makes the barge-in rate queryable instead
+    of every interrupted turn looking like a completed one. MUST be called
+    inside `turn_span()`, while the app-root span is still open.
+
+    Best-effort: no-op when observability is switched off.
+
+    Args:
+        detail: Short human-readable cause, e.g. `barge-in`.
+        channel: Turn channel, when the caller knows it.
+    """
+    _mark_current_span(
+        level="WARNING",
+        status_message=detail,
+        marker_tag="status:cancelled",
+        channel=channel,
+    )
 
 
 def timing_metadata(deltas_ms: dict[str, float]) -> dict[str, str]:
