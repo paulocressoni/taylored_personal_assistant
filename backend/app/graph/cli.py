@@ -16,6 +16,7 @@ from app.core.observability import (
     enrich_trace,
     flush,
     langfuse_metadata,
+    mark_turn_failed,
     new_langfuse_handler,
     trace_url,
     turn_span,
@@ -73,14 +74,20 @@ def main() -> None:
     graph = build_graph()
     # turn_span() opens the app-root span the trace's identity is written to.
     with turn_span():
-        final = graph.invoke(
-            initial,
-            config={
-                "callbacks": callbacks,
-                "configurable": configurable,
-                "metadata": metadata,  # <- v4 reads langfuse_* from here
-            },
-        )
+        try:
+            final = graph.invoke(
+                initial,
+                config={
+                    "callbacks": callbacks,
+                    "configurable": configurable,
+                    "metadata": metadata,  # <- v4 reads langfuse_* from here
+                },
+            )
+        except Exception as exc:
+            # A crash must leave a queryable ERROR span rather than a
+            # clean-looking trace; re-raised so the CLI still exits non-zero.
+            mark_turn_failed(f"{type(exc).__name__}: {exc}", channel="cli")
+            raise
         enrich_trace(final)
 
     print(final)
