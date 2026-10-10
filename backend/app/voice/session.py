@@ -31,7 +31,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 from app.api.deps import build_initial_state, build_run_config
 from app.core.config import settings
@@ -60,6 +60,14 @@ Send = Callable[[Outbound], Awaitable[None]]
 # Output rates a client may ask for. The browser plays the TTS-native 24 kHz and
 # pays nothing; the reSpeaker XVF3800 runs at 16 kHz and pays for one resampler.
 OUTPUT_SAMPLE_RATES = frozenset({16000, PCM_SAMPLE_RATE})
+
+# Persisted as the assistant's side of a turn a barge-in cut off. LangGraph
+# commits a run's input as its FIRST checkpoint, so the turn's HumanMessage is
+# durable long before the responder can answer; without this marker a cancelled
+# turn leaves that question unanswered for ever. The text is deliberately short
+# and plainly not spoken: it restores the question/answer alternation a model
+# expects without inventing an answer the assistant never gave.
+INTERRUPTED_MARKER = "[interrupted]"
 
 
 def _content_to_str(content: Any) -> str:
@@ -279,11 +287,19 @@ class VoiceSession:
                 logger.debug("voice blip ignored (%.2fs)", event.duration_s)
 
     async def _barge_in(self) -> None:
-        """Cut off the answer that is playing and tell the client to as well."""
-        if self._turn is not None and not self._turn.done():
+        """Cut off the answer that is playing and tell the client to as well.
+
+        `speech_start` goes out before anything is awaited, so the client stops
+        its playout at once. The turn is then unwound to completion rather than
+        merely cancelled: its teardown closes the interrupted thread, and the
+        next utterance must not start while that write is still in flight.
+        """
+        interrupting = self._turn is not None and not self._turn.done()
+        if interrupting:
             logger.info("barge-in: the user spoke over the answer")
-            self._turn.cancel()
         await self._send({"type": "speech_start"})
+        if interrupting:
+            await self._cancel_turn()
 
     async def _cancel_turn(self) -> None:
         """Cancel the turn in flight, if any, and wait for it to stop.
@@ -303,6 +319,40 @@ class VoiceSession:
             # `_run_turn` reports its own failures, so this is only a guard: a
             # turn must never take the socket down with it.
             logger.warning("voice turn ended badly (%s)", type(exc).__name__)
+
+    async def _close_interrupted_turn(self) -> None:
+        """Give a turn that never finished an assistant reply, if it needs one.
+
+        LangGraph commits a run's input as its first checkpoint, so a turn's
+        HumanMessage is durable the moment the graph starts — but the responder's
+        AIMessage only lands when the responder node returns. Cancelling the turn
+        mid-node therefore used to leave the persisted thread holding a question
+        with no answer: `GET /sessions/{id}/history` showed it unanswered, and the
+        next run fed it back to the model as an unanswered user turn.
+
+        `StateSnapshot.next` is non-empty exactly while the graph still has a node
+        to run, so the marker is written only for a run that stopped before END. A
+        turn that answered, or one cancelled before the graph started, has nothing
+        pending and is left untouched.
+
+        Never raises: this is a repair, and an exception escaping here would
+        replace whatever the cancelled turn is unwinding with.
+        """
+        config = {"configurable": {"thread_id": self._session_id}}
+        try:
+            snapshot = await self._graph.aget_state(config)
+            if not snapshot.next:
+                return
+            await self._graph.aupdate_state(
+                config,
+                {"messages": [AIMessage(content=INTERRUPTED_MARKER)]},
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Broad on purpose: a missing marker is cosmetic, a raised one would
+            # mask the cancellation.
+            logger.warning(
+                "could not close the interrupted turn (%s)", type(exc).__name__
+            )
 
     async def _run_turn(self, utterance: Utterance) -> None:
         """Answer one utterance, then report how long each stage took.
@@ -350,6 +400,9 @@ class VoiceSession:
             marks.done = marks.done or monotonic_now()
             self.turn_timings.append(marks.deltas_ms())
             log_stage_marks(logger, marks)
+            # A turn that never reached the graph's END left its question in the
+            # checkpointer; close it so the thread stays question-answer balanced.
+            await self._close_interrupted_turn()
 
     async def _answer(self, utterance: Utterance, marks: StageMarks) -> None:
         """Transcribe the utterance, stream the reply and speak it as it forms.

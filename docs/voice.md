@@ -103,6 +103,32 @@ flushes its playback queue). Cancellation is the only interruption path — `Can
 derives from `BaseException`, which is what stops the session's broad handler from eating
 it.
 
+### What a barge-in leaves in the thread
+
+A cancelled turn must not leave the conversation question-answer unbalanced. LangGraph
+commits a run's **input as its first checkpoint**, so the moment a turn enters the graph its
+`HumanMessage` is durable — but the responder's `AIMessage` is only committed when that node
+returns. Cancelling a turn mid-node therefore used to persist a question with no answer:
+`GET /sessions/{id}/history` showed it unanswered, and the *next* voice turn loaded that
+checkpoint and handed the model an unanswered user turn.
+
+`VoiceSession._close_interrupted_turn` closes the gap when a turn's teardown runs. It asks
+the thread for its snapshot and looks at `StateSnapshot.next`: an interrupted run is exactly
+one that stopped before `END`, so `next` is non-empty. When it is, the turn is given a short
+`AIMessage` — `"[interrupted]"` (`INTERRUPTED_MARKER`) — written through `aupdate_state`. A
+turn that answered, or one cancelled before the graph ever started (nothing was persisted),
+has nothing pending and is left alone.
+
+Two consequences worth knowing:
+
+- The marker is a real persisted assistant message, so a barge-in shows up in the chat
+  history as `[interrupted]`. That is deliberate: it is honest — the user did cut the answer
+  off — and it keeps the model window well-formed. It is never spoken.
+- Barge-in waits for the cancelled turn to finish unwinding before the reader loop accepts
+  more audio. `speech_start` still goes out first, so the client cuts playout immediately;
+  the wait only serialises the teardown, which is what stops the repair writing to the
+  checkpointer while the next turn is already streaming into it.
+
 A turn that fails is reported and the socket stays open: a provider error must never end
 the conversation.
 
@@ -243,6 +269,12 @@ The Python simulator already speaks this contract; the firmware does not exist y
   is one more field on the `audio_end` frame.
 - **No client-side VAD and no offline queue**: no microphone means no session, and the turn
   is lost if the socket drops mid-answer (the transcript and reply are still in history).
+- **An interrupted turn is recorded as an `[interrupted]` assistant message**, not as the
+  partial reply the user actually heard. The session already sees every streamed token, so
+  persisting the spoken prefix is possible; the marker is enough to keep the thread balanced
+  and is far cheaper. The text channel has the same exposure through the `POST /chat`
+  timeout — it abandons the run the same way, leaving the same unanswered `HumanMessage` —
+  and has no repair yet.
 - **No wake word, no diarization, no barge-in tuning per room**, and `gpt-4o-mini-tts`'s
   voices are optimised for English — German and Portuguese are intelligible, not equal in
   quality.

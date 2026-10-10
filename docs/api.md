@@ -261,6 +261,10 @@ Two voice-specific behaviours to know:
 - **Endpointing is the server's job.** The client never decides when speech ended: it sends
   audio and reacts to `speech_start` (which also means "flush your playback — the user is
   interrupting") and `audio_end`. A failed turn sends `error` and the socket stays open.
+- **A barge-in is recorded, not lost.** Cutting a spoken turn off cancels it mid-graph, so
+  the turn's `HumanMessage` is already persisted while its answer is not. The interrupted
+  turn is closed with an `[interrupted]` assistant message, so
+  `GET /sessions/{id}/history` never shows a question with no reply.
 
 Rate limiting and slots share the API key with `/ws/chat`: voice turn sockets draw on the
 same per-key budget, and a refused socket is closed with `1013` after an `error` frame.
