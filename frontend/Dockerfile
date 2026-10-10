@@ -80,8 +80,11 @@ FROM nginx:1.30.4-alpine AS prod
 # The explicit pcre2 floor guards CVE-2026-103111: it keeps the base from
 # regressing below the fixed release, and it makes this layer re-run instead
 # of being served from the build cache with the vulnerable package inside.
+# The tiff floor does the same for CVE-2026-4775: libtiff arrives with the
+# base through nginx's libgd, and one `apk upgrade` is not enough because the
+# cached layer keeps serving the older tiff even after the fix is published.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache 'pcre2>=10.49'
+    && apk add --no-cache 'pcre2>=10.49' 'tiff>=4.7.2'
 
 # Replace the stock server block with ours (serves dist/ + proxies /ws,
 # /sessions, /health, /openapi.json to the backend service).

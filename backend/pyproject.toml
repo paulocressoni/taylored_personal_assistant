@@ -13,6 +13,10 @@ dependencies = [
     "langgraph>=1.2.11",
     "langgraph-checkpoint-postgres==3.1.2",
     "langgraph-checkpoint-sqlite>=3.1.1",
+    # Security floor, not a direct import: `langgraph` pulls langgraph-sdk in,
+    # and anything below 0.4.4 carries a HIGH CVE -- an authorization bypass
+    # through improper resource handler registration.
+    "langgraph-sdk>=0.4.4",
     "lingua-language-detector>=2.2.0",
     "numpy>=2.5.3",
     "onnxruntime>=1.30.0",

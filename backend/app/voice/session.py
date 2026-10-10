@@ -35,7 +35,13 @@ from langchain_core.messages import AIMessageChunk
 
 from app.api.deps import build_initial_state, build_run_config
 from app.core.config import settings
-from app.core.observability import enrich_trace, stamp_voice_timing, turn_span
+from app.core.observability import (
+    enrich_trace,
+    mark_turn_cancelled,
+    mark_turn_failed,
+    stamp_voice_timing,
+    turn_span,
+)
 from app.core.timing import StageMarks, log_stage_marks, monotonic_now
 from app.language.voices import voice_for
 from app.voice.audio import StreamingResampler
@@ -311,7 +317,16 @@ class VoiceSession:
             with turn_span():
                 try:
                     await self._answer(utterance, marks)
+                except asyncio.CancelledError:
+                    # Barge-in unwinds the turn by cancelling this task. CancelledError
+                    # derives from BaseException, so the broad handler below never
+                    # sees it — it must be caught explicitly to stamp the interruption.
+                    # Re-raised, never swallowed: swallowing it would leave the
+                    # cancelled task alive instead of unwinding it.
+                    mark_turn_cancelled("barge-in", channel="voice")
+                    raise
                 except TimeoutError:
+                    mark_turn_failed("voice turn timed out", channel="voice")
                     logger.warning(
                         "voice turn timed out after %.0fs",
                         settings.graph_timeout_seconds,
@@ -321,6 +336,7 @@ class VoiceSession:
                     # Broad on purpose. The provider adapters turn their own
                     # failures into results, so reaching here means a bug — and a
                     # bug must not end the conversation.
+                    mark_turn_failed(type(exc).__name__, channel="voice")
                     logger.warning("voice turn failed (%s)", type(exc).__name__)
                     await self._send({"type": "error", "detail": "I could not answer"})
                 finally:
