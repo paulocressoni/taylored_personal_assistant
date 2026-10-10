@@ -1,5 +1,7 @@
 """Unit tests for the pure trace-attribute builder and trace-IO helpers."""
 
+import asyncio
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -15,15 +17,19 @@ from app.core.observability import (
     TRACE_SCHEMA_VERSION,
     TURN_TRACE_NAME,
     _error_taxonomy,
+    child_observation,
     enrich_trace,
     langfuse_metadata,
     mark_turn_cancelled,
     mark_turn_failed,
     stamp_voice_timing,
+    stt_attributes,
     timing_metadata,
     trace_attributes,
+    tts_attributes,
     turn_io,
 )
+from app.voice.stt import Transcript
 
 
 def test_langfuse_metadata_carries_static_trace_identity() -> None:
@@ -318,3 +324,189 @@ def test_mark_turn_cancelled_stamps_a_barge_in(recorder: _FakeSpan) -> None:
 
     assert recorder.updates == [{"level": "WARNING", "status_message": "barge-in"}]
     assert "status:cancelled" in recorder.attributes["langfuse.trace.tags"]
+
+
+class _FakeObservation:
+    """Records what a caller writes onto a child observation it started."""
+
+    def __init__(self) -> None:
+        self.updates: list[dict[str, Any]] = []
+
+    def update(self, **attributes: Any) -> None:
+        self.updates.append(attributes)
+
+
+class _FakeSpanClient:
+    """`Langfuse` stand-in that records the child observations it opens.
+
+    Records the close as well as the open, because "the span still closes on a
+    barge-in" is exactly what a `finally` here can prove and the real SDK's own
+    `finally` promises.
+    """
+
+    def __init__(self) -> None:
+        self.opened: list[dict[str, Any]] = []
+        self.observations: list[_FakeObservation] = []
+        self.closed: list[_FakeObservation] = []
+
+    @contextmanager
+    def start_as_current_observation(
+        self, **attributes: Any
+    ) -> Iterator[_FakeObservation]:
+        observation = _FakeObservation()
+        self.opened.append(attributes)
+        self.observations.append(observation)
+        try:
+            yield observation
+        finally:
+            self.closed.append(observation)
+
+
+def test_child_observation_yields_none_when_observability_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(observability.settings, "langfuse_enabled", False)
+
+    with child_observation("stt", input="lang=en audio_ms=250.0") as observation:
+        assert observation is None
+
+
+def test_child_observation_opens_a_named_span_under_the_current_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeSpanClient()
+    monkeypatch.setattr(observability, "_get_client", lambda: client)
+
+    with child_observation(
+        "tts", input="Hello there.", metadata={"index": "1"}
+    ) as observation:
+        assert observation is not None
+        observation.update(output="written after the call")
+
+    assert client.opened == [
+        {
+            "name": "tts",
+            "as_type": "span",
+            "input": "Hello there.",
+            "metadata": {"index": "1"},
+        }
+    ]
+    assert client.observations[0].updates == [{"output": "written after the call"}]
+    assert client.closed == client.observations
+
+
+async def test_child_observation_closes_the_span_and_keeps_the_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeSpanClient()
+    monkeypatch.setattr(observability, "_get_client", lambda: client)
+
+    with (
+        pytest.raises(asyncio.CancelledError),
+        child_observation("tts", input="Hello there.") as observation,
+    ):
+        assert observation is not None
+        raise asyncio.CancelledError
+
+    assert client.closed == client.observations
+
+
+def test_stt_attributes_render_a_transcription_as_short_scalars() -> None:
+    attributes = stt_attributes(
+        Transcript(
+            text="turn on the kitchen light",
+            language_hint="en",
+            duration_s=1.25,
+            provider="groq",
+        ),
+        model="whisper-large-v3-turbo",
+    )
+
+    assert attributes == {
+        "provider": "groq",
+        "model": "whisper-large-v3-turbo",
+        "audio_ms": "1250.0",
+        "text_chars": "25",
+    }
+
+
+def test_stt_attributes_describe_a_failed_transcription_too() -> None:
+    attributes = stt_attributes(
+        Transcript(
+            text="",
+            language_hint=None,
+            duration_s=0.5,
+            provider="groq",
+            error="connection reset",
+        ),
+        model="whisper-large-v3-turbo",
+    )
+
+    assert attributes["audio_ms"] == "500.0"
+    assert attributes["text_chars"] == "0"
+
+
+def test_tts_attributes_render_one_sentence_at_the_native_rate() -> None:
+    attributes = tts_attributes(
+        "Hello there.",
+        voice="marin",
+        model="gpt-4o-mini-tts",
+        index=2,
+        ttfb_ms=180.44,
+        byte_count=48000,
+        output_rate=24000,
+    )
+
+    assert attributes == {
+        "voice": "marin",
+        "model": "gpt-4o-mini-tts",
+        "chars": "12",
+        "index": "2",
+        "ttfb_ms": "180.4",
+        "bytes": "48000",
+        "audio_ms": "1000.0",
+    }
+
+
+def test_tts_attributes_measure_audio_at_the_given_rate() -> None:
+    # The same 1 s of audio is a third fewer bytes at 16 kHz, so a builder that
+    # ignored `output_rate` would report this sentence 1.5x too long.
+    attributes = tts_attributes(
+        "Hello.",
+        voice="marin",
+        model="gpt-4o-mini-tts",
+        index=1,
+        ttfb_ms=99.96,
+        byte_count=32000,
+        output_rate=16000,
+    )
+
+    assert attributes["audio_ms"] == "1000.0"
+    assert attributes["ttfb_ms"] == "100.0"
+
+
+def test_stage_attribute_values_fit_the_sdk_limit() -> None:
+    stt = stt_attributes(
+        Transcript(
+            text="x" * 5000,
+            language_hint="en",
+            duration_s=1234.5678,
+            provider="groq",
+        ),
+        model="whisper-large-v3-turbo",
+    )
+    tts = tts_attributes(
+        "y" * 5000,
+        voice="marin",
+        model="gpt-4o-mini-tts",
+        index=12,
+        ttfb_ms=123456.7,
+        byte_count=10_000_000,
+        output_rate=24000,
+    )
+
+    for attributes in (stt, tts):
+        assert all(isinstance(value, str) for value in attributes.values())
+        assert all(
+            len(value) <= MAX_METADATA_VALUE_LEN for value in attributes.values()
+        )
