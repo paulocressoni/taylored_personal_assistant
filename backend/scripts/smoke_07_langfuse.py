@@ -6,7 +6,8 @@ suite stays green.
 
 Run:    ENV=dev uv run python -m scripts.smoke_07_langfuse
 Verify: open http://localhost:3000 -> Traces -> newest run -> expect a
-        "assistant:knowledge" trace with spans for detect_lang / router /
+        "assistant:knowledge" trace whose ROOT span shows the question as
+        input and the answer as output, with spans for detect_lang / router /
         knowledge / responder and an LLM generation with token counts.
 """
 
@@ -22,6 +23,7 @@ from app.core.observability import (
     enrich_trace,
     flush,
     langfuse_metadata,
+    mark_turn_failed,
     new_langfuse_handler,
     trace_url,
     turn_span,
@@ -65,14 +67,22 @@ def _invoke(user_input: str) -> tuple[dict, Any]:
 
     graph = build_graph()
     with turn_span():
-        result = graph.invoke(
-            initial,
-            config={
-                "callbacks": callbacks,
-                "configurable": configurable,
-                "metadata": metadata,
-            },
-        )
+        try:
+            result = graph.invoke(
+                initial,
+                config={
+                    "callbacks": callbacks,
+                    "configurable": configurable,
+                    "metadata": metadata,
+                },
+            )
+        except Exception as exc:
+            # Mark, then flush: a smoke run that crashes should leave an
+            # inspectable ERROR trace rather than a clean-looking one that
+            # never reaches Langfuse.
+            mark_turn_failed(f"{type(exc).__name__}: {exc}", channel="cli")
+            flush()
+            raise
         enrich_trace(result)
     if langfuse is not None:
         flush()  # v4: client.flush(), so the trace lands before we print
