@@ -136,6 +136,113 @@ def test_a_non_positive_min_chars_is_rejected() -> None:
         SentenceSplitter(min_chars=0, max_chars=100)
 
 
+# --- SentenceSplitter: the eager first chunk ---------------------------------
+
+
+def _eager_splitter(
+    min_chars: int = 40,
+    max_chars: int = 240,
+    first_chunk_min_chars: int = 12,
+    first_chunk_max_chars: int = 80,
+) -> SentenceSplitter:
+    """Build a splitter with the eager first chunk switched on."""
+    return SentenceSplitter(
+        min_chars=min_chars,
+        max_chars=max_chars,
+        first_chunk_min_chars=first_chunk_min_chars,
+        first_chunk_max_chars=first_chunk_max_chars,
+    )
+
+
+def test_the_eager_rule_is_off_unless_it_is_configured() -> None:
+    # Two-argument construction is the splitter as it was before this change: a
+    # clause break below min_chars is not a split point at all.
+    splitter = SentenceSplitter(min_chars=40, max_chars=240)
+
+    assert splitter.push(
+        "The kitchen light is on, and the temperature is 21.5 degrees."
+    ) == ["The kitchen light is on, and the temperature is 21.5 degrees."]
+
+
+def test_the_first_chunk_is_cut_at_a_clause_break() -> None:
+    # The sentence runs to 61 characters, so the sentence rule holds all of it
+    # back for another ~40 characters of generation; the comma makes the opening
+    # 24 characters speakable now.
+    splitter = _eager_splitter()
+
+    assert splitter.push(
+        "The kitchen light is on, and the temperature is 21.5 degrees."
+    ) == ["The kitchen light is on,"]
+
+
+def test_a_semicolon_a_colon_or_an_em_dash_also_ends_an_eager_first_chunk() -> None:
+    assert _eager_splitter().push(
+        "The kitchen light is on; the door is locked for the night."
+    ) == ["The kitchen light is on;"]
+    assert _eager_splitter().push("Here is the status: the light is on.") == [
+        "Here is the status:"
+    ]
+    assert _eager_splitter().push("The kitchen light is on — and it is warm.") == [
+        "The kitchen light is on —"
+    ]
+
+
+def test_the_first_chunk_falls_back_to_a_word_boundary_without_punctuation() -> None:
+    # No clause break ever arrives, so audio must not stall: the opening chunk is
+    # cut at the configured bound, and never inside a word.
+    splitter = _eager_splitter(first_chunk_max_chars=30)
+    chunks = splitter.push("word " * 10)
+
+    assert chunks == ["word word word word word word"]
+    assert all(set(chunk.split()) == {"word"} for chunk in chunks)
+
+
+def test_only_the_first_chunk_is_eager() -> None:
+    # The opening chunk is already playing once the second one is formed, so a
+    # mid-sentence cut there buys no felt latency; the second chunk stays whole.
+    splitter = _eager_splitter(first_chunk_min_chars=10)
+    chunks = splitter.push(
+        "Opening statement, here is a longer clause, that still ends with a full stop."
+    )
+
+    assert chunks[0] == "Opening statement,"
+    assert chunks[1] == "here is a longer clause, that still ends with a full stop."
+    assert splitter.flush() == []
+
+
+def test_a_short_reply_still_flushes_in_one_chunk() -> None:
+    splitter = _eager_splitter()
+
+    assert splitter.push("The kitchen light is on.") == []
+    assert splitter.flush() == ["The kitchen light is on."]
+
+
+def test_an_eager_first_chunk_never_tears_a_number_or_a_clock_time() -> None:
+    assert _eager_splitter().push("It cost 1,000 euros, which is a lot of money.") == [
+        "It cost 1,000 euros,"
+    ]
+    assert _eager_splitter().push("The meeting is at 10:30, so be ready to leave.") == [
+        "The meeting is at 10:30,"
+    ]
+
+
+def test_the_eager_bounds_are_validated() -> None:
+    with pytest.raises(ValueError, match="first_chunk_min_chars"):
+        SentenceSplitter(
+            min_chars=40,
+            max_chars=240,
+            first_chunk_min_chars=0,
+            first_chunk_max_chars=80,
+        )
+    with pytest.raises(ValueError, match="first_chunk_max_chars"):
+        SentenceSplitter(
+            min_chars=40,
+            max_chars=240,
+            first_chunk_min_chars=50,
+            first_chunk_max_chars=20,
+        )
+
+
 # --- OpenAISynthesizer ------------------------------------------------------
 
 
