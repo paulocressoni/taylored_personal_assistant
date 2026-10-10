@@ -309,55 +309,71 @@ async def chat_ws(websocket: WebSocket) -> None:
     completed = False  # True only when the root on_chain_end is seen
 
     try:
-        # Same cooperative-cancellation caveat as POST /chat: this
-        # timeout cancels the stream's await, not the in-flight model call on
-        # its thread-executor thread. ROLE_CONFIG's per-role timeout is the
-        # real bound on each DeepSeek call.
-        async with asyncio.timeout(settings.graph_timeout_seconds):
-            # turn_span() must wrap the WHOLE stream: our span has to exist
-            # before the callback handler creates the run's root chain span.
-            with turn_span():
-                async for event in graph.astream_events(
-                    initial, config=config, version="v2"
-                ):
-                    kind = event["event"]
-
-                    # The graph emits "on_chat_model_stream" events for each token chunk
-                    # produced by the model.
-                    if kind == "on_chat_model_stream":
-                        node = event.get("metadata", {}).get("langgraph_node")
-                        if node == "responder":
-                            chunk = event["data"]["chunk"]
-                            if isinstance(chunk, AIMessageChunk):
-                                text = _content_to_str(chunk.content)
-                                if text:
-                                    streamed.append(text)
-                                    await websocket.send_json(
-                                        {"type": "token", "content": text}
-                                    )
-
-                    # Status frame when the router's model call begins
-                    if kind == "on_chat_model_start":
-                        node = event.get("metadata", {}).get("langgraph_node")
-                        if node == "router" and not thinking_sent:
-                            thinking_sent = True
-                            await websocket.send_json(
-                                {"type": "status", "detail": "classifying intent..."}
-                            )
-
-                    if (
-                        kind == "on_chain_end"
-                        and event.get("name") == "LangGraph"
-                        and not event.get("parent_ids")
+        # turn_span() must wrap the WHOLE stream: our span has to exist before
+        # the callback handler creates the run's root chain span, and it stays
+        # open long enough for mark_turn_failed() to write onto it. The timeout
+        # sits INSIDE the span because asyncio.timeout only converts its
+        # cancellation into TimeoutError once the body has unwound.
+        with turn_span():
+            try:
+                # Same cooperative-cancellation caveat as POST /chat: this
+                # timeout cancels the stream's await, not the in-flight model
+                # call on its thread-executor thread. ROLE_CONFIG's per-role
+                # timeout is the real bound on each DeepSeek call.
+                async with asyncio.timeout(settings.graph_timeout_seconds):
+                    async for event in graph.astream_events(
+                        initial, config=config, version="v2"
                     ):
-                        final_state = event["data"]["output"]
-                        completed = True
+                        kind = event["event"]
 
-                # The stream is over and no callback span is active any more:
-                # stamp the trace while our app-root span is still open. This
-                # sits OUTSIDE the loop on purpose — one enrichment per run.
-                if final_state is not None:
-                    enrich_trace(final_state)
+                        # The graph emits "on_chat_model_stream" events for each token chunk
+                        # produced by the model.
+                        if kind == "on_chat_model_stream":
+                            node = event.get("metadata", {}).get("langgraph_node")
+                            if node == "responder":
+                                chunk = event["data"]["chunk"]
+                                if isinstance(chunk, AIMessageChunk):
+                                    text = _content_to_str(chunk.content)
+                                    if text:
+                                        streamed.append(text)
+                                        await websocket.send_json(
+                                            {"type": "token", "content": text}
+                                        )
+
+                        # Status frame when the router's model call begins
+                        if kind == "on_chat_model_start":
+                            node = event.get("metadata", {}).get("langgraph_node")
+                            if node == "router" and not thinking_sent:
+                                thinking_sent = True
+                                await websocket.send_json(
+                                    {
+                                        "type": "status",
+                                        "detail": "classifying intent...",
+                                    }
+                                )
+
+                        if (
+                            kind == "on_chain_end"
+                            and event.get("name") == "LangGraph"
+                            and not event.get("parent_ids")
+                        ):
+                            final_state = event["data"]["output"]
+                            completed = True
+            except WebSocketDisconnect:
+                # The client left: that is not a failed run, so do not mark it.
+                raise
+            except TimeoutError:
+                mark_turn_failed("TimeoutError: graph run timed out", channel="api")
+                raise
+            except Exception as exc:
+                mark_turn_failed(f"{type(exc).__name__}: {exc}", channel="api")
+                raise
+
+            # The stream is over and no callback span is active any more: stamp
+            # the trace while our app-root span is still open. This sits OUTSIDE
+            # the loop on purpose — one enrichment per run.
+            if final_state is not None:
+                enrich_trace(final_state)
 
     # We only catch WebSocketDisconnect here because it indicates that the client has disconnected.
     except WebSocketDisconnect:
