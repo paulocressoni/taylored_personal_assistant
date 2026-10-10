@@ -7,16 +7,27 @@ the production default of 500 ms implies.
 """
 
 import asyncio
+import threading
 from collections.abc import AsyncIterator, Awaitable
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from conftest import FakeSynthesizer, FakeTranscriber, ScriptedVad, transcript
-from langchain_core.messages import AIMessageChunk
+from conftest import (
+    FakeChatModel,
+    FakeSynthesizer,
+    FakeTranscriber,
+    ScriptedVad,
+    transcript,
+)
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from app.core.config import settings
+from app.graph.graph import build_graph
 from app.voice.audio import resample_pcm
-from app.voice.session import VoiceSession
+from app.voice.session import INTERRUPTED_MARKER, VoiceSession
 from app.voice.stt import Transcript
 from app.voice.tts import PCM_SAMPLE_RATE
 from app.voice.vad import WINDOW_BYTES
@@ -27,6 +38,9 @@ UTTERANCE_PCM = bytes(WINDOW_BYTES * 4)
 ONE_WINDOW = bytes(WINDOW_BYTES)
 # One probability per window; two segments' worth by default.
 VAD_SCRIPT = (0.9, 0.9, 0.1, 0.1) * 2
+# Two loud and two quiet windows close one segment; the fifth loud window is a
+# bare onset with no segment behind it — a barge-in and nothing more.
+BARGE_IN_SCRIPT = (0.9, 0.9, 0.1, 0.1, 0.9)
 REPLY = "The kitchen light is now switched on for you."
 
 
@@ -75,11 +89,18 @@ class Recorder:
 
 
 class FakeGraph:
-    """Duck-typed graph: replays scripted events and records its input state."""
+    """Duck-typed graph: replays scripted events and records its input state.
+
+    It also answers the two checkpointer calls `VoiceSession` makes when a turn
+    ends: `aget_state` reports the scripted run as FINISHED (empty `next`), which
+    keeps the interrupted-turn repair out of the frame-flow tests below, and
+    `aupdate_state` records the write that repair would have made.
+    """
 
     def __init__(self, *events: dict[str, Any]) -> None:
         self._events = events
         self.initial: list[dict[str, Any]] = []
+        self.updates: list[dict[str, Any]] = []
 
     async def astream_events(
         self,
@@ -91,6 +112,20 @@ class FakeGraph:
         self.initial.append(initial)
         for event in self._events:
             yield event
+
+    async def aget_state(self, config: dict[str, Any] | None = None) -> SimpleNamespace:
+        """Report a completed run: the scripted graph leaves no node pending."""
+        return SimpleNamespace(values={}, next=())
+
+    async def aupdate_state(
+        self,
+        config: dict[str, Any],
+        values: dict[str, Any],
+        as_node: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a checkpoint write made outside a run."""
+        self.updates.append(values)
+        return config
 
 
 class GatedTranscriber:
@@ -160,7 +195,7 @@ def _graph(*events: dict[str, Any]) -> FakeGraph:
 
 
 def _session(
-    graph: FakeGraph,
+    graph: Any,
     *,
     transcriber: Any | None = None,
     synthesizer: Any | None = None,
@@ -479,3 +514,114 @@ async def test_each_turn_publishes_its_stage_timings() -> None:
         "turn_ms",
     }
     assert timings["turn_ms"] >= timings["first_audio_ms"]
+
+
+# ---------------------------------------------------------------------------
+# Barge-in against the REAL compiled graph. The doubles above replay events and
+# persist nothing, and this bug lives entirely in what gets persisted — only a
+# real graph behind a real saver can show it.
+# ---------------------------------------------------------------------------
+
+
+class GatedChatModel(FakeChatModel):
+    """FakeChatModel that announces itself, then blocks until it is released.
+
+    Holding the responder node open is what makes a barge-in land while the graph
+    is still running — the only window where the checkpointer holds the turn's
+    HumanMessage but not yet its AIMessage.
+    """
+
+    def __init__(
+        self, *responses: Any, gate: threading.Event, entered: threading.Event
+    ) -> None:
+        super().__init__(*responses)
+        self._gate = gate
+        self._entered = entered
+
+    def invoke(self, messages: Any, config: Any = None) -> Any:
+        """Signal that the node is running, wait to be released, then answer."""
+        self._entered.set()
+        self._gate.wait(timeout=5)
+        return super().invoke(messages, config)
+
+
+async def _persisted(graph: Any, session_id: str = "voice-1") -> list[tuple[str, Any]]:
+    """The (role, content) pairs a thread has in the checkpointer, oldest first."""
+    snapshot = await graph.aget_state({"configurable": {"thread_id": session_id}})
+    return [(message.type, message.content) for message in snapshot.values["messages"]]
+
+
+async def test_a_barge_in_closes_the_interrupted_turn(
+    tmp_path: Path, patch_llm: Any
+) -> None:
+    """A cancelled turn must not persist a question with no answer.
+
+    LangGraph commits a run's input as its FIRST checkpoint and only commits the
+    responder's AIMessage when that node returns, so cancelling the turn mid-node
+    used to leave the thread holding an unanswered question: it showed up in
+    `GET /sessions/{id}/history` and was fed back to the model on the next turn.
+    """
+    gate = threading.Event()
+    entered = threading.Event()
+    responder = GatedChatModel(AIMessage(content=REPLY), gate=gate, entered=entered)
+    patch_llm(
+        lambda role: (
+            responder
+            if role == "responder"
+            else FakeChatModel(AIMessage(content="<route>responder</route>"))
+        )
+    )
+
+    async with AsyncSqliteSaver.from_conn_string(
+        str(tmp_path / "checkpoints.sqlite")
+    ) as saver:
+        graph = build_graph(checkpointer=saver)
+        session, recorder = _session(graph, vad_script=BARGE_IN_SCRIPT)
+
+        async def stream() -> AsyncIterator[bytes | dict[str, Any]]:
+            yield UTTERANCE_PCM
+            # Let the responder get inside the graph, so the onset below cancels a
+            # running turn rather than a turn that never started.
+            await asyncio.to_thread(entered.wait, 5)
+            yield ONE_WINDOW
+            yield {"type": "stop"}
+
+        try:
+            await asyncio.wait_for(session.run(stream()), timeout=5)
+        finally:
+            # Release the node thread the cancellation left blocked.
+            gate.set()
+        # Give a late write from the dead run every chance to land: if one could,
+        # the assertion below would not be trustworthy.
+        await asyncio.sleep(0.1)
+
+        # Two onsets and no `audio_end`: the answer really was cut off in flight.
+        assert recorder.types == [
+            "ready",
+            "speech_start",
+            "transcript",
+            "speech_start",
+        ]
+        assert await _persisted(graph) == [
+            ("human", "turn on the light"),
+            ("ai", INTERRUPTED_MARKER),
+        ]
+
+
+async def test_a_completed_turn_is_left_alone(tmp_path: Path, patch_llm: Any) -> None:
+    """A turn that reached the graph's END gets no interruption marker."""
+    patch_llm(lambda role: FakeChatModel(AIMessage(content=REPLY)))
+
+    async with AsyncSqliteSaver.from_conn_string(
+        str(tmp_path / "checkpoints.sqlite")
+    ) as saver:
+        graph = build_graph(checkpointer=saver)
+        session, recorder = _session(graph)
+
+        await _drive(session, UTTERANCE_PCM, until=recorder.until("audio_end"))
+
+        assert recorder.types[-1] == "audio_end"
+        assert await _persisted(graph) == [
+            ("human", "turn on the light"),
+            ("ai", REPLY),
+        ]
