@@ -36,15 +36,20 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from app.api.deps import build_initial_state, build_run_config
 from app.core.config import settings
 from app.core.observability import (
+    MAX_STATUS_MESSAGE_CHARS,
+    MAX_TRACE_IO_CHARS,
+    child_observation,
     enrich_trace,
     mark_turn_cancelled,
     mark_turn_failed,
     stamp_voice_timing,
+    stt_attributes,
+    tts_attributes,
     turn_span,
 )
 from app.core.timing import StageMarks, log_stage_marks, monotonic_now
 from app.language.voices import voice_for
-from app.voice.audio import StreamingResampler
+from app.voice.audio import StreamingResampler, duration_s
 from app.voice.stt import Transcriber
 from app.voice.tts import PCM_SAMPLE_RATE, SentenceSplitter, Synthesizer
 from app.voice.vad import EndpointDetector, Ignored, SpeechStart, Utterance, Vad
@@ -365,6 +370,15 @@ class VoiceSession:
             # turn_span() owns the app-root span: without it there is nothing for
             # enrich_trace and stamp_voice_timing to write onto.
             with turn_span():
+                # INVARIANT: every marker below is written while the app-root
+                # span is CURRENT. `mark_turn_failed`, `mark_turn_cancelled` and
+                # `stamp_voice_timing` all go through `update_current_span`,
+                # which targets whichever observation is current — and `_answer`
+                # opens and closes its `stt`/`tts` child spans before it returns,
+                # so the app-root span is current again by the time this code
+                # runs. A child span left open here would take the failure marker
+                # and the stage timings onto itself, leaving a crashed turn
+                # looking healthy.
                 try:
                     await self._answer(utterance, marks)
                 except asyncio.CancelledError:
@@ -412,8 +426,37 @@ class VoiceSession:
             marks: Stage marks to fill in as the turn progresses.
         """
         bias = self._stt_bias()
-        transcript = await self._transcriber.transcribe(utterance.pcm, bias)
-        marks.stt_done = monotonic_now()
+        # `Utterance` carries the speech it detected (`detected_s`), not the audio
+        # it hands over — pre-roll and tail pad included — so the submitted length
+        # is derived from the PCM itself. The transcript's own `duration_s` agrees,
+        # but it only exists AFTER the call and the span wants its input up front.
+        audio_ms = duration_s(utterance.pcm, settings.voice_input_sample_rate) * 1000.0
+        with child_observation(
+            "stt",
+            input=f"lang={bias or 'auto'} audio_ms={audio_ms:.1f}",
+        ) as stt_span:
+            transcript = await self._transcriber.transcribe(utterance.pcm, bias)
+            marks.stt_done = monotonic_now()
+            if stt_span is not None:
+                if transcript.ok:
+                    stt_span.update(
+                        metadata=stt_attributes(
+                            transcript, model=settings.voice_stt_model
+                        ),
+                        output=transcript.text[:MAX_TRACE_IO_CHARS],
+                    )
+                else:
+                    # No output on a failure: an empty output would read as
+                    # "transcribed to nothing", which is the one thing that did not
+                    # happen. The error frame below is untouched, so this changes
+                    # observability and never behaviour.
+                    stt_span.update(
+                        metadata=stt_attributes(
+                            transcript, model=settings.voice_stt_model
+                        ),
+                        level="ERROR",
+                        status_message=str(transcript.error)[:MAX_STATUS_MESSAGE_CHARS],
+                    )
         if not transcript.ok:
             logger.warning("voice transcription failed (%s)", transcript.error)
             await self._send({"type": "error", "detail": "I did not catch that"})
@@ -442,6 +485,11 @@ class VoiceSession:
         )
         resampler = StreamingResampler(PCM_SAMPLE_RATE, self._output_rate)
         final: dict[str, Any] | None = None
+        # 1-based position of the sentence being spoken, so the `tts` spans read
+        # in speaking order. A local rather than a per-turn counter on `self`:
+        # only this method knows the order sentences leave the splitter, and an
+        # attribute would outlive a barge-in and misnumber the next turn.
+        sentence_index = 0
 
         # Same cooperative caveat as the text routes: this bounds the turn, it
         # cannot abort a model call already running on its own thread.
@@ -464,9 +512,11 @@ class VoiceSession:
                     marks.llm_first_token = monotonic_now()
                 await self._send({"type": "token", "content": text})
                 for sentence in splitter.push(text):
-                    await self._speak(sentence, resampler, marks)
+                    sentence_index += 1
+                    await self._speak(sentence, resampler, marks, index=sentence_index)
             for sentence in splitter.flush():
-                await self._speak(sentence, resampler, marks)
+                sentence_index += 1
+                await self._speak(sentence, resampler, marks, index=sentence_index)
             tail = resampler.flush()
             if tail:
                 await self._send(tail)
@@ -477,22 +527,78 @@ class VoiceSession:
         await self._send({"type": "audio_end"})
 
     async def _speak(
-        self, text: str, resampler: StreamingResampler, marks: StageMarks
+        self,
+        text: str,
+        resampler: StreamingResampler,
+        marks: StageMarks,
+        *,
+        index: int,
     ) -> None:
         """Synthesize one sentence and stream its audio to the client.
+
+        One `tts` child span per sentence is what turns the flat stage timings into
+        a waterfall: the second sentence is synthesised while the first is still
+        playing, and only an interval per sentence shows that.
+
+        Its `ttfb_ms` attribute and the turn's `tts_ttfb_ms` mark pick up the same
+        first PCM byte from different origins — this span starts when `_speak` is
+        entered, the mark when the first token arrived — and the SDK's own span
+        duration comes from a different clock than `monotonic_now()`. For the
+        first sentence they should agree within a few milliseconds; a large
+        divergence is a signal about where the pipeline waited (text held back by
+        the splitter, a span opened late), not a bug to hide.
+
+        A barge-in cancels the turn at an `await` inside the loop below. The span
+        still closes — the context manager ends it on the way out, and
+        `CancelledError` derives from `BaseException`, so nothing here catches it —
+        it simply closes without the attributes written after the loop.
 
         Args:
             text: The sentence to speak.
             resampler: Per-turn converter to the negotiated output rate.
             marks: Stage marks, stamped on the first audio byte.
+            index: 1-based position of this sentence in the turn.
         """
         voice = voice_for(self._last_lang)
-        async for chunk in self._synthesizer.synthesize(text, voice):
-            if marks.tts_first_byte is None:
-                marks.tts_first_byte = monotonic_now()
-            audio = resampler.process(chunk)
-            if audio:
-                await self._send(audio)
+        with child_observation("tts", input=text[:MAX_TRACE_IO_CHARS]) as tts_span:
+            started = monotonic_now()
+            first_chunk_at: float | None = None
+            sent_bytes = 0
+            async for chunk in self._synthesizer.synthesize(text, voice):
+                if marks.tts_first_byte is None:
+                    marks.tts_first_byte = monotonic_now()
+                if first_chunk_at is None:
+                    first_chunk_at = monotonic_now()
+                audio = resampler.process(chunk)
+                if audio:
+                    # Counted AFTER resampling so `bytes` and `audio_ms` describe
+                    # the same buffer at the same rate. The resampler holds a few
+                    # milliseconds back as lookahead (flushed at the end of the
+                    # turn), so a sentence can come out a couple of ms short.
+                    sent_bytes += len(audio)
+                    await self._send(audio)
+            if tts_span is not None:
+                # A stream that yielded nothing has no first chunk to time, and a
+                # fabricated duration would be worse than a zero.
+                ttfb_ms = (
+                    (first_chunk_at - started) * 1000.0
+                    if first_chunk_at is not None
+                    else 0.0
+                )
+                tts_span.update(
+                    metadata=tts_attributes(
+                        text,
+                        voice=voice,
+                        model=settings.voice_tts_model,
+                        index=index,
+                        ttfb_ms=ttfb_ms,
+                        byte_count=sent_bytes,
+                        # The NEGOTIATED rate, not the setting's default: a 16 kHz
+                        # device plays these bytes at 16 kHz, and the 24 kHz default
+                        # would report every sentence 1.5x too long.
+                        output_rate=self._output_rate,
+                    )
+                )
 
     def _stt_bias(self) -> str | None:
         """Language hint for this turn's transcription.
