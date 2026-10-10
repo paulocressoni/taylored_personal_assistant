@@ -42,7 +42,7 @@ from app.api.schemas import (
     VoiceStartRequest,
 )
 from app.core.config import settings
-from app.core.observability import enrich_trace, turn_span
+from app.core.observability import enrich_trace, mark_turn_failed, turn_span
 from app.graph.utils import get_last_message
 from app.voice.registry import SessionSlots, VoiceProviders
 from app.voice.session import Inbound, Outbound, Send, VoiceSession
@@ -109,15 +109,27 @@ async def chat(
     # (app/core/llm.py), enforced by the ChatDeepSeek client; this deadline is
     # only a coarse request-level safety net.
     try:
-        async with asyncio.timeout(settings.graph_timeout_seconds):
-            # turn_span() owns the app-root span, so enrich_trace() has a
-            # recording span to write the trace name/tags/metadata onto.
-            with turn_span():
-                # The graph.ainvoke method runs the graph with the initial state and configuration.
-                # it must wait for the async graph to complete and return the final state (async
-                # like the checkpointer).
-                final = await graph.ainvoke(initial, config=config)
-                enrich_trace(final)
+        # turn_span() owns the app-root span, so enrich_trace() and
+        # mark_turn_failed() have a recording span to write onto. It wraps the
+        # timeout on purpose: asyncio.timeout only converts its cancellation into
+        # TimeoutError once the body has unwound, so the mark has to be written
+        # while the span is still open.
+        with turn_span():
+            try:
+                async with asyncio.timeout(settings.graph_timeout_seconds):
+                    # The graph.ainvoke method runs the graph with the initial state
+                    # and configuration. It must wait for the async graph to complete
+                    # and return the final state (async like the checkpointer).
+                    final = await graph.ainvoke(initial, config=config)
+            except TimeoutError:
+                mark_turn_failed("TimeoutError: graph run timed out", channel="api")
+                raise
+            except Exception as exc:
+                # Mark the span before re-raising so a crash leaves an ERROR trace
+                # instead of a clean-looking one; the traceback still propagates.
+                mark_turn_failed(f"{type(exc).__name__}: {exc}", channel="api")
+                raise
+            enrich_trace(final)
     except TimeoutError:
         raise HTTPException(
             status_code=503,
