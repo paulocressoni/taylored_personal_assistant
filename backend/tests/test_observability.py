@@ -1,14 +1,28 @@
-"""Unit tests for the pure trace-attribute builder (no Langfuse needed)."""
+"""Unit tests for the pure trace-attribute builder and trace-IO helpers."""
 
+from contextlib import contextmanager
+from typing import Any
+
+import pytest
+from langchain_core.messages import AIMessage, HumanMessage
+from pydantic import SecretStr
+
+from app.core import observability
 from app.core.config import settings
 from app.core.observability import (
     MAX_METADATA_VALUE_LEN,
+    MAX_TRACE_IO_CHARS,
     TRACE_SCHEMA_VERSION,
     TURN_TRACE_NAME,
     _error_taxonomy,
+    enrich_trace,
     langfuse_metadata,
+    mark_turn_cancelled,
+    mark_turn_failed,
+    stamp_voice_timing,
     timing_metadata,
     trace_attributes,
+    turn_io,
 )
 
 
@@ -164,3 +178,143 @@ def test_trace_attributes_leaves_the_bias_empty_on_a_text_turn() -> None:
     )
 
     assert attributes.metadata["stt_lang"] == ""
+
+
+class _FakeSpan:
+    """Records the attributes the SDK would write onto the app-root span."""
+
+    def __init__(self) -> None:
+        self.attributes: dict[str, Any] = {}
+        self.updates: list[dict[str, Any]] = []
+
+
+class _FakeClient:
+    """Captures every `update_current_span` call on the shared fake span."""
+
+    def __init__(self, span: _FakeSpan) -> None:
+        self._span = span
+
+    def update_current_span(self, **attributes: Any) -> None:
+        self._span.updates.append(attributes)
+
+
+def _recording_propagate(span: _FakeSpan) -> Any:
+    """Build a `propagate_attributes` stand-in writing onto `span`.
+
+    Metadata lands as per-key span attributes (the SDK behaviour the ordering
+    test depends on); tags and trace name are recorded whole.
+    """
+
+    @contextmanager
+    def _record(**attributes: Any):
+        for key, value in (attributes.get("metadata") or {}).items():
+            span.attributes[f"langfuse.trace.metadata.{key}"] = str(value)
+        if attributes.get("tags") is not None:
+            span.attributes["langfuse.trace.tags"] = list(attributes["tags"])
+        if attributes.get("trace_name") is not None:
+            span.attributes["langfuse.trace.name"] = attributes["trace_name"]
+        yield
+
+    return _record
+
+
+@pytest.fixture
+def recorder(monkeypatch: pytest.MonkeyPatch) -> _FakeSpan:
+    """Point the observability helpers at a recording fake with Langfuse on."""
+    span = _FakeSpan()
+    monkeypatch.setattr(
+        observability, "propagate_attributes", _recording_propagate(span)
+    )
+    monkeypatch.setattr(observability, "get_client", lambda: _FakeClient(span))
+    monkeypatch.setattr(observability.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(
+        observability.settings, "langfuse_public_key", SecretStr("pk-lf-test")
+    )
+    monkeypatch.setattr(
+        observability.settings, "langfuse_secret_key", SecretStr("sk-lf-test")
+    )
+    return span
+
+
+def test_turn_io_picks_the_last_human_message() -> None:
+    question, reply = turn_io(
+        {
+            "messages": [
+                HumanMessage(content="first question"),
+                AIMessage(content="first answer"),
+                HumanMessage(content="second question"),
+                AIMessage(content="second answer"),
+            ]
+        }
+    )
+    assert question == "second question"
+    assert reply == "second answer"
+
+
+def test_turn_io_returns_empty_strings_for_an_empty_state() -> None:
+    assert turn_io({}) == ("", "")
+    assert turn_io({"messages": []}) == ("", "")
+
+
+def test_turn_io_truncates_a_long_reply_to_the_cap() -> None:
+    question, reply = turn_io(
+        {
+            "messages": [
+                HumanMessage(content="hi"),
+                AIMessage(content="x" * (MAX_TRACE_IO_CHARS + 500)),
+            ]
+        }
+    )
+    assert question == "hi"
+    assert len(reply) == MAX_TRACE_IO_CHARS
+
+
+def test_turn_io_flattens_block_content() -> None:
+    state = {
+        "messages": [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "hello "},
+                    {"type": "text", "text": "world"},
+                ]
+            ),
+            AIMessage(content="hi there"),
+        ]
+    }
+    assert turn_io(state) == ("hello world", "hi there")
+
+
+def test_enrich_then_stamp_voice_timing_keeps_both_metadata_writes(
+    recorder: _FakeSpan,
+) -> None:
+    enrich_trace({"route": "knowledge", "channel": "voice", "messages": []})
+    stamp_voice_timing({"stt_ms": 200.0})
+
+    assert (
+        recorder.attributes["langfuse.trace.metadata.schema_version"]
+        == TRACE_SCHEMA_VERSION
+    )
+    assert recorder.attributes["langfuse.trace.metadata.route"] == "knowledge"
+    assert recorder.attributes["langfuse.trace.metadata.stt_ms"] == "200.0"
+
+
+def test_mark_turn_failed_keeps_the_base_tags_and_sets_error_level(
+    recorder: _FakeSpan,
+) -> None:
+    mark_turn_failed("TimeoutError: graph run timed out", channel="api")
+
+    assert recorder.attributes["langfuse.trace.tags"] == [
+        f"env:{settings.env}",
+        "channel:api",
+        "status:failed",
+    ]
+    assert recorder.updates == [
+        {"level": "ERROR", "status_message": "TimeoutError: graph run timed out"}
+    ]
+
+
+def test_mark_turn_cancelled_stamps_a_barge_in(recorder: _FakeSpan) -> None:
+    mark_turn_cancelled("barge-in", channel="voice")
+
+    assert recorder.updates == [{"level": "WARNING", "status_message": "barge-in"}]
+    assert "status:cancelled" in recorder.attributes["langfuse.trace.tags"]
