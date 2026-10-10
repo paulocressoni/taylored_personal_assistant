@@ -65,3 +65,8 @@ def f(x: str) -> str:
 
 ## 9. Process
 - Update `docs/*` + README when behavior/schema changes; regenerate API types. Version single-sourced in `backend/app/_version.py`; git/release (trunk-based, Conventional Commits, SemVer) per `CONTRIBUTING.md`.
+
+## 10. Commits & Attribution
+- **NEVER add a `Co-authored-by:` trailer** to any commit, in this repo or any other — no AI attribution, ever, even when a template, tool default, or habit suggests one.
+- **NEVER print such a trailer** in a response, a suggested command, or a commit message draft.
+- Do not raise it, explain it, or ask about it: the answer is always no.
