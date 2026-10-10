@@ -27,6 +27,11 @@ PCM_SAMPLE_RATE = 24000
 _TERMINATORS = ".!?"
 _CLOSERS = "\"')]}"
 _NEWLINE = "\n"
+# Clause-level breaks the eager FIRST chunk may use. A sentence terminator is
+# still preferred; these only let the opening fragment reach the speaker before
+# the sentence that contains it is complete. A hyphen is deliberately absent: it
+# also sits inside words ("well-known", "e-mail"), where a stop would tear one.
+_CLAUSE_BREAKS = ",;:—"
 
 # Abbreviations whose trailing period is not a sentence end. Dotted forms such as
 # `e.g.`, `z.B.` and `p.ex.` need no entry: their period lands after a single
@@ -141,8 +146,38 @@ def _whitespace_split(text: str, max_chars: int) -> int:
     return max_chars
 
 
+def _clause_break_end(text: str, index: int) -> int | None:
+    """Return the offset just past a clause break at `index`, if there is one.
+
+    Args:
+        text: The text being scanned.
+        index: The position to test.
+
+    Returns:
+        The offset just past the clause punctuation, or `None` when `index` is
+        not a clause break or the punctuation belongs to a number instead.
+    """
+    if text[index] not in _CLAUSE_BREAKS:
+        return None
+    # A comma or colon between digits is part of a number or a clock time
+    # ("1,000", "10:30"), not a place to pause.
+    if (
+        text[index] in ",:"
+        and text[index - 1 : index].isdigit()
+        and text[index + 1 : index + 2].isdigit()
+    ):
+        return None
+    return index + 1
+
+
 def _find_split(
-    text: str, *, min_chars: int, max_chars: int, flush: bool
+    text: str,
+    *,
+    min_chars: int,
+    max_chars: int,
+    first_chunk_min_chars: int | None = None,
+    first_chunk_max_chars: int | None = None,
+    flush: bool,
 ) -> int | None:
     """Return the offset just past the text that should be spoken next.
 
@@ -152,12 +187,21 @@ def _find_split(
             merged with the following one instead of stalling.
         max_chars: Hard bound, so text without punctuation cannot delay audio
             indefinitely.
+        first_chunk_min_chars: When set, the reply's FIRST chunk may also be cut
+            at a clause break this many characters in. `None` disables that and
+            leaves every chunk on the terminator rule below.
+        first_chunk_max_chars: Word-boundary bound for the eager first chunk when
+            no clause break arrives; `None` reuses `max_chars`.
         flush: When True the end of the stream is known, so the whole remainder
             is drained.
 
     Returns:
         The split offset, or `None` when nothing is safe to speak yet.
     """
+    eager = first_chunk_min_chars is not None
+    first_bound = max_chars
+    if eager and first_chunk_max_chars is not None:
+        first_bound = min(first_chunk_max_chars, max_chars)
     index = 0
     while index < len(text):
         end = _terminator_end(text, index)
@@ -166,23 +210,55 @@ def _find_split(
         if end is not None:
             index = end
             continue
+        if first_chunk_min_chars is not None:
+            clause = _clause_break_end(text, index)
+            if clause is not None and clause >= first_chunk_min_chars:
+                return clause
         index += 1
-        if index >= max_chars:
-            return _whitespace_split(text, max_chars)
+        if index >= first_bound:
+            return _whitespace_split(text, first_bound)
     if flush:
         return len(text)
     return None
 
 
 def _split(
-    text: str, *, min_chars: int, max_chars: int, flush: bool
+    text: str,
+    *,
+    min_chars: int,
+    max_chars: int,
+    first_chunk_min_chars: int | None = None,
+    first_chunk_max_chars: int | None = None,
+    first: bool,
+    flush: bool,
 ) -> tuple[list[str], str]:
-    """Split off every complete sentence and return the leftover buffer."""
+    """Split off every complete sentence and return the leftover buffer.
+
+    Args:
+        text: The buffered text to split.
+        min_chars: Shortest chunk worth its own request, after the first one.
+        max_chars: Hard bound on one request, after the first one.
+        first_chunk_min_chars: Eager bound for the reply's first chunk; `None`
+            disables it.
+        first_chunk_max_chars: Word-boundary bound for the eager first chunk.
+        first: Whether nothing has been emitted yet, so the next chunk is the
+            reply's first.
+        flush: Whether the stream has ended.
+
+    Returns:
+        The completed chunks, and the text that is not yet safe to speak.
+    """
     chunks: list[str] = []
     remaining = text
+    eager = first
     while remaining:
         end = _find_split(
-            remaining, min_chars=min_chars, max_chars=max_chars, flush=flush
+            remaining,
+            min_chars=min_chars,
+            max_chars=max_chars,
+            first_chunk_min_chars=first_chunk_min_chars if eager else None,
+            first_chunk_max_chars=first_chunk_max_chars if eager else None,
+            flush=flush,
         )
         if end is None:
             break
@@ -190,6 +266,7 @@ def _split(
         remaining = remaining[end:]
         if piece:
             chunks.append(piece)
+            eager = False
     return chunks, remaining
 
 
@@ -199,23 +276,59 @@ class SentenceSplitter:
     Fragments below `min_chars` are merged with the sentence that follows them,
     which avoids both a wasted request for a reply that opens with `Yes.` and the
     stall a naive "wait for a long enough sentence" rule would cause.
+
+    The reply's FIRST chunk is the one exception. A whole reply that is a single
+    sentence cannot be pipelined at all — nothing is speakable until its final
+    terminator — so the opening chunk may also be cut at a clause break, or, when
+    none arrives, at a word boundary. Every later chunk keeps the sentence rule:
+    by then audio is already playing, so cutting mid-sentence would cost prosody
+    and an extra request without saving the caller any waiting.
     """
 
-    def __init__(self, *, min_chars: int, max_chars: int) -> None:
+    def __init__(
+        self,
+        *,
+        min_chars: int,
+        max_chars: int,
+        first_chunk_min_chars: int | None = None,
+        first_chunk_max_chars: int | None = None,
+    ) -> None:
         """Configure the split bounds.
 
         Args:
             min_chars: Shortest chunk worth its own synthesis request.
             max_chars: Hard bound on one request.
+            first_chunk_min_chars: Characters buffered before the reply's first
+                chunk may be cut at a clause break. `None` keeps every chunk on
+                the sentence rule, which is the behaviour without the eager first
+                chunk.
+            first_chunk_max_chars: Word-boundary bound for the eager first chunk
+                when no clause break arrives; `None` reuses `max_chars`.
 
         Raises:
-            ValueError: if min_chars is not positive, or exceeds max_chars.
+            ValueError: if `min_chars` is not positive or exceeds `max_chars`, or
+                if the eager first-chunk bounds are not positive and ordered.
         """
         if min_chars <= 0 or max_chars < min_chars:
             raise ValueError("min_chars must be positive and <= max_chars")
+        if first_chunk_min_chars is not None and first_chunk_min_chars <= 0:
+            raise ValueError("first_chunk_min_chars must be positive")
+        if (
+            first_chunk_min_chars is not None
+            and first_chunk_max_chars is not None
+            and first_chunk_max_chars < first_chunk_min_chars
+        ):
+            raise ValueError(
+                "first_chunk_max_chars must be at or above first_chunk_min_chars"
+            )
         self._min_chars = min_chars
         self._max_chars = max_chars
+        self._first_chunk_min_chars = first_chunk_min_chars
+        self._first_chunk_max_chars = first_chunk_max_chars
         self._buffer = ""
+        # Flips on the first emitted chunk, which is what makes the eager cut a
+        # first-chunk rule and not a global one.
+        self._emitted = False
 
     def push(self, delta: str) -> list[str]:
         """Add a streamed token and return every sentence now safe to speak.
@@ -232,8 +345,13 @@ class SentenceSplitter:
             self._buffer,
             min_chars=self._min_chars,
             max_chars=self._max_chars,
+            first_chunk_min_chars=self._first_chunk_min_chars,
+            first_chunk_max_chars=self._first_chunk_max_chars,
+            first=not self._emitted,
             flush=False,
         )
+        if chunks:
+            self._emitted = True
         return chunks
 
     def flush(self) -> list[str]:
@@ -242,9 +360,14 @@ class SentenceSplitter:
             self._buffer,
             min_chars=self._min_chars,
             max_chars=self._max_chars,
+            first_chunk_min_chars=self._first_chunk_min_chars,
+            first_chunk_max_chars=self._first_chunk_max_chars,
+            first=not self._emitted,
             flush=True,
         )
         self._buffer = ""
+        if chunks:
+            self._emitted = True
         return chunks
 
 
