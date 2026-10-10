@@ -7,7 +7,7 @@ Missing/invalid required settings crash at startup, never mid-request.
 import os
 from typing import Literal
 
-from pydantic import SecretStr, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # SUPPORTED_LANGS is the CANONICAL language list and lives in a leaf module
@@ -163,6 +163,26 @@ class Settings(BaseSettings):
     # does not wait for the whole answer. These bound that splitter.
     voice_tts_min_chunk_chars: int = 40
     voice_tts_max_chunk_chars: int = 240
+    # The reply's FIRST chunk is cut earlier than the rest, so a reply that is a
+    # single long sentence can start playing before it is finished: a clause
+    # break is taken from `_MIN` onward, and a word boundary is used from `_MAX`
+    # onward when no clause break ever arrives. Setting `_MIN` equal to
+    # VOICE_TTS_MIN_CHUNK_CHARS and `_MAX` equal to VOICE_TTS_MAX_CHUNK_CHARS
+    # restores the previous behaviour exactly.
+    voice_tts_first_chunk_min_chars: int = Field(
+        default=12,
+        description=(
+            "Characters buffered before the reply's FIRST chunk may be cut at a "
+            "clause break (comma, semicolon, colon or em dash)."
+        ),
+    )
+    voice_tts_first_chunk_max_chars: int = Field(
+        default=80,
+        description=(
+            "Character bound at which the reply's FIRST chunk falls back to a "
+            "word-boundary split when no clause break has arrived."
+        ),
+    )
 
     # --- Voice audio contract ---
     # The browser captures/sends 16 kHz (Speech API native) and plays 24 kHz
@@ -300,6 +320,19 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "VOICE_TTS_VOICES has no voice for supported language(s): "
                     f"{', '.join(missing_voices)}. Add one entry per language."
+                )
+
+            # The eager first chunk needs a valid window: it cuts at a clause
+            # break from the min onward and falls back at the max, so a max below
+            # the min would leave it nothing to do.
+            if (
+                self.voice_tts_first_chunk_max_chars
+                < self.voice_tts_first_chunk_min_chars
+            ):
+                raise ValueError(
+                    "VOICE_TTS_FIRST_CHUNK_MAX_CHARS must be at or above "
+                    "VOICE_TTS_FIRST_CHUNK_MIN_CHARS, otherwise the eager first "
+                    "chunk has no valid split window."
                 )
 
         return self
