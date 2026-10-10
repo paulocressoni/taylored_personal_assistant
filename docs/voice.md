@@ -19,6 +19,7 @@ for the ESP32/reSpeaker until the firmware exists.
 | Audio plumbing | `backend/app/voice/audio.py` (framing, WAV, resampling incl. a streaming resampler) |
 | Providers + slots | `backend/app/voice/registry.py` |
 | Per-stage timings | `backend/app/core/timing.py` + `stamp_voice_timing` in `backend/app/core/observability.py` |
+| Trace waterfall | `stt` / `tts` child spans via `child_observation` — see [observability.md](observability.md) |
 | Spoken-answer prompt | `VOICE_STYLE_ADDENDUM` in `backend/app/prompts/responder.py` |
 | Browser client | `useVoiceSession.ts`, `MicButton.tsx`, `lib/socket.ts`, `lib/voice.ts`, `public/worklets/pcm-capture.js` |
 | Tooling | `scripts/make_voice_fixtures.py`, `smoke_08_voice_pipeline.py`, `smoke_09_voice_ws.py`, `voice_latency.py` |
@@ -295,6 +296,18 @@ chunking bounds — `VOICE_TTS_FIRST_CHUNK_*` and `VOICE_TTS_MIN_CHUNK_CHARS`. T
 levers are the smallest of the four by construction: they can only reclaim the generation
 time *remaining after the first break*, which on this fixture's one-sentence answers is under
 120 ms.
+
+### Seeing one turn, not just its totals
+
+The tables above are per-stage AGGREGATES: they say a turn cost ~3.2 s at p50, not where that
+particular turn's time went. For a single turn, open its trace in Langfuse: every spoken turn
+draws an `stt` span around the transcription and one `tts` span per sentence, each carrying
+its own `ttfb_ms`, `bytes` and `index`, so the overlap of sentence synthesis with graph
+generation is visible instead of inferred. The six scalars in the tables stay on the trace
+root — the spans are an extra dimension, not a replacement.
+
+See [observability.md](observability.md) → "The voice trace waterfall" for the span
+vocabulary and what each attribute means.
 
 ## Configuration
 
