@@ -149,8 +149,7 @@ Measured with `scripts/voice_latency.py --runs 5 --warmup 1` (fixture `voice_en.
 ### Baseline, before the eager first chunk
 
 Taken on the tree *before* `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` / `_MAX_CHARS` existed, so it
-is the "before" column of the comparison. The matching "after" run is **still pending**: it
-needs the splitter change applied and the same command repeated.
+is the "before" column of the comparison. The "after" column is the third table below.
 
 | Stage | p50 | p90 |
 |---|---|---|
@@ -163,16 +162,22 @@ needs the splitter change applied and the same command repeated.
 | `perceived_ms` (from the caller's last frame) | 3455 ms | 4153 ms |
 
 `tts_call_ms` — last token to first audio byte — is where the eager first chunk has to show
-up: cutting the opening chunk early turns part of that span into audio that is already
-playing, so the "after" run should push it toward zero, and for a reply with a clause break
-it can legitimately go *negative* (the tool's own docstring says a negative value means a
-sentence was already being spoken before the last token arrived). Its baseline size —
-496 ms p50 / 825 ms p90 — is the prize. A reply that is one short clause-less sentence
-takes none of it, because there is no break inside it to cut at.
+up: cutting the opening chunk early starts the TTS request at the clause break instead of at
+the final token, so `tts_call_ms` loses exactly the **generation time remaining after that
+break**, and it can go *negative* only when that remainder exceeds the whole TTS round trip
+(the tool's own docstring: a negative value means a sentence was already being spoken before
+the last token arrived).
+
+That makes `generation_ms` — not the 496 ms TTS round trip — the ceiling on what chunking
+can reclaim. This page got that wrong at first, and it is the easiest number here to
+misread: the TTS call still takes its full round trip, it merely *starts earlier*. A reply
+that is one short clause-less sentence reclaims nothing at all, because there is no break
+inside it to cut at.
 
 ### Config-only experiment: `VOICE_VAD_MIN_SILENCE_MS=300`
 
-Same command, same tree, with `$env:VOICE_VAD_MIN_SILENCE_MS='300'`. No code change.
+Same command, still on the pre-change tree, with `$env:VOICE_VAD_MIN_SILENCE_MS='300'`. No
+code change.
 
 | Stage | p50 | p90 |
 |---|---|---|
@@ -188,6 +193,39 @@ Same command, same tree, with `$env:VOICE_VAD_MIN_SILENCE_MS='300'`. No code cha
 *worse*. The gain lands entirely in `perceived_ms`, 3455 → 3055 ms p50. That is the
 definitional point below: the tool stamps `first_audio_ms` after endpointing has already
 finished, so only `perceived_ms` can see a shorter silence window.
+
+### After the eager first chunk (`VOICE_VAD_MIN_SILENCE_MS=300`)
+
+Same command, same silence window, but on the tree *with* `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` /
+`_MAX_CHARS` in place — the like-for-like "after" column.
+
+| Stage | p50 | p90 |
+|---|---|---|
+| `stt_ms` | 282 ms | 291 ms |
+| `graph_ttft_ms` | 2452 ms | 2861 ms |
+| `tts_ttfb_ms` | 623 ms | 676 ms |
+| ↳ `generation_ms` (first→last token) | 76 ms | 120 ms |
+| ↳ `tts_call_ms` (last token→first audio) | 537 ms | 600 ms |
+| **`first_audio_ms`** | **3419 ms** | **3685 ms** |
+| `perceived_ms` (from the caller's last frame) | 3499 ms | 3766 ms |
+
+**No resolvable difference — and on this fixture there cannot be one.** `tts_call_ms` came
+back at 537 ms p50 against 526 ms before, and `first_audio_ms` moved 449 ms p50 the wrong way
+(2970 → 3419 ms), driven by `graph_ttft_ms` (2207 → 2452 ms) — the model's own timing, not
+the splitter. Two reasons:
+
+- The fixture asks `What is the capital of France?`, and the reply this page has always used
+  for it — `The capital of France is Paris.` — is one short sentence. Its entire
+  `generation_ms` is 76 ms p50 / 120 ms p90, and that is the structural ceiling on any
+  saving here (see the paragraph under the baseline table). 120 ms cannot be resolved by
+  5 runs whose own spread is ~450 ms.
+- Even a longer sentence only gains when a clause break lands *early* in the generation, and
+  that reply contains no clause break at all.
+
+So the eager first chunk is **verified by the splitter tests, not by this tool**, and the
+honest number to publish for it is "below the noise floor of this fixture". Measuring it
+would need a reply whose generation runs well past its first clause break — a long or
+multi-clause answer — which is a different measurement to set up.
 
 Read this honestly:
 
@@ -205,9 +243,10 @@ Read this honestly:
   mid-sentence cut would cost prosody and an extra request for no felt gain. So
   `The kitchen light is on, and the temperature is 21.5 degrees.` starts speaking its first
   24 characters while the sentence is still being written, whereas a short comma-less
-  sentence such as `The capital of France is Paris.` is unchanged — there is no break
-  inside it to take, so `tts_call_ms` stays the real TTS round trip and `tts_ttfb_ms` is
-  mostly "waiting for the reply".
+  sentence such as `The capital of France is Paris.` is unchanged — there is no break inside
+  it to take. Note the decomposition: `tts_ttfb_ms` is `generation_ms` + `tts_call_ms`
+  (90 + 496 ≈ 607 ms), so the "waiting for the reply" part of it is only ~90 ms — the TTS
+  round trip, not the reply, is what `tts_ttfb_ms` is mostly made of.
 - **`first_audio_ms` hides the whole endpointing wait; `perceived_ms` hides none of it.**
   `first_audio_ms` is stamped from the server's own `speech_end`, which the endpointer only
   sets *after* the trailing silence window has elapsed, so what the caller actually waits is
@@ -220,11 +259,13 @@ Read this honestly:
   page publishes a budget it actually meets.
 
 Levers, roughly in order of value: a faster TTS provider (both vendors sit behind the
-`Synthesizer` Protocol — a config switch plus one adapter), a voice fast path in the graph,
-`VOICE_VAD_MIN_SILENCE_MS` 500 → 300 (a straight −200 ms of felt latency), and the
-`VOICE_TTS_FIRST_CHUNK_*` bounds (how early the opening chunk may be cut — see the bullet
-above). `VOICE_TTS_MIN_CHUNK_CHARS` still only helps multi-sentence replies, where it lets
-a short opening sentence start sooner.
+`Synthesizer` Protocol — a config switch plus one adapter), a voice fast path in the graph
+(the ~70% above), then `VOICE_VAD_MIN_SILENCE_MS` 500 → 300 (a straight −200 ms of felt
+latency: the two baseline runs show `perceived_ms` at 3455 vs 3055 ms p50), and last the
+chunking bounds — `VOICE_TTS_FIRST_CHUNK_*` and `VOICE_TTS_MIN_CHUNK_CHARS`. The chunking
+levers are the smallest of the four by construction: they can only reclaim the generation
+time *remaining after the first break*, which on this fixture's one-sentence answers is under
+120 ms.
 
 ## Configuration
 
