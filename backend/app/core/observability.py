@@ -29,6 +29,12 @@ from langfuse.langchain import CallbackHandler
 from app._version import __version__
 from app.core.config import settings
 
+# Imported for the two voice stage adapters below: neither module imports anything
+# from `app.core`, so this cannot cycle back through `app.voice.session`, which
+# imports THIS module.
+from app.voice.audio import SAMPLE_WIDTH_BYTES
+from app.voice.stt import Transcript
+
 # Versions the SHAPE of the metadata we attach to traces — not the prompt
 # text (langfuse reserves `prompt_version` for its Prompt Management).
 # Bumped to 2.0 when tool_outcomes / permission_denials / usage / error
@@ -107,6 +113,54 @@ def turn_span(name: str = TURN_TRACE_NAME) -> Generator[None, None, None]:
         return
     with client.start_as_current_observation(name=name, as_type="span"):
         yield
+
+
+@contextmanager
+def child_observation(
+    name: str,
+    *,
+    input: Any = None,
+    metadata: dict[str, str] | None = None,
+) -> Generator[Any, None, None]:
+    """Open one child observation inside the current turn's app-root span.
+
+    The generic half of the voice stage spans. STT and each TTS call are intervals
+    INSIDE a turn, so they only mean something as children of the app-root span
+    `turn_span` owns: a flat table of scalars on that root says what a turn cost
+    but not where the time went, and two stages that overlap — a sentence being
+    synthesised while the next is still generating — are invisible without an
+    interval each.
+
+    Three rules follow from how the SDK works, not from taste:
+
+    - Call it INSIDE `turn_span()`. A new observation nests under whatever span is
+      current, so calling it outside the turn would start a new trace.
+    - It yields `None` when observability is switched off, so callers MUST guard
+      before touching the observation; there is no no-op object to fall back on,
+      and `None.update(...)` would fail in the middle of a voice turn.
+    - Never wrap a `mark_turn_*` call in it. Those write through
+      `update_current_span`, which targets whichever observation is CURRENT, so the
+      failure marker would land on this child instead of on the trace.
+
+    Args:
+        name: Observation name, the stage vocabulary a reader filters on.
+        input: What the stage was asked to do, truncated by the caller.
+        metadata: Short scalar attributes for the observation.
+
+    Yields:
+        The started observation, or `None` when observability is off.
+    """
+    client = _get_client()
+    if client is None:
+        yield None
+        return
+    with client.start_as_current_observation(
+        name=name,
+        as_type="span",
+        input=input,
+        metadata=metadata,
+    ) as observation:
+        yield observation
 
 
 def new_langfuse_handler() -> CallbackHandler | None:
@@ -447,6 +501,92 @@ def mark_turn_cancelled(detail: str, *, channel: str | None = None) -> None:
         marker_tag="status:cancelled",
         channel=channel,
     )
+
+
+def _ms_string(seconds: float) -> str:
+    """Render a duration as a one-decimal millisecond string."""
+    return f"{seconds * 1000.0:.1f}"
+
+
+def stt_attributes(transcript: Transcript, *, model: str) -> dict[str, str]:
+    """Render one transcription as the `stt` span's flat attributes.
+
+    Pure — no Langfuse call — so the mapping is unit-testable with no running
+    stack, exactly like `trace_attributes`, `timing_metadata` and `turn_io`.
+
+    Every value is a SHORT scalar string. OpenTelemetry attributes take no
+    nesting, and a trace metadata value longer than `MAX_METADATA_VALUE_LEN` is
+    dropped whole. Durations keep one decimal — the resolution every other timing
+    in the trace uses — and counts stay plain integers, so a span attribute is
+    comparable with the turn's own metadata at a glance.
+
+    Args:
+        transcript: The transcription result. Its `duration_s` is the length of
+            the audio that was submitted, measured by the adapter that built the
+            request, so it is the number to report here.
+        model: Transcription model, so a trace stays filterable by model after a
+            deployment change without reading the settings that produced it.
+
+    Returns:
+        `provider`, `model`, `audio_ms` and `text_chars`. A failed transcription
+        returns all four too: `audio_ms` describes the request that was made, not
+        the answer that came back.
+    """
+    return {
+        "provider": transcript.provider,
+        "model": model,
+        "audio_ms": _ms_string(transcript.duration_s),
+        "text_chars": str(len(transcript.text)),
+    }
+
+
+def tts_attributes(
+    text: str,
+    *,
+    voice: str,
+    model: str,
+    index: int,
+    ttfb_ms: float,
+    byte_count: int,
+    output_rate: int,
+) -> dict[str, str]:
+    """Render one synthesised sentence as a `tts` span's flat attributes.
+
+    Pure — no Langfuse call — so the mapping is unit-testable with no running
+    stack. `audio_ms` is derived from `byte_count` at the wire's two bytes per
+    sample, never from a clock: it is the length of the audio that was produced,
+    which only matches the wall clock if the stream really was played at
+    `output_rate`.
+
+    Values are short scalars for the reasons given in `stt_attributes`. `index` is
+    what keeps the spans readable when two of them overlap — the second sentence
+    starts while the first is still streaming, so timestamps alone cannot say
+    which is which.
+
+    Args:
+        text: The sentence that was synthesised.
+        voice: Voice the provider was asked for.
+        model: Synthesis model name.
+        index: 1-based position of this sentence in the turn.
+        ttfb_ms: Milliseconds from entering the span to the first PCM chunk.
+        byte_count: PCM bytes emitted for this sentence at `output_rate`.
+        output_rate: Sample rate those bytes are played back at.
+
+    Returns:
+        `voice`, `model`, `chars`, `index`, `ttfb_ms`, `bytes` and `audio_ms`.
+    """
+    return {
+        "voice": voice,
+        "model": model,
+        "chars": str(len(text)),
+        "index": str(index),
+        "ttfb_ms": f"{ttfb_ms:.1f}",
+        "bytes": str(byte_count),
+        # The wire is s16le mono, so the playable length of the buffer is its
+        # sample count over the rate; the sample width is imported from the audio
+        # module rather than assumed, so the two cannot drift apart.
+        "audio_ms": _ms_string(byte_count // SAMPLE_WIDTH_BYTES / output_rate),
+    }
 
 
 def timing_metadata(deltas_ms: dict[str, float]) -> dict[str, str]:

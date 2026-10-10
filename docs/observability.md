@@ -12,6 +12,10 @@ fail-fast.
 - Session grouping (`session_id`), user id, and the run's own name/tags/metadata
   (`schema_version`, `route`, `lang`, `stt_lang` on voice turns, token + prompt-cache
   counters, tool outcomes and the error taxonomies) on every trace.
+- A readable **voice trace waterfall**: a spoken turn draws an `stt` span around the
+  transcription and one `tts` span per sentence, so the stage timings become intervals you
+  can see instead of six numbers you have to trust — see
+  "The voice trace waterfall" below.
 - A browser UI at `http://localhost:3000`.
 
 ## Architecture — the compose stack
@@ -207,6 +211,69 @@ Runtime settings live in `backend/app/core/config.py`:
 | `langfuse_public_key` | `""` | Project public key (`pk-lf-…`) |
 | `langfuse_secret_key` | `""` | Project secret key (`sk-lf-…`) |
 | `langfuse_base_url` | `http://localhost:3000` | SDK endpoint (host-published port) |
+
+### The voice trace waterfall
+
+A voice turn used to be one flat row: `stamp_voice_timing` writes six scalars (`stt_ms`,
+`graph_ttft_ms`, `tts_ttfb_ms`, `first_audio_ms`, `tail_ms`, `turn_ms`) onto the app-root
+span. That is the right shape for a dashboard — one row per turn, cheap to aggregate — and
+the wrong shape for a human: STT and each TTS call are INTERVALS inside the turn, and a
+scalar cannot show that the second sentence is being synthesised while the first is still
+playing.
+
+So the voice session opens a child span per stage, inside the app-root span:
+
+| Span | Opened | Carries |
+|---|---|---|
+| `stt` | once per turn, around the transcription call | `input` = `lang=<tag\|auto> audio_ms=<n>`, `metadata` = `provider`, `model`, `audio_ms`, `text_chars`; `output` = the transcript, capped at `MAX_TRACE_IO_CHARS` |
+| `tts` | once per SENTENCE, around that sentence's synthesis loop | `input` = the sentence, capped at `MAX_TRACE_IO_CHARS`; `metadata` = `voice`, `model`, `chars`, `index`, `ttfb_ms`, `bytes`, `audio_ms` |
+
+Both come from one helper, `child_observation(name, *, input, metadata)`. It yields the
+started observation, so the caller can write values that only exist AFTER the call
+(`.update(output=…)`, `.update(metadata=…)`), and it yields `None` when observability is off —
+which is why every call site guards. The attribute mapping itself lives in the pure
+`stt_attributes` / `tts_attributes`, so it is unit-tested with no stack running, the same
+pattern as `trace_attributes`, `timing_metadata` and `turn_io`.
+
+How to read it:
+
+- **Overlap is the point.** On a multi-sentence answer the second `tts` span starts before
+  the first ends; the widths are the real synthesis time of each sentence, not a slice of a
+  total.
+- **`index` is the speaking order** (1-based). Two overlapping spans can start milliseconds
+  apart, so timestamps alone cannot say which sentence came first — `index` can.
+- **`bytes` and `audio_ms` describe the same buffer** at the session's NEGOTIATED output
+  rate (24 kHz for the browser, 16 kHz for the device), counted after resampling. Counting
+  the provider's own bytes against the client's rate would report the same audio 1.5× too
+  long on a 16 kHz device.
+- **The span's `ttfb_ms` and the turn's `tts_ttfb_ms` mark** pick up the same first PCM byte
+  from different origins: the span starts when the sentence is handed to synthesis, the mark
+  when the first token arrived from the graph, and the SDK's own span duration comes from a
+  different clock than `monotonic_now()`. They should agree within a few milliseconds for the
+  first sentence; a wide gap is a signal about where the pipeline waited (text held back by
+  the splitter, a span opened late), not noise to ignore.
+- **`audio_ms` appears twice on an `stt` span, deliberately**: the `input` derives it from the
+  submitted PCM, the metadata from the transcript, which the adapter computed from the same
+  bytes and rate. In production they are equal; if they ever diverge, the adapter's sample
+  rate is wrong — a cross-check that costs nothing.
+- **A barge-in leaves the `tts` span in place**, closed where the loop was cut, and the trace
+  still carries `status:cancelled`. The cancellation is not swallowed: `CancelledError`
+  derives from `BaseException`, so closing the span skips the attributes written after the
+  loop and nothing else.
+
+Two invariants to keep in mind before editing this code:
+
+- The child spans are opened and closed INSIDE `VoiceSession._answer`. The failure and
+  interruption markers (`mark_turn_failed`, `mark_turn_cancelled`, `stamp_voice_timing`) run
+  in `_run_turn` and write through `update_current_span`, which targets whichever observation
+  is CURRENT. They are therefore only correct while the app-root span is current — which is
+  exactly what closing the children before returning guarantees. A child span opened around
+  them would take the `status:failed` marker and the stage timings onto itself and leave the
+  crashed turn looking healthy.
+- The stage spans add **no trace-level metadata**, so `TRACE_SCHEMA_VERSION` is unchanged
+  (`2.2`). The dashboard contract — the six scalars on the root, and the ClickHouse queries
+  in `infra/observability/` — is untouched. The waterfall is an extra dimension for a human
+  reading one turn, not a schema change.
 
 ## Upgrading
 

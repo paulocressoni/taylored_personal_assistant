@@ -8,7 +8,8 @@ the production default of 500 ms implies.
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -23,10 +24,13 @@ from conftest import (
 )
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from pydantic import SecretStr
 
+from app.core import observability
 from app.core.config import settings
+from app.core.observability import TURN_TRACE_NAME
 from app.graph.graph import build_graph
-from app.voice.audio import resample_pcm
+from app.voice.audio import duration_s, resample_pcm
 from app.voice.session import INTERRUPTED_MARKER, VoiceSession
 from app.voice.stt import Transcript
 from app.voice.tts import PCM_SAMPLE_RATE
@@ -625,3 +629,100 @@ async def test_a_completed_turn_is_left_alone(tmp_path: Path, patch_llm: Any) ->
             ("human", "turn on the light"),
             ("ai", REPLY),
         ]
+
+
+class SpanRecorder:
+    """Langfuse stand-in that records the observations a turn opens.
+
+    Only the stage spans are interesting here, so the app-root write is swallowed
+    rather than modelled — the point is that the stage spans EXIST and nest.
+    """
+
+    def __init__(self) -> None:
+        self.spans: list[tuple[str, dict[str, Any], list[dict[str, Any]]]] = []
+
+    @contextmanager
+    def start_as_current_observation(
+        self, **attributes: Any
+    ) -> Iterator[SimpleNamespace]:
+        """Record the span, then surrender the attributes written onto it."""
+        written: list[dict[str, Any]] = []
+        span = SimpleNamespace(update=lambda **values: written.append(values))
+        self.spans.append((attributes["name"], attributes, written))
+        yield span
+
+    def update_current_span(self, **attributes: Any) -> None:
+        """Accept the app-root writes without failing: this fake ignores them."""
+
+    @property
+    def names(self) -> list[str]:
+        """The observation names, in the order they were opened."""
+        return [name for name, _, _ in self.spans]
+
+    def written(self, name: str) -> list[dict[str, Any]]:
+        """Every set of attributes written onto the spans with this name."""
+        return [values[0] for span, _, values in self.spans if span == name and values]
+
+    def opened(self, name: str) -> list[dict[str, Any]]:
+        """The constructor attributes of every span with this name."""
+        return [attributes for span, attributes, _ in self.spans if span == name]
+
+
+@contextmanager
+def _no_propagation(**attributes: Any) -> Iterator[None]:
+    """Stand-in for `propagate_attributes`, which needs a running SDK."""
+    yield
+
+
+async def test_a_voice_turn_draws_one_stt_span_and_a_tts_span_per_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "voice_tts_min_chunk_chars", 8)
+    recorder = SpanRecorder()
+    monkeypatch.setattr(observability, "_get_client", lambda: recorder)
+    monkeypatch.setattr(observability, "propagate_attributes", _no_propagation)
+    monkeypatch.setattr(observability.settings, "langfuse_enabled", True)
+    monkeypatch.setattr(
+        observability.settings, "langfuse_public_key", SecretStr("pk-lf-test")
+    )
+    monkeypatch.setattr(
+        observability.settings, "langfuse_secret_key", SecretStr("sk-lf-test")
+    )
+    graph = FakeGraph(
+        _lang_event("en"),
+        _token_event("Hello there. How are you?"),
+        _end_event({}),
+    )
+    synthesizer = FakeSynthesizer(b"\x01\x00")
+    transcriber = FakeTranscriber(transcript("turn on the light"))
+    session, frames = _session(graph, transcriber=transcriber, synthesizer=synthesizer)
+
+    await _drive(session, UTTERANCE_PCM, until=frames.until("audio_end"))
+
+    # The turn span is opened first, so the stage spans nest under it.
+    assert recorder.names == [TURN_TRACE_NAME, "stt", "tts", "tts"]
+    assert len(synthesizer.requests) == 2
+
+    # The span's input describes the audio that was actually submitted: the
+    # endpointer trims the trailing silence before handing the utterance over, so
+    # the captured windows are NOT the length to report.
+    (stt_input,) = recorder.opened("stt")
+    (submitted, _) = transcriber.calls[0]
+    expected_audio_ms = duration_s(submitted, settings.voice_input_sample_rate) * 1000.0
+    assert stt_input["input"] == f"lang=auto audio_ms={expected_audio_ms:.1f}"
+
+    (stt_written,) = recorder.written("stt")
+    assert stt_written["output"] == "turn on the light"
+    assert stt_written["metadata"]["provider"] == "fake"
+    assert stt_written["metadata"]["model"] == settings.voice_stt_model
+
+    # One span per sentence, numbered in speaking order, each describing the
+    # bytes that sentence's synthesis actually produced.
+    tts_written = recorder.written("tts")
+    assert [values["metadata"]["index"] for values in tts_written] == ["1", "2"]
+    assert [values["metadata"]["model"] for values in tts_written] == [
+        settings.voice_tts_model
+    ] * 2
+    assert [values["metadata"]["bytes"] for values in tts_written] == [
+        str(len(b"\x01\x00"))
+    ] * 2
