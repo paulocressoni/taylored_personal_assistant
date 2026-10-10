@@ -437,6 +437,8 @@ class VoiceSession:
         splitter = SentenceSplitter(
             min_chars=settings.voice_tts_min_chunk_chars,
             max_chars=settings.voice_tts_max_chunk_chars,
+            first_chunk_min_chars=settings.voice_tts_first_chunk_min_chars,
+            first_chunk_max_chars=settings.voice_tts_first_chunk_max_chars,
         )
         resampler = StreamingResampler(PCM_SAMPLE_RATE, self._output_rate)
         final: dict[str, Any] | None = None

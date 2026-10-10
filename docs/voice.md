@@ -144,42 +144,157 @@ The original budget, from end-of-speech to the first audio byte:
 | **Total** | **0.65–1.35 s** (target < 1.5 s) |
 
 Measured with `scripts/voice_latency.py --runs 5 --warmup 1` (fixture `voice_en.wav`,
-5 warm turns, 1 discarded):
+5 measured turns, 1 discarded).
+
+### Baseline, before the eager first chunk
+
+Taken on the tree *before* `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` / `_MAX_CHARS` existed, so it
+is the "before" column of the comparison. The "after" column is the third table below.
 
 | Stage | p50 | p90 |
 |---|---|---|
-| `stt_ms` | 288 ms | 501 ms |
-| `graph_ttft_ms` | 2567 ms | 3008 ms |
-| `tts_ttfb_ms` | 684 ms | 1387 ms |
-| ↳ `generation_ms` (first→last token) | 98 ms | 133 ms |
-| ↳ `tts_call_ms` (last token→first audio) | 551 ms | 1290 ms |
-| **`first_audio_ms`** | **3602 ms** | **4242 ms** |
-| `perceived_ms` (from the caller's last frame) | 3888 ms | 4528 ms |
+| `stt_ms` | 272 ms | 278 ms |
+| `graph_ttft_ms` | 2225 ms | 2683 ms |
+| `tts_ttfb_ms` | 607 ms | 909 ms |
+| ↳ `generation_ms` (first→last token) | 90 ms | 132 ms |
+| ↳ `tts_call_ms` (last token→first audio) | 496 ms | 825 ms |
+| **`first_audio_ms`** | **3161 ms** | **3867 ms** |
+| `perceived_ms` (from the caller's last frame) | 3455 ms | 4153 ms |
+
+`tts_call_ms` — last token to first audio byte — is where the eager first chunk has to show
+up: cutting the opening chunk early starts the TTS request at the clause break instead of at
+the final token, so `tts_call_ms` loses exactly the **generation time remaining after that
+break**, and it can go *negative* only when that remainder exceeds the whole TTS round trip
+(the tool's own docstring: a negative value means a sentence was already being spoken before
+the last token arrived).
+
+That makes `generation_ms` — not the 496 ms TTS round trip — the ceiling on what chunking
+can reclaim. This page got that wrong at first, and it is the easiest number here to
+misread: the TTS call still takes its full round trip, it merely *starts earlier*. A reply
+that is one short clause-less sentence reclaims nothing at all, because there is no break
+inside it to cut at.
+
+### Config-only experiment: `VOICE_VAD_MIN_SILENCE_MS=300`
+
+Same command, still on the pre-change tree, with `$env:VOICE_VAD_MIN_SILENCE_MS='300'`. No
+code change.
+
+| Stage | p50 | p90 |
+|---|---|---|
+| `stt_ms` | 279 ms | 287 ms |
+| `graph_ttft_ms` | 2207 ms | 2992 ms |
+| `tts_ttfb_ms` | 599 ms | 743 ms |
+| ↳ `generation_ms` (first→last token) | 78 ms | 119 ms |
+| ↳ `tts_call_ms` (last token→first audio) | 526 ms | 624 ms |
+| **`first_audio_ms`** | **2970 ms** | **3876 ms** |
+| `perceived_ms` (from the caller's last frame) | 3055 ms | 3961 ms |
+
+`first_audio_ms` did not move — 2970 vs 3161 ms p50 is run-to-run noise, and its p90 got
+*worse*. The gain lands entirely in `perceived_ms`, 3455 → 3055 ms p50. That is the
+definitional point below: the tool stamps `first_audio_ms` after endpointing has already
+finished, so only `perceived_ms` can see a shorter silence window.
+
+### After the eager first chunk (`VOICE_VAD_MIN_SILENCE_MS=300`)
+
+Same command, same silence window, but on the tree *with* `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` /
+`_MAX_CHARS` in place — the like-for-like "after" column.
+
+| Stage | p50 | p90 |
+|---|---|---|
+| `stt_ms` | 282 ms | 291 ms |
+| `graph_ttft_ms` | 2452 ms | 2861 ms |
+| `tts_ttfb_ms` | 623 ms | 676 ms |
+| ↳ `generation_ms` (first→last token) | 76 ms | 120 ms |
+| ↳ `tts_call_ms` (last token→first audio) | 537 ms | 600 ms |
+| **`first_audio_ms`** | **3419 ms** | **3685 ms** |
+| `perceived_ms` (from the caller's last frame) | 3499 ms | 3766 ms |
+
+**No resolvable difference — and on this fixture there cannot be one.** `tts_call_ms` came
+back at 537 ms p50 against 526 ms before, and `first_audio_ms` moved 449 ms p50 the wrong way
+(2970 → 3419 ms), driven by `graph_ttft_ms` (2207 → 2452 ms) — the model's own timing, not
+the splitter. Two reasons:
+
+- The fixture asks `What is the capital of France?`, and the reply this page has always used
+  for it — `The capital of France is Paris.` — is one short sentence. Its entire
+  `generation_ms` is 76 ms p50 / 120 ms p90, and that is the structural ceiling on any
+  saving here (see the paragraph under the baseline table). 120 ms cannot be resolved by
+  5 runs whose own spread is ~450 ms.
+- Even a longer sentence only gains when a clause break lands *early* in the generation, and
+  that reply contains no clause break at all.
+
+So the eager first chunk is **verified by the splitter tests, not by this tool**, and the
+honest number to publish for it is "below the noise floor of this fixture". Measuring it
+would need a reply whose generation runs well past its first clause break — a long or
+multi-clause answer — which is a different measurement to set up.
 
 Read this honestly:
 
 - **STT meets its budget.** The 1.2 s seen in the very first cold run was TCP/TLS
   handshake, not transcription — which is exactly why the tool discards a warm-up run.
-- **The graph is ~71% of the wait.** `graph_ttft_ms` covers **three sequential model
-  round-trips** (router → specialist → responder); the budget line above assumes one.
-- **A one-sentence answer cannot be pipelined.** The sentence splitter only fires on a
-  terminator that reaches `VOICE_TTS_MIN_CHUNK_CHARS`, so for `The capital of France is
-  Paris.` the first TTS request is sent only after the reply is complete —
-  `tts_call_ms` is the real TTS round trip, and `tts_ttfb_ms` is mostly "waiting for the
-  reply". Multi-sentence replies do pipeline.
-- **`perceived_ms` is generous.** It starts from the last frame the client sent, and the
-  fixture's own tail is already silent, so it understates the human wait by ~230 ms. With
-  a live microphone the caller also feels the full 500 ms silence window, so the honest
-  figure today is `first_audio_ms` + `VOICE_VAD_MIN_SILENCE_MS` ≈ 4.1 s.
-- **`1.5 s` is not reachable with a three-hop graph and a ~550 ms TTS round trip.** That
+- **The graph is ~70% of the wait.** `graph_ttft_ms` is 2225 ms p50 of a 3161 ms p50
+  `first_audio_ms`, and it covers **three sequential model round-trips** (router →
+  specialist → responder); the budget line above assumes one.
+- **The first chunk is eager; later chunks are not.** Only the reply's FIRST chunk may be
+  cut before a sentence ends: once `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` (12) characters are
+  buffered it takes the first clause break (comma, semicolon, colon, em dash), and if none
+  arrives it falls back to a word boundary at `VOICE_TTS_FIRST_CHUNK_MAX_CHARS` (80) so a
+  long comma-less sentence cannot stall audio. Later chunks keep the sentence rule
+  (`VOICE_TTS_MIN_CHUNK_CHARS`), because by then the answer is already playing and a
+  mid-sentence cut would cost prosody and an extra request for no felt gain. So
+  `The kitchen light is on, and the temperature is 21.5 degrees.` starts speaking its first
+  24 characters while the sentence is still being written, whereas a short comma-less
+  sentence such as `The capital of France is Paris.` is unchanged — there is no break inside
+  it to take. Note the decomposition: `tts_ttfb_ms` is `generation_ms` + `tts_call_ms`
+  (90 + 496 ≈ 607 ms), so the "waiting for the reply" part of it is only ~90 ms — the TTS
+  round trip, not the reply, is what `tts_ttfb_ms` is mostly made of.
+- **`first_audio_ms` hides the whole endpointing wait; `perceived_ms` hides none of it.**
+  `first_audio_ms` is stamped from the server's own `speech_end`, which the endpointer only
+  sets *after* the trailing silence window has elapsed, so what the caller actually waits is
+  `first_audio_ms` + `VOICE_VAD_MIN_SILENCE_MS`. The 300 ms experiment above shows exactly
+  that: `first_audio_ms` did not move and `perceived_ms` did. Quote `perceived_ms` when the
+  question is "what did the caller feel"; quote `first_audio_ms` when comparing pipeline
+  stages.
+- **`1.5 s` is not reachable with a three-hop graph and a ~500 ms TTS round trip.** That
   is a decision to take, not a bug to fix: either the graph gets a voice fast path, or this
   page publishes a budget it actually meets.
 
+### What the listener heard, and why the metrics cannot show it
+
+Reported after listening on the browser client: cutting the reply at clause and sentence
+boundaries **improves the fluency** of the voice — the breaks now land at sensible speech
+pauses rather than in what the listener heard as arbitrary places — while short audio breaks
+remain audible, most noticeably right after the opening chunk. This is a listener's report,
+not a measurement: it is the *quality* half of the change, and the tables above are the
+latency half, which is why they show nothing.
+
+The mechanism is worth knowing before polishing it, because it says where *not* to look.
+Consecutive chunks are one continuous PCM stream on the wire — the per-turn
+`StreamingResampler` carries its filter state across chunk boundaries, and the browser
+schedules each buffer to start exactly where the previous one ended — so there is no gap in
+the transport. The seam is in the synthesis: every chunk is its own TTS request, so the
+engine renders `The kitchen light is on,` as a *complete* utterance with final intonation and
+its own tail, and the next request starts fresh. A break at a comma is therefore heard as a
+short pause in the middle of a sentence.
+
+That also explains the shape of the report. The splitter itself can only tear a word when
+`VOICE_TTS_MAX_CHUNK_CHARS` characters pass with no space in them at all — the last resort in
+`_whitespace_split` — so a break heard *inside* a word is far more likely to be this audible
+seam than a mid-word cut.
+
+Note the honest tension: the seam the listener notices most is right after the first chunk,
+which is the boundary this change introduces. It did not create the seams — the sentence rule
+makes them too — it moved them somewhere a listener accepts, and added one more. Polishing
+that means fewer, longer opening chunks, or a provider whose prosody continues across
+requests.
+
 Levers, roughly in order of value: a faster TTS provider (both vendors sit behind the
-`Synthesizer` Protocol — a config switch plus one adapter), a voice fast path in the graph,
-`VOICE_VAD_MIN_SILENCE_MS` 500 → 300 (a straight −200 ms of felt latency), and
-`VOICE_TTS_MIN_CHUNK_CHARS` (only helps multi-sentence replies, where it lets a short
-opening sentence start sooner).
+`Synthesizer` Protocol — a config switch plus one adapter), a voice fast path in the graph
+(the ~70% above), then `VOICE_VAD_MIN_SILENCE_MS` 500 → 300 (a straight −200 ms of felt
+latency: the two baseline runs show `perceived_ms` at 3455 vs 3055 ms p50), and last the
+chunking bounds — `VOICE_TTS_FIRST_CHUNK_*` and `VOICE_TTS_MIN_CHUNK_CHARS`. The chunking
+levers are the smallest of the four by construction: they can only reclaim the generation
+time *remaining after the first break*, which on this fixture's one-sentence answers is under
+120 ms.
 
 ## Configuration
 
@@ -196,7 +311,8 @@ language, or the app refuses to boot.
 | `VOICE_TTS_PROVIDER` / `_MODEL` / `_API_KEY` | `openai`, `gpt-4o-mini-tts` | PCM streaming, 24 kHz |
 | `VOICE_TTS_VOICES` | `{"en": "marin", "de": "cedar", "pt-BR": "coral"}` | The single source of truth; `voice_for()` falls back to `en` |
 | `VOICE_TTS_INSTRUCTIONS` | short spoken-style hint | Sent with every request — keep it short |
-| `VOICE_TTS_MIN_CHUNK_CHARS` / `_MAX_CHUNK_CHARS` | `40` / `240` | How the reply is cut into speakable chunks (and the reason a one-sentence reply cannot pipeline) |
+| `VOICE_TTS_MIN_CHUNK_CHARS` / `_MAX_CHUNK_CHARS` | `40` / `240` | How the reply is cut into speakable chunks **after the first one** |
+| `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` / `_FIRST_CHUNK_MAX_CHARS` | `12` / `80` | The **first** chunk is cut earlier on purpose: at a clause break once 12 characters are buffered, or at a word boundary by 80 characters when no clause break arrives. This is what lets a one-sentence reply start playing before it is finished; set the min equal to `VOICE_TTS_MIN_CHUNK_CHARS` and the max equal to `VOICE_TTS_MAX_CHUNK_CHARS` to get the old behaviour back |
 | `VOICE_INPUT_SAMPLE_RATE` | `16000` | Pinned to the VAD window by a config validator |
 | `VOICE_OUTPUT_SAMPLE_RATE` | `24000` | Browser default; a device asks for 16000 in its start frame |
 | `VOICE_VAD_*` | `0.5` / `0.35` / `150` / `30` / `500` / `30` | Threshold, negative threshold, min speech, speech pad, min silence, max utterance |
@@ -282,3 +398,7 @@ The Python simulator already speaks this contract; the firmware does not exist y
   on the LAN.
 - The browser client has not yet been validated end-to-end against a live backend; the
   socket contract itself is proven by `smoke_09`.
+- **Chunk seams are audible.** Each chunk is a separate TTS request, so the reply has a
+  prosodic seam wherever it was cut. Clause breaks turn that into a plausible pause, but the
+  one after the opening chunk is still noticeable — see the latency section for the mechanism
+  and the two tuning knobs (`VOICE_TTS_FIRST_CHUNK_MIN_CHARS` / `_MAX_CHARS`).
