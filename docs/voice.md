@@ -258,6 +258,35 @@ Read this honestly:
   is a decision to take, not a bug to fix: either the graph gets a voice fast path, or this
   page publishes a budget it actually meets.
 
+### What the listener heard, and why the metrics cannot show it
+
+Reported after listening on the browser client: cutting the reply at clause and sentence
+boundaries **improves the fluency** of the voice — the breaks now land at sensible speech
+pauses rather than in what the listener heard as arbitrary places — while short audio breaks
+remain audible, most noticeably right after the opening chunk. This is a listener's report,
+not a measurement: it is the *quality* half of the change, and the tables above are the
+latency half, which is why they show nothing.
+
+The mechanism is worth knowing before polishing it, because it says where *not* to look.
+Consecutive chunks are one continuous PCM stream on the wire — the per-turn
+`StreamingResampler` carries its filter state across chunk boundaries, and the browser
+schedules each buffer to start exactly where the previous one ended — so there is no gap in
+the transport. The seam is in the synthesis: every chunk is its own TTS request, so the
+engine renders `The kitchen light is on,` as a *complete* utterance with final intonation and
+its own tail, and the next request starts fresh. A break at a comma is therefore heard as a
+short pause in the middle of a sentence.
+
+That also explains the shape of the report. The splitter itself can only tear a word when
+`VOICE_TTS_MAX_CHUNK_CHARS` characters pass with no space in them at all — the last resort in
+`_whitespace_split` — so a break heard *inside* a word is far more likely to be this audible
+seam than a mid-word cut.
+
+Note the honest tension: the seam the listener notices most is right after the first chunk,
+which is the boundary this change introduces. It did not create the seams — the sentence rule
+makes them too — it moved them somewhere a listener accepts, and added one more. Polishing
+that means fewer, longer opening chunks, or a provider whose prosody continues across
+requests.
+
 Levers, roughly in order of value: a faster TTS provider (both vendors sit behind the
 `Synthesizer` Protocol — a config switch plus one adapter), a voice fast path in the graph
 (the ~70% above), then `VOICE_VAD_MIN_SILENCE_MS` 500 → 300 (a straight −200 ms of felt
@@ -369,3 +398,7 @@ The Python simulator already speaks this contract; the firmware does not exist y
   on the LAN.
 - The browser client has not yet been validated end-to-end against a live backend; the
   socket contract itself is proven by `smoke_09`.
+- **Chunk seams are audible.** Each chunk is a separate TTS request, so the reply has a
+  prosodic seam wherever it was cut. Clause breaks turn that into a plausible pause, but the
+  one after the opening chunk is still noticeable — see the latency section for the mechanism
+  and the two tuning knobs (`VOICE_TTS_FIRST_CHUNK_MIN_CHARS` / `_MAX_CHARS`).
