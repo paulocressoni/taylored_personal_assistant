@@ -259,6 +259,25 @@ Read this honestly:
   is a decision to take, not a bug to fix: either the graph gets a voice fast path, or this
   page publishes a budget it actually meets.
 
+### `perceived_ms` exists only in the measurement tool
+
+Every `perceived_ms` in the tables above is a **client-side** number:
+`scripts/voice_latency.py` measures it from the last frame the caller sent to the
+first audio byte it received. The server cannot observe the instant the caller
+stopped talking, so it cannot stamp that instant: `perceived_ms` is not trace
+metadata, it never reaches Langfuse, and **no dashboard or alert will ever show
+it**. Use `first_audio_ms` instead as the server-visible budget — it is one of the
+six stage scalars on the trace root, described in
+[observability.md](observability.md) → "The voice trace waterfall" and inventoried
+in [dashboards.md](../infra/observability/dashboards.md) §6, which states the same
+gap for anyone arriving from the dashboard side.
+
+Read the pair for what they are: `first_audio_ms` when comparing pipeline stages
+or building a panel, `perceived_ms` when the question is "what did the caller
+feel". The known gap between them is the VAD silence window and the endpointing
+wait that follows it — both invisible in traces, and both paid by the caller
+before the server's clock even starts.
+
 ### What the listener heard, and why the metrics cannot show it
 
 Reported after listening on the browser client: cutting the reply at clause and sentence
@@ -307,7 +326,9 @@ generation is visible instead of inferred. The six scalars in the tables stay on
 root — the spans are an extra dimension, not a replacement.
 
 See [observability.md](observability.md) → "The voice trace waterfall" for the span
-vocabulary and what each attribute means.
+vocabulary and what each attribute means, and
+[dashboards.md](../infra/observability/dashboards.md) §5.8/§5.9 for the panels that
+read the spans and the turn root — plus the barge-in rate, which no panel can show.
 
 ## Configuration
 

@@ -21,6 +21,9 @@
 --    arrayElement(metadata_values, indexOf(metadata_names, '<key>')).
 --  * `is_deleted = 0` skips soft-deleted rows.
 --  * Default window is the last 7 days; change `today() - 7` freely.
+--  * The voice queries (Q11-Q13) return nothing until a voice turn has been
+--    recorded: they key off the `channel:voice` tag or the `stt` / `tts` span
+--    names, and a typed turn produces neither.
 --  * `total_cost` is a Model-registry alias of cost_details['total']; if it is
 --    always 0, no DeepSeek pricing is configured (Project -> Settings ->
 --    Models).
@@ -132,6 +135,11 @@ GROUP BY trace_name
 ORDER BY runs DESC;
 
 -- 5. RUN OUTCOME MIX PER DAY (the status:* tags) -----------------------------
+-- `cancelled` and `failed` are the two markers added with the voice work:
+-- `mark_turn_cancelled` (barge-in, level WARNING) and `mark_turn_failed` (a
+-- crash or a graph timeout, level ERROR). Both helpers rebuild the FULL tag
+-- list rather than passing only the marker, so a marked run does NOT also carry
+-- the completion tag it would otherwise have had — the buckets stay disjoint.
 SELECT
     toDate(start_time)                             AS day,
     count()                                        AS runs,
@@ -139,7 +147,9 @@ SELECT
     countIf(has(tags, 'status:tool_ok'))           AS tool_ok,
     countIf(has(tags, 'status:tool_error'))        AS tool_error,
     countIf(has(tags, 'status:llm_error'))         AS llm_error,
-    countIf(has(tags, 'status:permission_denied')) AS permission_denied
+    countIf(has(tags, 'status:permission_denied')) AS permission_denied,
+    countIf(has(tags, 'status:cancelled'))         AS cancelled,
+    countIf(has(tags, 'status:failed'))            AS failed
 FROM default.events_full
 WHERE is_app_root = 1
   AND is_deleted = 0
@@ -253,6 +263,103 @@ SELECT
 FROM default.events_full
 WHERE is_app_root = 1
   AND is_deleted = 0
+  AND toDate(start_time) >= today() - 7
+GROUP BY day
+ORDER BY day;
+
+-- 11. VOICE STAGE SPAN LATENCY p50 / p95 PER SPAN NAME (ms) -------------------
+-- Backs dashboards 8a (STT) and 8b (TTS). The voice session opens one `stt`
+-- span per turn and one `tts` span per SENTENCE, both as_type="span", so they
+-- are ordinary SPAN rows in this table and their duration IS the provider round
+-- trip the stage actually paid (measured from inside the pipeline, no
+-- subtraction). This is the honest way to read STT/TTS impact: the six stage
+-- scalars on the app-root row (Q12) tell the same story but are metadata, so no
+-- widget can read them.
+-- NB: `tts` counts SENTENCES, not turns — the reply is split into speakable
+-- chunks and each chunk is its own TTS request, so `spans` for `tts` is
+-- normally larger than the voice turn count in Q12. For `stt` the two agree,
+-- one span per turn.
+SELECT
+    name                                                          AS span_name,
+    count()                                                       AS spans,
+    quantile(0.50)(dateDiff('millisecond', start_time, end_time)) AS p50_ms,
+    quantile(0.95)(dateDiff('millisecond', start_time, end_time)) AS p95_ms
+FROM default.events_full
+WHERE type = 'SPAN'
+  AND name IN ('stt', 'tts')
+  AND is_deleted = 0
+  AND end_time IS NOT NULL
+  AND toDate(start_time) >= today() - 7
+GROUP BY span_name
+ORDER BY span_name;
+
+-- 12. VOICE TURN STAGE METRICS FROM TRACE METADATA (ms) -----------------------
+-- The per-stage decomposition of a voice turn, read off the app-root row. These
+-- are the scalars `stamp_voice_timing` -> `timing_metadata`
+-- (backend/app/core/timing.py) writes, one per turn; they live in the metadata
+-- arrays, which is exactly why no dashboard widget can show them (metadata is
+-- not a measure, a dimension or a filter — dashboards.md §3).
+-- `first_audio_ms` is the product target: end-of-speech to first audio byte. It
+-- is the SERVER's clock, so it excludes the VAD silence window and the whole
+-- endpointing wait; `perceived_ms` is measured client-side by
+-- scripts/voice_latency.py and is not and cannot be trace metadata.
+-- A stage that never ran is ABSENT, not 0 (a barge-in or a provider error has
+-- no `turn_ms`), so every percentile is taken with `quantileIf` over the rows
+-- that actually measured that stage. Reading them with `toFloat64OrZero` alone
+-- would coerce an absent stage to 0 and pull the p90 DOWN — the one direction a
+-- latency alert must never move.
+SELECT
+    toDate(start_time) AS day,
+    count()            AS voice_turns,
+    quantileIf(0.50)(toFloat64OrZero(arrayElement(metadata_values, indexOf(metadata_names, 'stt_ms'))),
+                     has(metadata_names, 'stt_ms'))           AS stt_p50_ms,
+    quantileIf(0.50)(toFloat64OrZero(arrayElement(metadata_values, indexOf(metadata_names, 'graph_ttft_ms'))),
+                     has(metadata_names, 'graph_ttft_ms'))    AS ttft_p50_ms,
+    quantileIf(0.50)(toFloat64OrZero(arrayElement(metadata_values, indexOf(metadata_names, 'tts_ttfb_ms'))),
+                     has(metadata_names, 'tts_ttfb_ms'))      AS tts_ttfb_p50_ms,
+    quantileIf(0.50)(toFloat64OrZero(arrayElement(metadata_values, indexOf(metadata_names, 'first_audio_ms'))),
+                     has(metadata_names, 'first_audio_ms'))   AS first_audio_p50_ms,
+    quantileIf(0.90)(toFloat64OrZero(arrayElement(metadata_values, indexOf(metadata_names, 'first_audio_ms'))),
+                     has(metadata_names, 'first_audio_ms'))   AS first_audio_p90_ms,
+    quantileIf(0.50)(toFloat64OrZero(arrayElement(metadata_values, indexOf(metadata_names, 'turn_ms'))),
+                     has(metadata_names, 'turn_ms'))          AS turn_p50_ms
+FROM default.events_full
+WHERE is_app_root = 1
+  AND is_deleted = 0
+  AND has(tags, 'channel:voice')
+  AND toDate(start_time) >= today() - 7
+GROUP BY day
+ORDER BY day;
+-- Each percentile therefore covers a different number of turns: `stt` and
+-- `first_audio` run on every turn that got as far as audio, `turn_ms` only on
+-- the turns that finished. A percentile with nothing to measure comes back as
+-- `nan`, not 0 — a day of nothing but interrupted turns has no `turn_ms` to
+-- report. Q13 is what separates them: compare `voice_turns` there against the
+-- barge-in and failure counts before reading a stage figure as "typical".
+-- `first_audio_p90_ms` is the number the voice alert in alerts.md §6 thresholds
+-- (a native alert cannot read a metadata scalar, so that check lives here).
+-- There is no p90 on a dashboard either: Langfuse aggregates only
+-- count/sum/avg/p50/p95/histogram.
+
+-- 13. VOICE TURN OUTCOMES AND BARGE-IN RATE ----------------------------------
+-- Barge-in is the single most useful voice product signal, and until these two
+-- tags it was invisible: a turn the user talked over looked identical to one
+-- that answered. `status:cancelled` is stamped by `mark_turn_cancelled`
+-- (level WARNING, message `barge-in`); `status:failed` by `mark_turn_failed`.
+-- A rising `barge_in_rate` alongside a falling `turn_p50_ms` in Q12 is one
+-- reading: the answers got slow enough to be cut off, which is why a latency
+-- panel read alone can look like an improvement.
+SELECT
+    toDate(start_time)                                         AS day,
+    count()                                                    AS voice_turns,
+    countIf(has(tags, 'status:cancelled'))                     AS barge_ins,
+    round(countIf(has(tags, 'status:cancelled')) / count(), 4) AS barge_in_rate,
+    countIf(has(tags, 'status:failed'))                        AS failed,
+    countIf(NOT has(tags, 'status:cancelled') AND NOT has(tags, 'status:failed')) AS answered
+FROM default.events_full
+WHERE is_app_root = 1
+  AND is_deleted = 0
+  AND has(tags, 'channel:voice')
   AND toDate(start_time) >= today() - 7
 GROUP BY day
 ORDER BY day;

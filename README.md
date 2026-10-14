@@ -596,7 +596,10 @@ ENV=dev uv run python -m scripts.smoke_07_langfuse   # verify a trace lands
 M12 Makefile targets: `make dev-up` (full stack incl. Langfuse) · `make dev-up-light`
 (skip Langfuse) · `make dev-down`. PowerShell equivalents in
 [docs/docker-cheatsheet.md](docs/docker-cheatsheet.md). Runtime settings live in
-`backend/app/core/config.py` (`langfuse_*`).
+`backend/app/core/config.py` (`langfuse_*`). The production runbooks live in
+`infra/observability/`: [dashboards.md](infra/observability/dashboards.md) (the panels,
+widget by widget), [alerts.md](infra/observability/alerts.md) (thresholds) and
+[queries.sql](infra/observability/queries.sql) (the ClickHouse ground truth behind both).
 
 ---
 
@@ -886,7 +889,11 @@ uv run python scripts/smoke_08_voice_pipeline.py --lang en
 
 `scripts/voice_latency.py` reports where the time actually goes (p50/p90 per stage), and
 [`docs/voice.md`](docs/voice.md) records the frame contract, the measured latency against
-the budget, and everything the ESP32/reSpeaker firmware will need.
+the budget, and everything the ESP32/reSpeaker firmware will need. The traces a voice turn
+leaves behind — one `stt` span per turn, one `tts` span per sentence, six stage scalars on
+the trace root — are documented in [docs/observability.md](docs/observability.md), and the
+panels that read them (plus the barge-in rate no panel can show) in
+[infra/observability/dashboards.md](infra/observability/dashboards.md).
 
 ## Roadmap
 
