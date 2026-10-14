@@ -18,4 +18,4 @@ Why a plain module and not ``importlib.metadata``?
 
 # The trailing marker is read by release-please's "generic" updater: it rewrites
 # the version value on THIS line only (see release-please-config.json extra-files).
-__version__ = "0.3.1"  # x-release-please-version
+__version__ = "0.4.0"  # x-release-please-version
