@@ -15,7 +15,9 @@ fail-fast.
 - A readable **voice trace waterfall**: a spoken turn draws an `stt` span around the
   transcription and one `tts` span per sentence, so the stage timings become intervals you
   can see instead of six numbers you have to trust — see
-  "The voice trace waterfall" below.
+  "The voice trace waterfall" below. The voice pipeline itself (frame contract, audio
+  decisions, measured latency) is [voice.md](voice.md); the panels that read these traces
+  are [dashboards.md](../infra/observability/dashboards.md).
 - A browser UI at `http://localhost:3000`.
 
 ## Architecture — the compose stack
@@ -119,7 +121,10 @@ its tags (`env:dev`, `channel:cli`, `status:*`) and its metadata
 (`schema_version = "2.2"`, `route`, `lang`, token counters, `tool_outcomes`, the error
 taxonomies) are written by the invoke site AFTER the graph returns — see "How the
 wiring works" below. Production dashboards, alerts and the ClickHouse ground-truth
-queries live in `infra/observability/`.
+queries live in `infra/observability/`: [`dashboards.md`](../infra/observability/dashboards.md)
+(the panels, widget by widget), [`alerts.md`](../infra/observability/alerts.md) (thresholds,
+including the one that cannot be automated) and
+[`queries.sql`](../infra/observability/queries.sql) (the SQL behind both).
 
 **First login** — the headless init (M08) creates the first admin user once, on first
 boot:
@@ -199,7 +204,7 @@ Two facts about the app-root span explain both the bug and the fix:
    which writes each metadata key as its OWN span attribute
    (`langfuse.trace.metadata.<key>`) — so the second call ADDS to the first instead of
    replacing it. A voice turn therefore ends up with the run identity (`schema_version`,
-   `route`, …) AND the stage timings (`stt_ms`, `llm_first_token_ms`, …) on the same span.
+   `route`, …) AND the stage timings (`stt_ms`, `graph_ttft_ms`, …) on the same span.
    That ordering is pinned by a unit test: a future refactor to a whole-blob write would
    silently strip the identity from every voice trace.
 
@@ -273,7 +278,9 @@ Two invariants to keep in mind before editing this code:
 - The stage spans add **no trace-level metadata**, so `TRACE_SCHEMA_VERSION` is unchanged
   (`2.2`). The dashboard contract — the six scalars on the root, and the ClickHouse queries
   in `infra/observability/` — is untouched. The waterfall is an extra dimension for a human
-  reading one turn, not a schema change.
+  reading one turn, not a schema change: the `stt` / `tts` spans are what widgets 8a/8b
+  count ([dashboards.md](../infra/observability/dashboards.md) §5.8), and the measured
+  latency they belong to is tabulated in [voice.md](voice.md).
 
 ## Upgrading
 
