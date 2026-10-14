@@ -27,7 +27,7 @@ class RoleConfig(TypedDict):
 
 ROLE_CONFIG: dict[str, RoleConfig] = {
     # thinking: False keeps cheap roles cheap — verified empirically that
-    # v4-flash thinks by default, so we must send "disabled" explicitly.
+    # flash thinks by default, so we must send "disabled" explicitly.
     "router": {
         "model": settings.deepseek_model_flash,
         "temperature": 0.0,

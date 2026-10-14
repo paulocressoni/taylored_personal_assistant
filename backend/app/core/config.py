@@ -105,9 +105,13 @@ class Settings(BaseSettings):
     rate_limit_requests: int = 30
     rate_limit_window_seconds: float = 60.0
 
-    # DeepSeek model names (v4-flash is cheaper, v4-pro is more capable).
+    # DeepSeek model tiers (flash is cheaper, pro is more capable).
     # The default is hardcoded here so we have a single source of truth for the default models.
-    deepseek_model_flash: str = "deepseek-v4-flash"
+    # NOT "deepseek-v4-flash": that name was retired, and while the API still
+    # routes it to the current model, depending on a deprecated alias is a
+    # silent breakage waiting for the day the alias is dropped. Verified
+    # against GET /models, which lists exactly these two ids.
+    deepseek_model_flash: str = "deepseek-flash"
     deepseek_model_pro: str = "deepseek-v4-pro"
 
     # Browser origins allowed to call this API directly (e.g. CORS_ORIGINS=
