@@ -27,6 +27,8 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 19. [Troubleshooting](#troubleshooting)
 20. [Voice pipeline (M29)](#voice-pipeline-m29)
 21. [Roadmap](#roadmap)
+22. [Implementation plan](docs/implementation_plan.md)
+23. [Deployment runbook](docs/deploy.md)
 
 ---
 
@@ -45,6 +47,8 @@ taylored_personal_assistant/
 ├── Makefile                      # Dev workflow: dev-up (full stack, M12), test, lint, types
 ├── README.md
 ├── docs/
+│   ├── implementation_plan.md     # THE PLAN: milestone status, delivery, backlog (v7)
+│   ├── deploy.md                 # Operator runbook: deploy, update, rollback, verify
 │   ├── docker-cheatsheet.md      # Docker command reference (M07)
 │   ├── observability.md          # Self-hosted Langfuse guide (M08)
 │   ├── api.md                    # HTTP + WebSocket API reference (M09)
@@ -699,9 +703,9 @@ All LLM access goes through the role-based factory in `backend/app/core/llm.py`.
 
 | Role | Model | Temperature | Thinking | Timeout (s) | Max tokens | Max retries | Use case |
 |---|---|---|---|---|---|---|---|
-| `router` | `deepseek-v4-flash` | 0.0 | off | 10 | 1024 | 2 | Intent classification / routing |
-| `specialist` | `deepseek-v4-flash` | 0.0 | off | 10 | 4096 | 2 | Deterministic tool calling |
-| `responder` | `deepseek-v4-flash` | 1.3 | off | 10 | 1024 | 2 | Conversational replies |
+| `router` | `deepseek-flash` | 0.0 | off | 10 | 1024 | 2 | Intent classification / routing |
+| `specialist` | `deepseek-flash` | 0.0 | off | 10 | 4096 | 2 | Deterministic tool calling |
+| `responder` | `deepseek-flash` | 1.3 | off | 10 | 1024 | 2 | Conversational replies |
 | `reasoner` *(planned)* | `deepseek-v4-pro` | 0.0 | on | — | — | — | Planning, diagnosis, disambiguation |
 
 > Each role carries a per-call `timeout`, `max_tokens` budget, and `max_retries` (M09) so a
@@ -711,11 +715,12 @@ All LLM access goes through the role-based factory in `backend/app/core/llm.py`.
 
 ### Empirical findings (verified by smoke tests, not docs)
 
-- Thinking mode works on `deepseek-v4-flash` via `extra_body={"thinking": {"type": "enabled"}}` and is **on by default** — so the factory sends `enabled`/`disabled` **explicitly** for every role (a role with thinking off must send `"disabled"`, not merely omit the key).
+- Thinking mode works on `deepseek-flash` via `extra_body={"thinking": {"type": "enabled"}}` and is **on by default** — so the factory sends `enabled`/`disabled` **explicitly** for every role (a role with thinking off must send `"disabled"`, not merely omit the key).
+- **Model ids were re-verified against `GET /models`:** the API lists exactly `deepseek-flash` and `deepseek-v4-pro`. The older `deepseek-v4-flash` name is retired but still **silently routes** to `deepseek-flash` (a completion sent with it returns HTTP 200 and echoes `"model": "deepseek-flash"`), which is why the default was moved off the deprecated alias rather than because anything was broken.
 - `{"thinking": {"type": "disabled"}}` is honored — verified in both directions.
 - Reasoning tokens are billed as **output tokens** (~90% of output in the smoke test) — the reason thinking stays off for cheap, high-volume roles.
 - Prompt caching works: `usage_metadata.input_token_details.cache_read` reports cached input tokens. Keep stable content (system prompt, tool schemas) **first** in a prompt and volatile content (memory, timestamps, the user message) **last** — cached input is ~50x cheaper than uncached.
-- **`smoke_04` — tools + thinking combined:** works on `deepseek-v4-flash`. In the recorded run the model emitted the tool call (`GetWeather` → `location: Berlin`) *and* brief reasoning (19 reasoning tokens), with empty `content`; `cache_read: 256` showed the tool schema served from cache. The combo is undocumented upstream but functional here.
+- **`smoke_04` — tools + thinking combined:** works on `deepseek-flash`. In the recorded run the model emitted the tool call (`GetWeather` → `location: Berlin`) *and* brief reasoning (19 reasoning tokens), with empty `content`; `cache_read: 256` showed the tool schema served from cache. The combo is undocumented upstream but functional here.
 
 ### Running the smoke tests
 
@@ -897,10 +902,20 @@ panels that read them (plus the barge-in rate no panel can show) in
 
 ## Roadmap
 
-| Phase | Scope | Status |
+The living plan is **[docs/implementation_plan.md](docs/implementation_plan.md)** (v7). It carries the current status
+of every milestone, the researched ecosystem facts behind the decisions, and the next delivery in detail. The table
+below is a quick orientation only — **if the two ever disagree, the plan wins.**
+
+Deployment itself has an operator's runbook: **[docs/deploy.md](docs/deploy.md)** — first deploy, routine updates,
+rollback, and the post-deploy verification checklist.
+
+| Area | Scope | Status |
 |---|---|---|
-| 1. Core graph & API | LangGraph agent (M02–M06), FastAPI endpoints + WS streaming (M09), pytest suite | ✅ core done |
-| 2. Local deployment & DevOps | Docker image (M07), docker-compose, CI/CD → Mini PC | Images built, scanned & published to GHCR (M23); Mini PC deploy in progress |
-| 3. Observability & memory | Self-hosted Langfuse traces (M08), Qdrant/Chroma vector store | Langfuse done; vector memory future |
-| 4. Omni-channel UI | Vite/React chat UI with WS streaming (M10), voice via reSpeaker/ESP32 | chat UI done; voice pipeline done (M29), firmware next |
-| 5. Session memory | LangGraph SQLite checkpointing (M11) + frontend multi-session sidebar | ✅ done |
+| Core graph & API | LangGraph agent (M02–M06), FastAPI + WS streaming (M09), mocked pytest suite (M06) | ✅ done |
+| Deployment & release | Docker image (M07), Compose dev/prod stack (M12), GHCR publish with Trivy gate + SBOM (M22/M23) | ✅ done; deploying to the mini PC is Delivery 1 |
+| Observability | Self-hosted Langfuse (M08) plus the prod stack, dashboards, alerts and encrypted backups (M28) | ✅ built; on-box verification is part of Delivery 1 |
+| Conversation memory | LangGraph checkpointing — SQLite in dev, Postgres in prod (M11) | ✅ done |
+| Chat UI | Vite/React UI with WS token streaming and a multi-session sidebar (M10) | ✅ done |
+| Voice pipeline | Multilingual speech in/out: server-side VAD, Groq STT, sentence-streamed TTS, barge-in, per-stage timings (M29) | ✅ done |
+| Satellite appliance | reSpeaker XVF3800 + XIAO ESP32-S3 streaming to `WS /ws/voice`, with a server-side wake word | **Delivery 1 — in progress** |
+| Skills, identity & memory | Settings (M13), time/weather (M14), device push (M15), permissions (M16), alarms (M17), calendar (M18), Spotify (M19), long-term memory (M20), evals (M21), speaker ID (M30) | not started |
