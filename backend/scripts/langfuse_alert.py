@@ -15,7 +15,7 @@ warning or alert, a short JSON message is POSTed there (a private ntfy topic
 works with zero setup).
 
 It uses only the Python standard library and talks to the same endpoint the
-dashboards read from, so it is safe to run as root from cron on the DeskMini.
+dashboards read from, so it is safe to run as root from cron on the deployment host.
 
 Configuration comes from a KEY=VALUE conf file (path via --conf) layered over
 environment variables, which are layered over the defaults below. Example

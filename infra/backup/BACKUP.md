@@ -19,12 +19,12 @@ not secrets, but keep it host-local alongside `.env.prod`.
 **Platform requirement (volume items).** `VOLUMES` is backed up by tarring the
 daemon's OWN filesystem (`/var/lib/docker/volumes/<name>/_data`), so the scripts
 must run on the host that runs the Docker daemon - a native Linux box, i.e. the
-DeskMini. From Docker Desktop / WSL2 that path does not exist (the daemon lives
+deployment host. From Docker Desktop / WSL2 that path does not exist (the daemon lives
 in a separate `docker-desktop` VM), so on Windows leave `VOLUMES` empty: the
 Postgres dumps, encryption, manifest and restore drill still run, and the volume
-items get their real test on the DeskMini.
+items get their real test on the deployment host.
 
-> **TODO (before the DeskMini goes live).** The M28 verification pass ran on
+> **TODO (before the host goes live).** The M28 verification pass ran on
 > Windows/WSL2, which covers the config resolution, `age` encryption, both
 > `pg_dump` items, the manifest, `--verify` and the non-destructive restore
 > drill. Still to do on the host that runs the daemon:
@@ -56,7 +56,7 @@ the Google Calendar AND Spotify consent flows from scratch. Wire
 * `manifest.txt` stores the SHA-256 of each item's *decrypted* contents, so a
   drill proves integrity without trusting the `.age` files' own metadata.
 
-## One-time setup (DeskMini, as root)
+## One-time setup (deployment host, as root)
 
 ```bash
 # 1. age + first backup dir

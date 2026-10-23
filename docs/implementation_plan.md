@@ -1,17 +1,18 @@
 # INTELLIGENT PERSONAL ASSISTANT (IPA) — IMPLEMENTATION PLAN v7
 
-Updated 2026-10-14. **This is the single plan of record.** It supersedes the original v6 plan, which has been
+Updated 2026-10-23. **This is the single plan of record.** It supersedes the original v6 plan, which has been
 retired — where this document and any older plan disagree, this one wins.
 
-**Target hardware (prod):** Lenovo ThinkCentre **M920q Tiny** (owned and already provisioned — no assembly,
-BIOS done), 32 GB RAM, Ubuntu Server **26.04.1 LTS**, all-in-one home server + voice appliance host.
+**Target host (prod):** **one** 64-bit Linux machine on the home LAN that meets §3 — any current distro, server or
+desktop edition, with Docker Engine + Compose v2. The plan deliberately names no model: the stack needs a stable
+address, a container runtime enabled at boot, a synced clock and enough disk, and nothing else.
 **Stack:** LangGraph 1.2 + DeepSeek V4.1 | FastAPI | React/Vite/TS | Docker Compose | self-hosted Langfuse.
 **Languages:** English, German, Portuguese (pt-BR) — first-class in every milestone.
 
 **How to read this document.** All paths are relative to the **repository root**. Each milestone is written to be
 self-contained: paste one `###` block into a code-agent session, tell it to follow the steps in order, and confirm
 the `DONE WHEN` before moving on. Sections §1–§3 are orientation (where the project actually is, what has changed
-in the ecosystem, and what the target machine is); §4 is the current priority; §5 onward is the proposed backlog.
+in the ecosystem, and what a deployment host must provide); §4 is the current priority; §5 onward is the backlog.
 
 ---
 
@@ -19,9 +20,9 @@ in the ecosystem, and what the target machine is); §4 is the current priority; 
 
 | v6 said | v7 says | Why |
 |---|---|---|
-| Assemble an ASRock DeskMini X600 + Ryzen 7 8700G (M24) | Shrink to a **pre-flight check** on the Lenovo M920q | The machine is owned **and already provisioned** — no assembly, and the BIOS work is done |
-| Self-host an LLM on the Radeon 780M iGPU (M34) | **Dropped** | The M920q's Intel UHD 630 has no usable compute path |
-| Automated CD from CI, behind an approval gate (M27) | **Dropped** → replaced by a manual release/update runbook | You pull the latest release onto the mini PC by hand |
+| Assemble an ASRock DeskMini X600 + Ryzen 7 8700G (M24) | Shrink to a **pre-flight check** on a machine you already own | No assembly; the host only has to meet §3 |
+| Self-host an LLM on the Radeon 780M iGPU (M34) | **Dropped** | No deployment host in this class has a usable GPU compute path |
+| Automated CD from CI, behind an approval gate (M27) | **Dropped** → replaced by a manual release/update runbook | You pull the latest release onto the host by hand |
 | A VPN overlay for remote access (v6's M25/M26/M27 all assumed one) | **Dropped** | Not using one. The box is **administered on the LAN**; there is no remote-administration path to design or secure |
 | "A fully working product at M12, before hardware" | Hardware exists and the voice pipeline is built; the product is **one satellite away from being usable** | Reality of the tree |
 | Voice is Phase 7, after deploy and Langfuse | Voice is **the product**; text UI is the escape hatch | The satellite is how you actually use this |
@@ -88,12 +89,12 @@ The only scaffolding that exists:
 - `docker-compose.prod.yml` pulls immutable `ghcr.io/...:{APP_VERSION}` images, adds `app-db` (Postgres 17.11) and
   moves the checkpointer to Postgres. **Prod publishes only `8080` (nginx) and `3000` (Langfuse).**
 - `frontend/nginx.conf` proxies **`/ws` → `backend:8000`** (and `/health`, `/sessions`, `/openapi.json`), with
-  `proxy_read_timeout 3600s`. **A satellite therefore reaches the voice socket at `ws://<minipc>:8080/ws/voice`** —
+  `proxy_read_timeout 3600s`. **A satellite therefore reaches the voice socket at `ws://<host>:8080/ws/voice`** —
   no new port has to be exposed.
 - Backend idle timeout is **60 s** (`voice_idle_timeout_seconds`); a quiet device must keepalive (≈20 s) or be dropped.
 - `voice_max_sessions = 3`.
 - **No workflow deploys to a host.** CI builds/scans/publishes only. `infra/backup/BACKUP.md` still carries a
-  "**TODO (before the DeskMini goes live)**" — the M28 verification pass ran on a laptop, not on the target box.
+  "**TODO (before the host goes live)**" — the M28 verification pass ran on a laptop, not on a deployment host.
 
 ---
 
@@ -183,49 +184,41 @@ Sources are cited per item; treat unverified rows as open questions, not facts.
 - **Frontend:** the repo is current (React 19.2, Vite 8.2, TS 5.9, Tailwind 4.3, ESLint 10). TS 7.0 exists; no rush.
 - **Eval tooling:** Langfuse SDK 5.0.1 (already self-hosted here) + **promptfoo 0.124.1** (npm) for CI prompt
   regression. Skip DeepEval/Ragas until RAG metrics are actually needed.
-- **Langfuse self-host needs Postgres + ClickHouse + Redis + MinIO.** That is fine on 32 GB, but it is the largest
-  memory consumer in the stack — budget for it (§3).
+- **Langfuse self-host needs Postgres + ClickHouse + Redis + MinIO.** That fits within the RAM in §3, but it is the
+  largest memory consumer in the stack — budget for it.
 
 ---
 
-## 3. Hardware baseline — Lenovo ThinkCentre M920q Tiny
+## 3. Host requirements
 
-**Status: owned and already provisioned.** The BIOS update and BIOS configuration (the one-way, expensive part)
-are done, so this section is reference material for the pre-flight checks in D1.1 and for anyone debugging the host
-later — not a build plan.
+**Status: requirements, not a shopping list.** The project targets **one** self-hosted Linux machine on the home
+LAN. Nothing below names a model — each row states what the stack needs and how to check it on whatever machine you
+use. A host that meets every row runs Delivery 1 unchanged.
 
-Verified: 1 L chassis, 179 × 183 × 34.5 mm, ~1.32 kg. Chipset **Intel Q370**. CPUs are **35 W T-series**
-(i5-8500T 6C/6T is the common one; i7-8700T 6C/12T and i9-9900T are the top options). **Integrated graphics
-UHD 630** — Quick Sync works, **there is no practical GPU compute path**, which is why v6's M34 is dropped.
+| Area | Requirement | Why it matters | How to check it |
+|---|---|---|---|
+| **OS / runtime** | 64-bit Linux with Docker Engine ≥ 24 and Compose v2, **enabled at boot** | Every service is a container, and the stack must return after a reboot without anyone starting it | `docker --version`, `docker compose version`, `systemctl is-enabled docker` |
+| **Edition** | Server or desktop edition both work; nothing assumes a headless install | The host may also be an everyday machine. The only desktop-specific requirement is disabling idle suspend (see **Power**) | — |
+| **CPU** | 4+ cores, x86-64 or arm64 with published image support; **no GPU needed** | The workload is I/O-bound: the LLM, STT, TTS and embeddings are all remote APIs. There is no local inference in this plan | `nproc`, `uname -m` |
+| **RAM** | 16 GB minimum, 32 GB comfortable | App Postgres plus Langfuse's Postgres/ClickHouse/Redis/MinIO, in one machine; ClickHouse is the largest consumer | `free -h` |
+| **Storage** | ≥ 100 GB free on the filesystem backing `/var/lib/docker`, SSD strongly preferred | Images, conversation checkpoints and ClickHouse all grow; a spinning disk makes deploys and queries visibly slower | `df -h /var/lib/docker` |
+| **Redundancy** | **None assumed** — one disk is acceptable, but then **backups must leave the machine** | A single-disk host holds no copy of its own data; the backup target you configure must not be that same disk | `infra/backup/BACKUP.md` |
+| **Network** | A **stable address** (static or DHCP reservation) reachable from other LAN devices; wired preferred, Wi-Fi acceptable with power-save disabled | The satellite firmware compiles the server address in, and `NEXTAUTH_URL` must match the browser's address. A lease move looks exactly like a firmware bug | `ip -4 addr`, then confirm the pin in the router or `netplan`/`nmcli` |
+| **Clock** | Timezone set, NTP synced, RTC in UTC | Alarms, timers and every checkpoint timestamp depend on it, and a wrong clock raises no error | `timedatectl` |
+| **Power** | Idle suspend disabled; the PSU/adapter sized for sustained load | A suspended host looks exactly like a crashed stack: no HTTP, no socket, containers "gone" | GNOME hosts: `gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type` |
+| **Boot without help** | Optional, and only if you want unattended recovery: firmware set to power on after loss | With an **encrypted root** the machine stops at the passphrase prompt first, so unattended recovery is not achievable there — decide which of the two you want | Firmware setup, then a real power-cut test |
 
-- **Memory:** exactly **2 × DDR4-2666 SO-DIMM**, non-ECC. Lenovo's official ceiling is **32 GB**; **64 GB
-  (2 × 32 GB) is community-verified** to work but unsupported. *(You have 32 GB.)*
-- **Storage:** **1 × M.2 2280 NVMe (PCIe 3.0 x4)** + **1 × 2.5" SATA bay** (ribbon-cable FRU, easy to lose).
-  ⚠️ Do **not** assume two M.2 drives: the M920q has one SSD slot (the *M920x* has two). A second M.2 footprint
-  exists on the underside but is unpopulated and requires a documented cap/resistor mod. **Max realistic M.2: 1 TB official.**
-  Plan for the M.2 to hold the OS + Docker volumes; use the 2.5" bay for backups if convenient.
-- **I/O:** front USB-C 3.1 Gen1 + Always-On USB 3.1 Gen1 + 3.5 mm mic + headset; rear 2 × USB 3.1 Gen1,
-  2 × USB 3.1 Gen2, HDMI 1.4, DisplayPort 1.2, **Intel I219-LM GbE**, optional connector. Audio codec
-  **Realtek ALC233VB2**.
-  ⚠️ **The front audio jacks are a documented Linux non-worker** (coreboot known issue) — irrelevant for a headless
-  server, but do not plan to plug anything into them.
-- **Power:** 65 W / 90 W / 135 W external adapters. ServeTheHome measured that a **65 W adapter throttles** this
-  machine and recommends **90 W**. Idle draw **12–15 W**. **Confirm your unit includes the adapter.**
-- **BIOS:** **F1** = setup, **F12** = boot menu, **F10** = save/exit. **"After Power Loss" exists** (Power Off /
-  **Power On** / Last State) — set **Power On** for an always-on box. Virtualization (VT-x/VT-d) is present.
-  **Latest BIOS is M1UKT79A / 1.0.0.121, released 2026-03-30** — but Lenovo has flagged the product
-  **"End of Development Support"**, so treat that as the final update. Lenovo recommends ≥ M1UKT45A; a
-  "fix Ubuntu 20.04 random freeze" fix landed in M1UKT5EA, so **update before installing anything.**
-- **PCIe:** a **Tiny5 riser** slot exists (FRU **01AJ929** = x4 PCH, **01AJ940** = x8 CPU) and *does* work on an
-  M920q — but it **replaces the 2.5" bay**, is usually **not included** with used units, and is not needed here.
-- **Refurb wear items:** missing 90 W adapter, missing riser, missing 2.5" drive cable/caddy, missing Wi-Fi
-  antennas, CMOS coin cell, dust in the single blower/heat sink. Idle is near-silent; sustained CPU makes it audible.
-- **Linux:** Ubuntu is an officially listed OS for the M920 store variant. NVMe, SATA, GbE, USB, HDMI, TPM 2.0 all
-  verified under Linux. Fan/temperature monitoring should work via the `nct6683` hwmon driver (Super I/O
-  **Nucton NCT6686D-L**) — **verify on arrival**.
-- **Budget note:** 32 GB is comfortable for this stack (app Postgres + Langfuse's 4 datastores + two small
-  containers). The 6-core T-series CPU is the constraint if you later add local speech models — CPU-only
-  `faster-whisper` would compete with everything else.
+**Notes that keep the above honest:**
+
+- **An encrypted root is supported**, but it changes reboot semantics: containers return only after someone unlocks
+  the volume. D1.2's reboot criterion is written around that, and no doc should promise an unattended return on such
+  a host.
+- **The stack is CPU-light by design.** Everything expensive is a remote API. Meeting the minimums is enough to
+  work; a bigger CPU buys latency headroom, not capability — and it is what **L1**'s latency numbers are measured on.
+- **Only the published ports matter** (§1.4). The LAN is the only boundary: there is no VPN overlay (§8).
+- **Record your own host's facts outside this repository.** OS version, CPU, RAM, disk layout, address reservation
+  and SMART baseline are environment facts of one machine; committing them here would make a portable plan look
+  hardware-specific. Keep them in a local runbook or deployment notes instead.
 
 ---
 
@@ -237,46 +230,64 @@ speaker — wireless, surviving reboots, with LED feedback. Nothing else in this
 Read `docs/voice.md` before D1.3. It is the authoritative description of the socket contract you are implementing against.
 
 ### D1.1 — Host pre-flight: verify what everything else depends on
-*Replaces v6's M24 + M25. The machine was prepared in advance — BIOS updated and configured — so this is a
-**~10-minute verification pass, not a build**, and it only escalates if a check fails.*
+*Replaces v6's M24 + M25. A **verification pass, not a build**: it only escalates if a check fails.*
 
 **GOAL:** Confirm the handful of host properties that every later milestone silently assumes, so a failure here
 surfaces as a failed check now rather than as an unexplained symptom three milestones later.
 
-**WHY THIS SHRANK:** the expensive, one-way work — the firmware update window, and the BIOS configuration —
-is already behind you. What cannot be "already done" is anything that depends on *this deployment*: the address
-the satellite will be pointed at, the container runtime, the clock that alarms will be scheduled against, and
-proof that the box comes back after losing power. Those four are why this milestone still exists. Everything else
-is a two-line command.
+**WHY THIS IS SHORT:** the expensive, one-way work (provisioning the machine, firmware setup) is behind you. What
+cannot be "already done" is anything that depends on *this deployment*: the address the satellite will be pointed
+at, the container runtime, the clock alarms will be scheduled against, and evidence of how the machine behaves after
+losing power. Those four are why this milestone exists. Everything else is a two-line command.
 
 **CHECKS:**
 
 | # | Check | How to check it | Why it matters — what breaks downstream | If it fails |
 |---|---|---|---|---|
 | 1 | **The address is fixed** (static IP or DHCP reservation) | Read the box's current address, then confirm it is pinned in the router's reservation table or in `netplan`/`nmcli` | ⚠️ **The one to do before D1.3.** The satellite's firmware has the server address compiled into it; a lease change breaks it silently, and you will debug firmware, wake word and Wi-Fi before suspecting the router. Also the value `NEXTAUTH_URL` and the future device registry point at | Add a DHCP reservation — five minutes |
-| 2 | **Docker Engine + Compose, enabled at boot** | `docker --version`; `docker compose version`; `systemctl is-enabled docker`; `docker run --rm hello-world` | **Hard prerequisite** — nothing deploys without it. Boot-enabled matters because the entire stack is Compose and must return unattended after a reboot | Install from Docker's official repo, then `systemctl enable --now docker` |
-| 3 | **Free disk space, and where volumes will land** | `df -h /var/lib/docker`; `lsblk` | Every Docker volume, the Postgres data (checkpoints, scheduled items, later the vector store) and Langfuse's four datastores all share **one** NVMe — the M920q has a single M.2 slot, so there is no second drive to fall back on | Free space, or size the volumes deliberately so you know your headroom |
-| 4 | **Clock: correct timezone, NTP synced, RTC survives a power cut** | `timedatectl` (want "System clock synchronized: yes"), set the zone if needed; then **after** the power-cut test below, check `date` again | **New, and it matters more here than on a normal server.** M17 sets alarms and timers, M14 answers "what time is it", and every checkpoint is timestamped. A wrong clock throws no error — it silently fires your 07:00 alarm at the wrong moment. ⚠️ The RTC coin cell is a documented wear item on a 2018-era unit: if the clock jumps to 2018 after a power loss, the cell is dead | Set the timezone/NTP; replace the ~€2 CR2032 |
+| 2 | **Docker Engine + Compose, enabled at boot** | `docker --version`; `docker compose version`; `systemctl is-enabled docker`; `docker run --rm hello-world` | **Hard prerequisite** — nothing deploys without it. Boot-enabled matters because the entire stack is Compose and must come back after a restart; how far it can be automatic depends on check 6 | Install from Docker's official repo, then `systemctl enable --now docker` |
+| 3 | **Free disk space, and where volumes will land** | `df -h /var/lib/docker`; `lsblk` | Every Docker volume, the Postgres data (checkpoints, scheduled items, later the vector store) and Langfuse's four datastores share **one** filesystem — assume there is no second drive to fall back on | Free space, or size the volumes deliberately so you know your headroom |
+| 4 | **Clock: correct timezone, NTP synced, RTC survives a power cut** | `timedatectl` (want "System clock synchronized: yes"), set the zone if needed; then **after** the power-cut test below, check `date` again | M17 sets alarms and timers, M14 answers "what time is it", and every checkpoint is timestamped. A wrong clock throws no error — it silently fires your 07:00 alarm at the wrong moment. ⚠️ On older hardware the RTC coin cell is a wear item: if the clock jumps to a fixed past date after a power loss, the cell is dead | Set the timezone/NTP; replace the coin cell |
 | 5 | **SSH: key-based, reachable from another machine on the LAN** | From your admin machine: `ssh <user>@<box>`; on the box: `sudo sshd -T \| grep -E 'passwordauthentication\|permitrootlogin'` | This is the **only** way you administer the box — there is no VPN overlay (see §8) — and it is how the D1.2 deployment is driven | Install your public key, then `PasswordAuthentication no` and `PermitRootLogin no` |
-| 6 | **After Power Loss = Power On** | ❌ **Not checkable from inside the OS.** The only real test is physical: **yank the power cord** (not a clean `poweroff`) and see whether it comes back on its own | The BIOS is configured, and this is likely already right — but this is the single setting whose omission is **invisible until it matters**. It is what makes M17's alarms, M15's pushes and the nightly backup trustworthy. It costs one minute to *prove* rather than assume | BIOS → Power → After Power Loss → **Power On** |
-| 7 | **Firewall: know what a LAN device can reach** | From another machine, probe the box's `8080` and `3000`; on the box, `sudo ufw status verbose` | With no overlay, the **LAN boundary is the only boundary**. Nothing should be listening on those ports yet, so this check is about knowing your starting state and confirming `ufw` exists before the app publishes them | `ufw` allowing **SSH + the LAN range on 8080** and nothing else |
-| 8 | **CPU is a T-series part, and it does not throttle** | `lscpu \| grep 'Model name'` — look for the `T` suffix; read the **wattage printed on the adapter**; watch `sensors` during the D1.2 image pull/build | A **65 W** CPU or a **65 W adapter** throttles under exactly the sustained load this workload creates (ClickHouse + Postgres + the always-on wake detector). That would corrupt the very latency numbers **L1** is measured against — you would be tuning against a thermally-limited host and never know | If it is the adapter, replace it with 90 W. If it is the CPU, accept the ceiling and write it down |
+| 6 | **Power-loss behaviour matches your intent** | ❌ **Not checkable from inside the OS.** The only real test is physical: **yank the power cord** (not a clean `poweroff`) and see what happens | This is the single setting whose omission is **invisible until it matters**: M17's alarms, M15's pushes and the nightly backup all assume the stack is up. ⚠️ On a host with an **encrypted root** the machine stops at the unlock prompt, so the physical test proves only the firmware setting — decide whether unattended recovery is even a goal | Firmware → power-loss behaviour → the value you chose; record it |
+| 7 | **Firewall: know what a LAN device can reach** | From another machine, probe the host's `8080` and `3000`; on the host, `sudo ufw status verbose` | With no overlay, the **LAN boundary is the only boundary**. Nothing should be listening on those ports yet, so this check is about knowing your starting state and confirming a firewall exists before the app publishes them | A firewall allowing **SSH + the LAN range on 8080** and nothing else |
+| 8 | **The CPU does not throttle under sustained load** | Read the **wattage printed on the adapter/PSU**; watch temperatures and clocks during the D1.2 image pull/build | A power supply that is too small throttles under exactly the sustained load this workload creates (ClickHouse + Postgres + the always-on wake detector). That would corrupt the very latency numbers **L1** is measured against — you would be tuning against a thermally-limited host and never know | Size the adapter for sustained load, or accept the ceiling and write it down |
 
 **DONE WHEN:** all eight check out, **or** the failures are ones you have explicitly accepted and written down with
-the reason. Three of them are not optional: **the address fixed (1), Docker working (2), and power-loss behaviour
-proven (6)** — those are the ones whose absence produces silent, misattributed failures later.
+the reason. Two are never optional: **the address fixed (1)** and **the container runtime working (2)** — their
+absence produces silent, misattributed failures later. Check 6 is mandatory only if you want the stack to return
+without a human present.
 
-**NOTES:** record the machine's facts while you are in there — Ubuntu version, kernel, CPU model, adapter wattage,
-RAM configuration, NVMe serial and SMART baseline, and the reserved IP. D1.2's backup runbook and any future
-hardware conversation both want them.
+**STATUS — 2026-10-23, partially satisfied.** The pre-flight was run against the machine currently in use, which is
+also a daily-use desktop; only the invariants that do not interfere with that were applied. The rest stay open and
+are re-run when a host is dedicated to the solution — until then this milestone is **satisfied for a shared host**,
+not complete.
+
+| Check | State |
+|---|---|
+| 1 Address fixed | **done** — DHCP reservation, stable across renewals |
+| 2 Docker + Compose, boot-enabled | **done** |
+| 3 Disk headroom | **done** — verified, all volumes land on the same filesystem |
+| 4 Clock | **verified, no change needed** |
+| 5 SSH key-only | **deferred** — the operator is at the machine; convenience only |
+| 6 Power-loss behaviour | **deferred** — needs a dedicated host, since an encrypted root makes the physical test inconclusive |
+| 7 Firewall policy | **deferred** — firewall installed but inactive; nothing listens on 8080/3000 yet |
+| 8 Thermal/power headroom | **not measured** — no sensor or SMART baseline on this host |
+
+Two further changes were applied because D1.2 needs them and the eight checks do not cover them: the deploy toolchain
+(`git`, `make`, `curl`) and desktop idle-suspend pinned to `nothing`. Neither is host-specific guidance.
+
+**NOTES:** record the machine's facts while you are in there — OS version, CPU, RAM, disk layout, address
+reservation and SMART baseline — **in your own deployment notes, not in this repository** (see §3). D1.2's backup
+runbook and any future hardware conversation both want them.
 
 **Notes carried over from the earlier, larger D1.1 analysis** (kept for traceability, no action needed now):
 - **VT-x/VT-d is not required by Docker** — v6 claimed it was. Containers use namespaces and cgroups, not VMs.
-  It is harmless if already enabled; do not go back into the BIOS for it.
-- **Single-channel RAM would be a modest hit here**, not the "roughly halves performance" v6 claimed — there is no
-  iGPU inference on this box.
-- **Ubuntu 24.04 vs 26.04 is a support-lifetime question, not a compatibility one** on this 8th-gen Intel hardware.
-  Whatever is installed, what matters is that the kernel is current and the stack survives a reboot.
+  It is harmless if already enabled; do not go back into the firmware for it.
+- **Single-channel RAM is a modest hit**, not the "roughly halves performance" v6 claimed — there is no local
+  inference for an iGPU to accelerate.
+- **Distro version is a support-lifetime question, not a compatibility one.** What matters is a current kernel and
+  that the stack survives a reboot.
 
 ### D1.6 — Appliance operations hardening
 *New in v7. Deliberately **not** on the delivery's critical path — nothing in Delivery 1 needs any of it.*
@@ -285,41 +296,48 @@ hardware conversation both want them.
 fails."
 
 **STEPS:**
-1. Confirm and write down the **remote-administration policy**: this box is **administered on the LAN only** — no
+1. Confirm and write down the **remote-administration policy**: the host is **administered on the LAN only** — no
    VPN overlay. Nothing replaces that, and no `ufw` rule should be opened for one. If you ever change your mind,
    this is the step that changes; until then, "I administer it from inside the network" is the answer.
 2. Enable **unattended-upgrades for security patches only, with no automatic reboot.** The nuance is the whole
    point: auto-rebooting an appliance at 03:00 is how you find out at breakfast that the stack did not come back.
-3. Install **`lm-sensors`** and run `sensors-detect` (Super I/O is a Nuvoton **NCT6686D**; the `nct6683` hwmon
-   driver should pick it up). Confirm real CPU temperature and fan RPM readings appear.
-4. Install **`nvme-cli`** and add a small scheduled SMART + temperature check that alerts (the Langfuse alert
-   webhook mechanism from M28 is already there to reuse, or `infra/observability/alerts.md`).
-5. Record the machine's facts in the runbook: CPU model, adapter wattage, RAM configuration, NVMe serial and SMART
-   baseline, and the IP reservation.
-6. Decide the thermal policy in BIOS (Silent vs custom fan curve) once you know the real idle and load temperatures.
+3. Install **`lm-sensors`** and run `sensors-detect` (your board's Super I/O may need its own hwmon driver).
+   Confirm real CPU temperature and fan RPM readings appear.
+4. Add a small scheduled SMART + temperature check that alerts (the Langfuse alert webhook mechanism from M28 is
+   already there to reuse, or `infra/observability/alerts.md`).
+5. Record the host's facts in your local runbook — CPU model, PSU wattage, RAM configuration, disk serial and SMART
+   baseline, address reservation — **not in this repository** (§3).
+6. Decide the thermal policy in firmware (silent vs custom fan curve) once you know the real idle and load
+   temperatures.
 
-**DONE WHEN:** you can administer the box from inside the network, `sensors` reports real temperatures, an
+**DONE WHEN:** you can administer the host from inside the network, `sensors` reports real temperatures, an
 unattended security update lands without any reboot, and a SMART/temperature alert actually reaches you.
 
-### D1.2 — Deploy the stack to the M920q and actually verify it
+### D1.2 — Deploy the stack to the host and actually verify it
 *Replaces v6's M26 and closes M28's outstanding "before it goes live" TODO.*
 
-**GOAL:** The v0.3.1 (or newer) release running from GHCR images on the M920q, reachable on the LAN, with working
-observability, working backups, and a **tested** restore.
+**GOAL:** The v0.3.1 (or newer) release running from GHCR images on the deployment host, reachable on the LAN, with
+working observability, working backups, and a **tested** restore.
 
 **STEPS:**
-1. On the M920q: clone the repo (deploy scripts + compose files only) and `docker login ghcr.io`.
+1. On the host: clone the repo (deploy scripts + compose files only). Confirm the session that will run `make` sees
+   the container group (`id -nG | grep -x docker` — group membership only applies to a **new** login), then
+   `docker login ghcr.io`. The images are **private**, so this needs a token with `read:packages`.
 2. Create `infra/compose/.env.prod` (mode 600) from `.env.prod.example`: Langfuse secrets, `APP_DB_*`
-   (**password must stay alphanumeric** — it is inlined in a URL), and `NEXTAUTH_URL` pointing at the box's
+   (**password must stay alphanumeric** — it is inlined in a URL), and `NEXTAUTH_URL` pointing at the host's
    real LAN name/IP.
 3. Create `backend/.env.prod` from its example, and **turn voice on for real**:
    `VOICE_ENABLED=true`, `VOICE_STT_API_KEY` (Groq), `VOICE_TTS_API_KEY` (OpenAI), and confirm
    `VOICE_TTS_VOICES` still covers en/de/pt-BR — the app refuses to boot otherwise.
+   ⚠️ Set `ASSISTANT_API_KEY` to the **same value** as the `VITE_API_KEY` repository secret: the frontend bakes it
+   in at build time, and a mismatch returns 401 on every request.
 4. `APP_VERSION=<release> make prod-pull && make prod-up`. Deploy an **immutable** tag; never `:latest`.
 5. Verify: `http://<box>:8080` serves the UI and `/health` answers; `http://<box>:3000` accepts a Langfuse login;
    a typed chat turn round-trips; **a browser voice turn round-trips** (`docs/voice.md` §Tooling lists the commands).
 6. Make it survive reboots: a systemd unit (or `@reboot` cron) that runs `make prod-up`; confirm the compose
-   services' `restart: unless-stopped` policy; **reboot the box and prove the UI + voice both come back.**
+   services' `restart: unless-stopped` policy; **restart the host and prove the UI + voice both come back.**
+   If the root volume is encrypted, "comes back" means after the unlock prompt — write that into the runbook
+   rather than claiming an unattended return.
 7. Install the backup cron from `infra/backup/` (Postgres dump of `app-db`, Langfuse's Postgres/ClickHouse/MinIO,
    the OAuth token slot, and the future `scheduled_items`), **encrypted**, and wire the Langfuse alert webhook.
 8. **Run the restore drill on a throwaway project name** — restore the checkpoint DB and prove a conversation
@@ -328,8 +346,9 @@ observability, working backups, and a **tested** restore.
 
 **DONE WHEN:**
 - The UI is reachable from another machine on the LAN, a chat turn and a voice turn both work, and Langfuse shows both traces.
-- A full `poweroff` → power-on cycle brings the whole stack back with no manual step — and, separately, so does an
-  **unclean** loss (the power-cord test from D1.1 check 6) once the stack is running.
+- A full shutdown → start cycle brings the whole stack back **with no manual step beyond unlocking the root volume if
+  it is encrypted**. Where the host is meant to boot unattended (no unlock prompt), prove that separately — including
+  an **unclean** loss (the power-cord test from D1.1 check 6) once the stack is running.
 - A restore from the nightly backup into a scratch project name produces a readable stored conversation.
 
 **NOTES:** do not enable automated CD here — the update path is D1's runbook in §6 (M27). Keep `app-db` and
@@ -360,7 +379,7 @@ browser already exercises.
    - I2S read: **stereo 32-bit → take the left channel → downshift to 16-bit** (both I2S channels carry ASR beam 0).
    - Frame to **20 ms / 16 kHz mono s16le** (320 samples, 640 bytes) — the size the server expects from every
      other client.
-   - Connect to `ws://<minipc>:8080/ws/voice?api_key=<key>`; do the nginx upgrade handshake.
+   - Connect to `ws://<host>:8080/ws/voice?api_key=<key>`; do the nginx upgrade handshake.
    - Send the **start frame first**: `{"session_id": "<uuid>", "device_id": "<XVF3800 serial>", "output_sample_rate": 16000}`.
      The device declares its own serial as `device_id` — that is the identity the backend will use in M15.
    - Stream binary audio continuously. **Keepalive at least every 20 s** (the server drops a silent socket at 60 s).
@@ -373,9 +392,9 @@ browser already exercises.
      pinout image) only to confirm the pin map.
 4. **Bring-up sequence, in this order:** (a) prove capture on the bench (log levels, confirm 16 kHz, confirm the
    left channel is the ASR beam); (b) prove playback (stream a fixture WAV back through the speaker); (c) prove the
-   socket against `backend/scripts/smoke_09_voice_ws.py` running on your laptop; (d) only then point it at the M920q.
+   socket against `backend/scripts/smoke_09_voice_ws.py` running on your laptop; (d) only then point it at the deployment host.
 5. **Fallback if the audio path fights you:** temporarily flash the **USB** firmware and validate the whole pipeline
-   tethered to the mini PC before continuing. ⚠️ If you do, the **known capture bug** applies — capture is
+   tethered to the deployment host before continuing. ⚠️ If you do, the **known capture bug** applies — capture is
    robotic/1.5× fast unless a playback stream is kept open (`rvsh2/xvf3800-capture-fix`). The I2S path does not
    have this problem, which is why it is the target.
 6. Commit a `firmware/README.md`: exact firmware versions, control-tool commands, pin map, build/flash procedure,
@@ -401,7 +420,7 @@ exists. It keeps the firmware of D1.3 unchanged and makes the wake word tunable 
 actual room — which is the only data that matters for a keyword spotter.
 
 **STEPS:**
-1. **Choose the engine with a spike, not a spec sheet.** Candidates, all runnable on the M920q's CPU:
+1. **Choose the engine with a spike, not a spec sheet.** Candidates, all runnable on the host's CPU:
    Porcupine (commercial SDK, per-language models, licensed — check personal-use terms), Vosk keyword spotting
    (Apache-2.0, real de/pt models, grammar-constrained recogniser), and openWakeWord (widely used but
    **no release since 2024-02-11**). **Do not adopt openWakeWord without accepting that staleness.**
@@ -421,7 +440,7 @@ actual room — which is the only data that matters for a keyword spotter.
 - The phrase can be changed for all three languages by editing config and restarting — no reflash.
 - Measured on your own recordings: false-accept and false-reject rates are known numbers, not guesses, at 1 m and 4 m.
 
-**NOTES:** this deliberately spends CPU on the M920q for every idle second. Measure it — if the wake gate is
+**NOTES:** this deliberately spends CPU on the host for every idle second. Measure it — if the wake gate is
 expensive, the *later* milestone is to move it to the XIAO (WakeNet10 now has released `wn10_de_halloesp` /
 `wn10_pt_olaesp` models, and microWakeWord lives under the Open Home Foundation), keeping this server-side
 detector as the reference implementation to test against.
@@ -725,7 +744,7 @@ Each of these removes a real trap.
 - **M35 — Self-hosted multilingual embeddings and speech.** Removes per-use API cost and keeps audio local. The
   `Transcriber`/`Synthesizer`/`get_embeddings()` seams exist precisely so this stays a config change. ⚠️ Still
   apply the v6 warnings: **`bge-m3` requires a full re-index**; **never use `.en` Whisper variants**; **Kokoro has
-  no German voice**. ⚠️ New constraint: the M920q is a **6-core 35 W CPU with no usable GPU**, so local
+  no German voice**. ⚠️ New constraint: a realistic deployment host is a **low-power CPU with no usable GPU**, so local
   `faster-whisper` would compete with the API, Postgres and all four Langfuse datastores. Measure before committing.
 - **M36 — Smart home via the Home Assistant MCP server.** **Trigger: only once you actually own smart-home
   devices.** Uses HA's built-in MCP server + `langchain-mcp-adapters`; register lock/alarm-type services as
@@ -742,10 +761,10 @@ Each of these removes a real trap.
 
 | v6 | Status | Why |
 |---|---|---|
-| M24 Assemble a DeskMini X600 + Ryzen 7 8700G | **Dropped** | Replaced by D1.1 — the M920q is owned and needs no assembly |
+| M24 Assemble a DeskMini X600 + Ryzen 7 8700G | **Dropped** | Replaced by D1.1 — a machine is already available and needs no assembly |
 | M27 Automated CD with an approval gate + auto-rollback | **Dropped** | You pull releases manually; replaced by H3's runbook |
 | M25/M26/M27's Tailscale-based remote access | **Dropped** | Not using a VPN overlay at all; the box is administered on the LAN |
-| M34 Self-hosting an LLM on the Radeon 780M iGPU | **Dropped** | The M920q's Intel UHD 630 has no usable compute path. Its Quick Sync video engine is still available if transcoding ever matters |
+| M34 Self-hosting an LLM on the Radeon 780M iGPU | **Dropped** | No host in this class has a usable GPU compute path. An integrated GPU's video engine is still available if transcoding ever matters |
 | M33 "Wireless satellite is optional and advanced; nothing depends on it" | **Superseded** | The wireless satellite *is* Delivery 1 (D1.3); the on-device wake word becomes V2 |
 | M32 "ReSpeaker in USB mode first, 16 kHz stereo 32-bit over USB" | **Corrected** | No USB firmware profile is 16 kHz stereo 32-bit (they are 16 kHz/6ch or 48 kHz/2ch), and USB capture has a known open-playback-stream bug. The I2S path is the target; USB is only a bench fallback |
 | Chroma as the vector store | **Superseded** | pgvector in the existing Postgres |
@@ -762,6 +781,8 @@ DONE:      M00 → M01 → M02 → M03 → M04 → M05 → M06
 
 DELIVERY:  D1.1 → D1.2 → D1.3 → D1.4 → D1.5
              (D1.1 is a verification gate: it may collapse to "all checks pass" in one sitting)
+             (D1.1 is PARTIALLY satisfied — address, runtime, clock, disk and suspend are in place; SSH, firewall,
+              power-loss behaviour and thermal baseline are deferred to a host dedicated to this stack)
              (D1.3 → D1.4 needs the satellite streaming)
              (D1.5 needs all of the above)
            D1.6 is OFF the critical path: it needs D1.2 only, and may land any time after it
@@ -819,3 +840,4 @@ QUERY "what's unblocked right now":
 | 7 | Embedding model (`voyage-4` vs `text-embedding-3-small`) | M20 | Build a small de/pt-BR probe set on your own text first |
 | 8 | Raise the Python floor, or only add 3.14 support | H2 | Add 3.14 support, keep 3.12 as the floor for now |
 | 9 | Per-device credentials vs the shared API key on the satellite | M15 step 2 | Per-device secret — a lost device must be revocable alone |
+| 10 | Stay on a shared daily-use machine, or move to a host dedicated to the stack | D1.1 deferred checks, D1.6 | Stay on the shared host for Delivery 1; re-run the deferred D1.1 checks when a dedicated machine exists |

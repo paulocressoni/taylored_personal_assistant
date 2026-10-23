@@ -1,6 +1,6 @@
 # Production Alerts — cost spikes & elevated error rates
 
-Alerts are how the DeskMini tells you something is wrong instead of you
+Alerts are how the host tells you something is wrong instead of you
 finding out by reading a dashboard. The self-hosted Langfuse v4 build ships
 native threshold **Alerts** (no alert limit on self-hosted) and the
 **Metrics API v2** for programmatic checks. Both are covered here — native
@@ -40,7 +40,7 @@ Two settings matter for a home box that goes quiet overnight:
 Cost alerts only work once DeepSeek model pricing is set (dashboards runbook
 §1), otherwise `totalCost` is always 0 and the alert never fires. The
 environment filter is the Langfuse **environment** attribute, which the app
-sets from `ENV` — that is `prod` on the DeskMini, so filtering on
+sets from `ENV` — that is `prod` on the deployment host, so filtering on
 `production` matches nothing.
 
 Two flavours, pick what matches the spike you care about:
@@ -94,7 +94,7 @@ belong to the dashboards (4.4/4.6) rather than to native alerts.
 
 1. Project → **Settings → Automations** (or the Automations panel next to
    Alerts) → **New Automation**.
-2. Pick **Webhook** for the DeskMini (no account needed): URL = any endpoint
+2. Pick **Webhook** on the host (no account needed): URL = any endpoint
    that can ding you. The zero-setup option is a private
    [ntfy](https://ntfy.sh) topic: `https://ntfy.sh/<your-secret-topic>` —
    subscribe on your phone and alerts become push notifications. (Slack /
@@ -137,7 +137,7 @@ curl -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" -G \
   "$LANGFUSE_BASE_URL/api/public/v2/metrics"
 ```
 
-(`date -u -d` is GNU date — fine on the DeskMini's Linux.)
+(`date -u -d` is GNU date — fine on Linux.)
 
 For unattended checks, run the probe script as a cron job:
 `backend/scripts/langfuse_alert.py` (delivered with this runbook). It queries
@@ -147,7 +147,7 @@ to a webhook. Note what it does NOT do: it has no ClickHouse path, so it cannot
 evaluate the voice threshold in §6.
 
 ```cron
-# every hour at minute 5 (root crontab on the DeskMini)
+# every hour at minute 5 (root crontab on the deployment host)
 5 * * * * /usr/local/bin/python3 /srv/taylored-assistant/backend/scripts/langfuse_alert.py \
     --conf /srv/taylored-assistant/backend/scripts/.langfuse-alert.conf >> /var/log/taylored-alert.log 2>&1
 ```

@@ -291,7 +291,7 @@ Two versions move independently: the **app** (the GHCR image, pinned by
 ### App — a tag bump, nothing else
 
 The git tag IS the image tag, so a release is `APP_VERSION` + the prod targets
-(the DeskMini runs Linux, so `make` is available there):
+(the deployment host runs Linux, so `make` is available there):
 
 ```bash
 APP_VERSION=0.5.0 make prod-up     # pull + up -d --no-build --wait
@@ -328,12 +328,16 @@ for it and `ps` shows it as merely `Up`.
 
 ## Reboot survival
 
-The DeskMini should behave like an appliance, so the stack has to come back on its
-own after a power cut.
+The host should behave like an appliance, so the stack has to come back on its own
+after a restart. How far "on its own" goes depends on the host — see the bullets.
 
 - Every service sets `restart: unless-stopped`, so Docker restarts them on boot —
   **provided the daemon itself starts at boot**: `sudo systemctl enable --now docker`
   (verify with `systemctl is-enabled docker`).
+- **If the root volume is encrypted, nothing starts until someone unlocks it.** The
+  containers then come back by themselves, but the real bar on such a host is "returns
+  after the passphrase", not "returns unattended" — say so in the runbook instead of
+  promising a cold boot with no human present.
 - `unless-stopped` means "restart unless *you* stopped it". `make prod-down` runs
   `docker compose down`, which REMOVES the containers (volumes are kept), so after a
   `down` a reboot has nothing to restart until you `make prod-up`. To pause the stack
@@ -360,8 +364,8 @@ own after a power cut.
 After a reboot, check in this order:
 
 1. `make prod-ps` — every service `Up (healthy)` except `langfuse-worker`.
-2. `http://<deskmini>:8080` serves the UI and `/health` answers.
-3. `http://<deskmini>:3000` accepts a login.
+2. `http://<host>:8080` serves the UI and `/health` answers.
+3. `http://<host>:3000` accepts a login.
 4. One assistant turn produces a new `assistant:<route>` trace — that single check
    covers backend → Langfuse ingest → ClickHouse end to end.
 
