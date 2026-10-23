@@ -41,6 +41,7 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
 
 | Need | Read |
 |---|---|
+| **The very first production run** — tooling, every secret, the values that must match | [`first-prod-run.md`](first-prod-run.md) |
 | Docker/compose commands, image tags, GHCR auth | [`docker-cheatsheet.md`](docker-cheatsheet.md) → "Published images (GHCR)" |
 | Langfuse stack upgrade, reboot survival, post-reboot checks | [`observability.md`](observability.md) → "Upgrading", "Reboot survival" |
 | Backups, encryption, the monthly restore drill | [`../infra/backup/BACKUP.md`](../infra/backup/BACKUP.md) |
@@ -49,6 +50,11 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
 ---
 
 ## 1. First deploy (once)
+
+> **Never deployed before?** Work through [`first-prod-run.md`](first-prod-run.md) first. It covers
+> the host tooling (`uv`, Node, pre-commit), every secret in both `.env.prod` files, and the two
+> values that must match in more than one place — the steps whose absence here fails silently. The
+> list below assumes that setup is done.
 
 1. **Get the code and log in to GHCR** on the box (images are private, so the login needs a token with
    `read:packages`): `docker login ghcr.io -u <owner>`. If you have just been added to the Docker group,

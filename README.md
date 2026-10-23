@@ -29,6 +29,7 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 21. [Roadmap](#roadmap)
 22. [Implementation plan](docs/implementation_plan.md)
 23. [Deployment runbook](docs/deploy.md)
+24. [First production run](docs/first-prod-run.md)
 
 ---
 
@@ -911,7 +912,9 @@ Docker Engine + Compose v2 enabled at boot, a synced clock, a stable address, en
 repository records one specific box.
 
 Deployment itself has an operator's runbook: **[docs/deploy.md](docs/deploy.md)** — host requirements, first deploy,
-routine updates, rollback, and the post-deploy verification checklist.
+routine updates, rollback, and the post-deploy verification checklist. A first-ever deployment should start with
+**[docs/first-prod-run.md](docs/first-prod-run.md)**, which collects the one-time tooling, every secret to create, and
+the values that have to match in more than one place.
 
 | Area | Scope | Status |
 |---|---|---|
