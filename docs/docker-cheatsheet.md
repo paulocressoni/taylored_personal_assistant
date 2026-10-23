@@ -163,8 +163,13 @@ Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
 > backend's `ASSISTANT_API_KEY`. Key changed? Update the secret **before** cutting the next
 > release tag, then re-pull the new `frontend:X.Y.Z`.
 
+> **Docker group membership needs a new session.** `usermod -aG docker <user>` only writes
+> `/etc/group`; shells started before it keep their old group set and still get
+> `permission denied ... /run/docker.sock`. Log out and back in (or `newgrp docker` for one
+> shell) and check with `id -nG | grep -x docker` in the session that will run the commands.
+
 ```powershell
-# Pull a release (requires GHCR auth; images are private by default)
+# Pull a release (requires GHCR auth; the images are private — use a token with read:packages)
 docker login ghcr.io -u paulocressoni
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
@@ -178,7 +183,8 @@ docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 # app images + the Langfuse profile (`--profile observability`) + the
 # `app-db` Postgres that backs the production graph checkpointer. Secrets
 # come from `.env.prod`. All services carry `restart: unless-stopped`, so a
-# full DeskMini reboot brings the whole stack back by itself.
+# full host reboot brings the whole stack back by itself (after the root volume
+# is unlocked, if it is encrypted).
 $env:APP_VERSION = '0.4.1-test'   # the tag you deployed (git tag == image tag, never :latest)
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability pull
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability up -d --no-build --wait

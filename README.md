@@ -906,13 +906,17 @@ The living plan is **[docs/implementation_plan.md](docs/implementation_plan.md)*
 of every milestone, the researched ecosystem facts behind the decisions, and the next delivery in detail. The table
 below is a quick orientation only — **if the two ever disagree, the plan wins.**
 
-Deployment itself has an operator's runbook: **[docs/deploy.md](docs/deploy.md)** — first deploy, routine updates,
-rollback, and the post-deploy verification checklist.
+The stack is not tied to a particular machine: the plan's §3 lists what a deployment host must provide (Linux,
+Docker Engine + Compose v2 enabled at boot, a synced clock, a stable address, enough disk), and nothing in the
+repository records one specific box.
+
+Deployment itself has an operator's runbook: **[docs/deploy.md](docs/deploy.md)** — host requirements, first deploy,
+routine updates, rollback, and the post-deploy verification checklist.
 
 | Area | Scope | Status |
 |---|---|---|
 | Core graph & API | LangGraph agent (M02–M06), FastAPI + WS streaming (M09), mocked pytest suite (M06) | ✅ done |
-| Deployment & release | Docker image (M07), Compose dev/prod stack (M12), GHCR publish with Trivy gate + SBOM (M22/M23) | ✅ done; deploying to the mini PC is Delivery 1 |
+| Deployment & release | Docker image (M07), Compose dev/prod stack (M12), GHCR publish with Trivy gate + SBOM (M22/M23) | ✅ done; the host pre-flight (D1.1) is partially satisfied — deferred checks apply to a dedicated host |
 | Observability | Self-hosted Langfuse (M08) plus the prod stack, dashboards, alerts and encrypted backups (M28) | ✅ built; on-box verification is part of Delivery 1 |
 | Conversation memory | LangGraph checkpointing — SQLite in dev, Postgres in prod (M11) | ✅ done |
 | Chat UI | Vite/React UI with WS token streaming and a multi-session sidebar (M10) | ✅ done |

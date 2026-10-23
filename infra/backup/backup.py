@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scheduled, encrypted backups for the prod stack on the DeskMini (M28).
+"""Scheduled, encrypted backups for the prod stack on the deployment host (M28).
 
 Runs as a root cron job and produces one dated backup directory per run under
 `BACKUP_ROOT/daily/YYYY-MM-DD/`. Every item is written to a staging file,

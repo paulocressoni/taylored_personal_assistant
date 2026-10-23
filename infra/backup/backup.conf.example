@@ -1,5 +1,5 @@
 # KEY=VALUE config for backup.py (M28). Copy this file to infra/backup/backup.conf
-# on the DeskMini and edit. Values here win over the built-in defaults.
+# on the deployment host and edit. Values here win over the built-in defaults.
 # Boolean-ish knobs are never needed: an empty value disables that item.
 
 # Where dated backup dirs (daily/YYYY-MM-DD/) are written.

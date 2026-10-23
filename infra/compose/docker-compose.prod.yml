@@ -17,7 +17,7 @@
 #     (separate from Langfuse's own `postgres` service in base.yml).
 #   - backend CHECKPOINT_DB_URL + LANGFUSE_BASE_URL (service name — this was
 #     a bug: prod.yml previously left LANGFUSE_BASE_URL at the host URL).
-#   - langfuse-web browser port + NEXTAUTH_URL pointing at the DeskMini.
+#   - langfuse-web browser port + NEXTAUTH_URL pointing at the deployment host.
 #   - the observability profile is activated in the Makefile prod-up/prod-pull
 #     so the full Langfuse stack actually starts.
 #
@@ -111,15 +111,15 @@ services:
   langfuse-web:
     ports:
       # Publish the Langfuse UI to the host so dashboards are reachable from
-      # any LAN machine: http://<deskmini-host>:3000 (dev also uses 3000,
+      # any LAN machine: http://<host>:3000 (dev also uses 3000,
       # but dev and prod run on different hosts).
       - "3000:3000"
     environment:
       # Browser-facing URL. base.yml hardcodes http://localhost:3000, which is
       # only correct when the BROWSER runs on the same host as Langfuse (dev).
-      # On the DeskMini the dashboards are opened from other machines on the
-      # LAN, so point this at the DeskMini's reachable hostname/IP.
-      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL (e.g. http://deskmini.local:3000) in infra/compose/.env.prod}
+      # The dashboards are opened from other machines on the
+      # LAN, so point this at the host's reachable hostname/IP.
+      NEXTAUTH_URL: ${NEXTAUTH_URL:?set NEXTAUTH_URL (e.g. http://assistant-host.local:3000) in infra/compose/.env.prod}
       # Prod-flavoured headless-init identities (base.yml defaults say "Dev").
       # Idempotent: Langfuse creates them once, on first boot.
       LANGFUSE_INIT_ORG_ID: ${LANGFUSE_INIT_ORG_ID:-prod-org}

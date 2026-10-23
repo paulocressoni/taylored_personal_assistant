@@ -1,19 +1,37 @@
-# Deployment runbook — the mini PC
+# Deployment runbook — the self-hosted host
 
-The operator's entry point for getting this solution onto the mini PC and keeping it
+The operator's entry point for getting this solution onto your own Linux host and keeping it
 updated **by hand**. CI builds, scans and publishes images; **nothing deploys itself.**
 Automated CD was deliberately dropped, so the release you run is the release you pulled.
 
 | | |
 |---|---|
-| Host | Mini PC on the home LAN, reachable at a **reserved** address |
+| Host | One Linux machine on the home LAN, reachable at a **stable** address (DHCP reservation or static) |
 | Transport | none — **LAN-only**, no VPN overlay and no forwarded ports. Administer it from inside the network |
 | Published ports | **8080** — nginx: the UI *and* `WS /ws/voice` (the satellite connects here) · **3000** — Langfuse UI |
 | Compose project | `taylored-assistant-prod` (device volumes/network are separate from `taylored-assistant-dev`) |
 | Golden rule | the git tag IS the image tag IS the deployed version — **never deploy `:latest`** |
 
-Because there is no overlay network, **`ufw` is the only boundary**: keep it to SSH plus the LAN
+Because there is no overlay network, **the host firewall is the only boundary**: keep it to SSH plus the LAN
 range on 8080, and nothing else.
+
+## Host requirements
+
+The stack is not tied to a particular machine. Before the first deploy, the host must satisfy:
+
+| Requirement | Check |
+|---|---|
+| 64-bit Linux with Docker Engine ≥ 24 + Compose v2, **enabled at boot** | `docker --version && docker compose version && systemctl is-enabled docker` |
+| `git`, `make`, `curl` available to the operator | `git --version && make --version && curl --version` |
+| Your user can reach the Docker socket | `id -nG \| grep -x docker` — membership only applies to a **new** login |
+| NTP-synced clock, timezone set, RTC in UTC | `timedatectl` |
+| Idle suspend disabled (desktop editions) | GNOME: `gsettings get org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type` → `'nothing'` |
+| ≥ 100 GB free where `/var/lib/docker` lives | `df -h /var/lib/docker` |
+| A stable address, confirmed in the router or `netplan`/`nmcli` | `ip -4 addr` |
+| A backup target **off** the host, if it has a single disk | `infra/backup/BACKUP.md` |
+
+Record your own host's facts (OS version, CPU, RAM, disk layout, address reservation, SMART baseline) in your
+deployment notes — not in this repository.
 
 ---
 
@@ -32,13 +50,16 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
 
 ## 1. First deploy (once)
 
-1. **Get the code and log in to GHCR** on the box (images are private by default):
-   `docker login ghcr.io -u <owner>`.
+1. **Get the code and log in to GHCR** on the box (images are private, so the login needs a token with
+   `read:packages`): `docker login ghcr.io -u <owner>`. If you have just been added to the Docker group,
+   start a **new login session** first — group membership does not apply to shells that already exist.
 2. **Create the two secret files from their templates** — they are never committed:
    - `infra/compose/.env.prod` (mode 600): Langfuse secrets, `APP_DB_*`
      (**keep the password alphanumeric** — it is inlined into a URL), and `NEXTAUTH_URL`
      set to the box's real LAN name/IP.
    - `backend/.env.prod` (mode 600): `DEEPSEEK_API_KEY`, `ASSISTANT_API_KEY`, and the voice keys.
+     ⚠️ `ASSISTANT_API_KEY` **must equal** the `VITE_API_KEY` repository secret — the SPA bakes it in at
+     build time, so a mismatch returns 401 on every request (see §5).
 3. **Turn voice on.** Uncomment `VOICE_ENABLED=true` plus `VOICE_STT_API_KEY` and `VOICE_TTS_API_KEY`.
    The app **fails fast at startup** if the switch is on and a key is missing, or if any supported
    language has no TTS voice — a missing voice is a boot failure, not a silent degradation.
@@ -46,9 +67,12 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
    passes `--no-build`, so prod never compiles the working tree.
 5. **Verify** — run the checklist in §4. Do not skip the voice turn.
 6. **Prove reboot survival.** `sudo systemctl enable --now docker`, confirm every service carries
-   `restart: unless-stopped`, then **yank the power** (not a clean `poweroff`) and confirm the whole
-   stack returns unattended. `unless-stopped` does *not* recover from `make prod-down`, which
-   removes the containers.
+   `restart: unless-stopped`, then restart the host and confirm the whole stack returns.
+   **If the root volume is encrypted, "returns" means after the unlock prompt** — that is the real bar on
+   such a host, so write it into your runbook instead of claiming an unattended return. Where the host is
+   meant to boot without a human, prove that separately with an unclean loss (**yank the power**, not a
+   clean shutdown). `unless-stopped` does *not* recover from `make prod-down`, which removes the
+   containers.
 7. **Turn on backups** and finish the host-specific items at the top of
    [`BACKUP.md`](../infra/backup/BACKUP.md) — the recorded verification pass ran on Windows/WSL2, so
    the `VOLUMES` tars, the cron line and a real drill are still owed **on the box that runs the
@@ -121,7 +145,7 @@ docker compose -p taylored-assistant-prod \
 
 ---
 
-## 5. Two traps that will cost you an evening
+## 5. Three traps that will cost you an evening
 
 **The frontend's API key is baked in at build time.** The SPA must present the backend's
 `ASSISTANT_API_KEY`, but Vite inlines `VITE_*` only at build time and the frontend's `.dockerignore`
@@ -136,3 +160,9 @@ changes — a DHCP lease moving, for instance — the satellite stops working *s
 symptom looks exactly like a firmware or Wi-Fi bug. This is why the address is reserved (see the
 plan, D1.1 check 1). If a satellite ever goes quiet, verify the box's address **before** touching
 the firmware.
+
+**A Docker-group change is invisible to sessions that already exist.** `usermod -aG docker <user>` (or adding
+yourself through the desktop UI) writes one line to `/etc/group`; every shell, terminal and editor process
+started *before* that keeps its old group set, so `docker` keeps returning `permission denied ... /run/docker.sock`
+while `getent group docker` cheerfully lists you. Log out and back in — or `newgrp docker` for one shell — and
+check `id -nG | grep -x docker` **in the session that will run `make prod-up`**, not in another one.

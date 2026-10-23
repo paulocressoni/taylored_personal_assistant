@@ -213,7 +213,7 @@ Four rules the **Save** button enforces (all are Langfuse v4 changes):
 
 ### 4.2 The same object via the API
 
-Repeatable and scriptable — useful when rebuilding on the DeskMini. This is how
+Repeatable and scriptable — useful when rebuilding the dashboards. This is how
 widget 1a in §5 was created:
 
 ```powershell
@@ -656,7 +656,7 @@ Once a week, answer these purely from the dashboards (no log access):
 5. **Permission denials** — any? (Expected zero until authorization exists.)
 6. **Error taxonomy** — are the errors rate limits (provider), timeouts
    (network/setup), or real bugs? Rate-limit clusters suggest adding retry /
-   backoff; timeouts suggest the DeskMini or the provider is struggling.
+   backoff; timeouts suggest the host or the provider is struggling.
 7. **Voice latency and barge-in** (widgets 8a/8b/9, Q11–Q13) — if you used the
    voice channel, did `first_audio_ms` move, and did STT or TTS move with it? A
    rising barge-in rate with falling turn latency means the answers got slow

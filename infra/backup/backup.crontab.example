@@ -1,6 +1,6 @@
 # /etc/cron.d/taylored-backup  (root-owned; no blank lines before this one)
 # Run the encrypted prod backup daily at 03:15, logging to the backup root.
-# REPO_ROOT must match your DeskMini checkout of this repo.
+# REPO_ROOT must match your checkout of this repo on the deployment host.
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
