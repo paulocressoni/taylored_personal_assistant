@@ -70,7 +70,7 @@ RUN npm run build
 # NO build-time env vars / ARGs: runtime configuration (the backend
 # host) lives in nginx.conf + compose, never baked into the image. If a
 # real build-time knob is ever needed, add an ARG here only then.
-FROM nginx:1.30.4-alpine AS prod
+FROM nginx:1.30.6-alpine AS prod
 
 # Pull the latest alpine security fixes at build time. The stock
 # nginx:alpine base image can lag behind alpine's package repository -- it
@@ -83,8 +83,10 @@ FROM nginx:1.30.4-alpine AS prod
 # The tiff floor does the same for CVE-2026-4775: libtiff arrives with the
 # base through nginx's libgd, and one `apk upgrade` is not enough because the
 # cached layer keeps serving the older tiff even after the fix is published.
+# The expat and libx11 floors follow the same rule for CVE-2026-77214 and
+# CVE-2026-88806: both arrive with the alpine base, not from nginx itself.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache 'pcre2>=10.49' 'tiff>=4.7.2'
+    && apk add --no-cache 'pcre2>=10.49' 'tiff>=4.7.2' 'expat>=2.9.0' 'libx11>=1.8.14'
 
 # Replace the stock server block with ours (serves dist/ + proxies /ws,
 # /sessions, /health, /openapi.json to the backend service).
