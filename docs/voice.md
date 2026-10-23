@@ -380,6 +380,25 @@ the TLS connections warm — and reports p50/p90 per stage, with `_TimedGraph` s
 generation and the TTS round trip. Both are integration-only: they cost money and need
 network.
 
+### Browser microphone: a secure context is mandatory
+
+The browser only exposes `navigator.mediaDevices` in a **secure context** — `https://`,
+`http://localhost` or `http://127.0.0.1`. A plain-HTTP LAN address is not one, and Firefox
+then leaves `navigator.mediaDevices` **undefined**, so `getUserMedia` throws before any
+permission prompt exists. The hook now name-checks the condition and reports it, instead of
+blaming a refused permission.
+
+Consequences for testing a deployment on the LAN:
+
+- `http://localhost:8080` **on the host running the stack** works — that address is a secure
+  context even though the site is served over HTTP.
+- `http://<lan-ip>:8080` from another device cannot use the microphone. Use
+  `backend/scripts/smoke_09_voice_ws.py` to exercise the socket from a dev machine, or put the
+  UI behind HTTPS.
+- HTTPS termination is deliberately not part of the image yet: it needs a per-device trust
+  decision (mkcert CA installed, or one self-signed warning accepted). The satellite path is
+  unaffected — firmware connects with plain `ws://` and has no secure-context rule.
+
 ## Tests
 
 `backend/tests/` covers the pipeline with no network and no keys: `test_voice_audio.py`
@@ -429,7 +448,9 @@ The Python simulator already speaks this contract; the firmware does not exist y
   voices are optimised for English — German and Portuguese are intelligible, not equal in
   quality.
 - **TLS is deferred**: the browser is tested on localhost and the device uses plain `ws://`
-  on the LAN.
+  on the LAN. As a direct consequence, **the browser microphone does not work on a LAN
+  address over HTTP** (secure-context rule, see "Browser microphone" above); typing still
+  does.
 - The browser client has not yet been validated end-to-end against a live backend; the
   socket contract itself is proven by `smoke_09`.
 - **Chunk seams are audible.** Each chunk is a separate TTS request, so the reply has a

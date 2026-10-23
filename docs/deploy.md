@@ -138,6 +138,10 @@ docker compose -p taylored-assistant-prod \
    on 8080 — and the script takes the API key from your *local* `backend/.env.dev`, which must match
    the box's `ASSISTANT_API_KEY`. This is the check that proves the whole audio path including the
    nginx `/ws` upgrade, and it is the one people skip.
+   ⚠️ **The browser microphone only works in a secure context.** `https://`, `http://localhost` and
+   `http://127.0.0.1` qualify; `http://<lan-ip>:8080` does **not**, and the browser exposes no
+   microphone there at all. So press **Speak** on the host itself via `http://localhost:8080`, and
+   use `smoke_09_voice_ws.py` for the cross-machine check. Typing works over plain HTTP.
 5. Langfuse shows a new `assistant:<route>` trace for that turn — one check covering backend →
    ingest → ClickHouse end to end.
 6. From a **different** machine on the LAN: 8080 answers (`0.0.0.0`-bound, as intended) and nothing
