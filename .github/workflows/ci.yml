@@ -27,10 +27,10 @@ jobs:
                   enable-cache: true
                   cache-dependency-glob: "backend/uv.lock"
 
-            # Install dependencies (from lockfile) — --frozen fails the job if
+            # Install dependencies (from lockfile) — --locked fails the job if
             # uv.lock is stale vs pyproject.toml, so drift can't slip in.
             - name: Sync dependencies (from uv.lock)
-              run: uv sync --frozen
+              run: uv sync --locked
 
             # Lint + format + type-check + unit tests (mocked, no API)
             - name: Lint
@@ -115,10 +115,10 @@ jobs:
                   cache: npm
                   cache-dependency-path: frontend/package-lock.json
 
-            # Backend deps, from the lockfile
+            # Backend deps, from the lockfile (--locked also rejects a stale lock)
             - name: Sync backend dependencies
               working-directory: backend
-              run: uv sync --frozen
+              run: uv sync --locked
 
             # The app refuses to boot without ENV + a .env.dev template.
             - name: Prepare dev env
