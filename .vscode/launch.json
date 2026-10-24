@@ -7,7 +7,6 @@
             "request": "launch",
             "module": "app.graph.cli",
             "cwd": "${workspaceFolder}/backend",
-            "python": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
             "args": ["capital of France?"],
             "env": { "ENV": "dev" }
         }

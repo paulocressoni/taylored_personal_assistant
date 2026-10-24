@@ -41,6 +41,7 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
 
 | Need | Read |
 |---|---|
+| **The very first production run** — tooling, every secret, the values that must match | [`first-prod-run.md`](first-prod-run.md) |
 | Docker/compose commands, image tags, GHCR auth | [`docker-cheatsheet.md`](docker-cheatsheet.md) → "Published images (GHCR)" |
 | Langfuse stack upgrade, reboot survival, post-reboot checks | [`observability.md`](observability.md) → "Upgrading", "Reboot survival" |
 | Backups, encryption, the monthly restore drill | [`../infra/backup/BACKUP.md`](../infra/backup/BACKUP.md) |
@@ -49,6 +50,11 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
 ---
 
 ## 1. First deploy (once)
+
+> **Never deployed before?** Work through [`first-prod-run.md`](first-prod-run.md) first. It covers
+> the host tooling (`uv`, Node, pre-commit), every secret in both `.env.prod` files, and the two
+> values that must match in more than one place — the steps whose absence here fails silently. The
+> list below assumes that setup is done.
 
 1. **Get the code and log in to GHCR** on the box (images are private, so the login needs a token with
    `read:packages`): `docker login ghcr.io -u <owner>`. If you have just been added to the Docker group,
@@ -138,6 +144,10 @@ docker compose -p taylored-assistant-prod \
    on 8080 — and the script takes the API key from your *local* `backend/.env.dev`, which must match
    the box's `ASSISTANT_API_KEY`. This is the check that proves the whole audio path including the
    nginx `/ws` upgrade, and it is the one people skip.
+   ⚠️ **The browser microphone only works in a secure context.** `https://`, `http://localhost` and
+   `http://127.0.0.1` qualify; `http://<lan-ip>:8080` does **not**, and the browser exposes no
+   microphone there at all. So press **Speak** on the host itself via `http://localhost:8080`, and
+   use `smoke_09_voice_ws.py` for the cross-machine check. Typing works over plain HTTP.
 5. Langfuse shows a new `assistant:<route>` trace for that turn — one check covering backend →
    ingest → ClickHouse end to end.
 6. From a **different** machine on the LAN: 8080 answers (`0.0.0.0`-bound, as intended) and nothing

@@ -29,6 +29,7 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 21. [Roadmap](#roadmap)
 22. [Implementation plan](docs/implementation_plan.md)
 23. [Deployment runbook](docs/deploy.md)
+24. [First production run](docs/first-prod-run.md)
 
 ---
 
@@ -342,7 +343,7 @@ both layers (Ruff for Python, Prettier for JS/TS/CSS/HTML/JSON, format-on-save e
 
 ```json
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+  "python.venvPath": "${workspaceFolder}/backend",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true
@@ -363,6 +364,13 @@ both layers (Ruff for Python, Prettier for JS/TS/CSS/HTML/JSON, format-on-save e
 
 > **Why `[typescriptreact]`?** In VS Code, `.tsx` has its own language ID distinct from
 > `.ts` — without it, Prettier would never format your React components.
+
+> **Why `python.venvPath` and not `defaultInterpreterPath`?** The venv layout differs per
+> OS (`backend/.venv/Scripts/python.exe` on Windows, `backend/.venv/bin/python` elsewhere),
+> so a pinned path breaks on the other platform — Ruff then logs
+> `Error while trying to find the Ruff binary: ... ENOENT` and silently falls back to its
+> bundled binary. Pointing `python.venvPath` at `backend/` lets the Python extension
+> discover `.venv` on both.
 
 To verify in the UI: `Ctrl+Shift+P` → **"Python: Select Interpreter"** → it should show the `backend` venv (Python 3.12). The status bar (bottom-left) displays the active interpreter.
 
@@ -911,7 +919,9 @@ Docker Engine + Compose v2 enabled at boot, a synced clock, a stable address, en
 repository records one specific box.
 
 Deployment itself has an operator's runbook: **[docs/deploy.md](docs/deploy.md)** — host requirements, first deploy,
-routine updates, rollback, and the post-deploy verification checklist.
+routine updates, rollback, and the post-deploy verification checklist. A first-ever deployment should start with
+**[docs/first-prod-run.md](docs/first-prod-run.md)**, which collects the one-time tooling, every secret to create, and
+the values that have to match in more than one place.
 
 | Area | Scope | Status |
 |---|---|---|

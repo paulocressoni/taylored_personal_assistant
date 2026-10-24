@@ -144,6 +144,18 @@ export function useVoiceSession({ sessionId, onTurnComplete }: Options): VoiceSe
     firstAudioAtRef.current = null
     serverDoneRef.current = false
 
+    // Browsers only expose the microphone in a secure context (`https://`,
+    // `http://localhost`, `http://127.0.0.1`). A plain-HTTP LAN address is not
+    // one, and Firefox then leaves `navigator.mediaDevices` undefined — the
+    // generic catch below would blame permissions for what is really the
+    // transport. Say the true reason instead.
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      setError(
+        'The microphone needs a secure context: open the UI over https:// or on http://localhost.',
+      )
+      return
+    }
+
     // The microphone prompt only appears on a user gesture, which is why start()
     // is always reached from the button's click.
     let stream: MediaStream
