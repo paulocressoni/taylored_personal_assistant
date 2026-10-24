@@ -1,5 +1,7 @@
 {
-  "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/Scripts/python.exe",
+  // Discovery instead of a pinned path: a hardcoded `.venv/Scripts/python.exe`
+  // is Windows-only, and Ruff/Pylance fail to resolve the interpreter on `bin/`.
+  "python.venvPath": "${workspaceFolder}/backend",
   "[python]": {
     "editor.defaultFormatter": "charliermarsh.ruff",
     "editor.formatOnSave": true
