@@ -16,6 +16,11 @@
           "path": "backend/app/_version.py"
         },
         {
+          "type": "toml",
+          "path": "backend/uv.lock",
+          "jsonpath": "$.package[?(@.name.value==\"backend\")].version"
+        },
+        {
           "type": "json",
           "path": "frontend/package.json",
           "jsonpath": "$.version"

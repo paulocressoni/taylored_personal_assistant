@@ -39,13 +39,17 @@ Version numbers and CHANGELOG entries are generated FROM commit history — no
 manual version bumps, no hand-pushed tags. release-please owns the release PR,
 the git tag and the GitHub Release.
 
-The single version is mirrored across three files that release-please keeps in
+The single version is mirrored across the files that release-please keeps in
 sync inside the release PR it opens:
   - `backend/pyproject.toml` -> `[project].version` (authoritative value)
   - `backend/app/_version.py` -> `__version__` (read at runtime by `app.main`,
     `/health`, and the frontend footer; the Makefile derives `APP_VERSION` from
     it for image tags)
   - `frontend/package.json` + `frontend/package-lock.json` -> display-only mirror
+  - `backend/uv.lock` -> the `[[package]]` entry for the `backend` project.
+    uv records the project version in its lockfile, so a release bump that
+    skipped this file would leave `uv lock --check` / `uv sync --locked` failing
+    (CI runs `--locked` for exactly that reason).
 
 How a release happens:
 1. Merge conventional-commit PRs into `main` as usual
@@ -60,12 +64,17 @@ How a release happens:
 Config:
   - `release-please-config.json` — single unified version via the root "."
     package; `extra-files` lists every file release-please rewrites.
-  - `.release-please-manifest.json` — last released version (currently 0.2.0).
+  - `.release-please-manifest.json` — last released version (currently 0.4.0).
   - `.github/workflows/release-please.yml` — the automation itself.
 
 Notes:
 - The `# x-release-please-version` marker on the `__version__` line in
   `backend/app/_version.py` tells release-please which line to rewrite.
+- `backend/uv.lock` has no marker to anchor on, so its `extra-files` entry uses
+  a JSONPath filter: `$.package[?(@.name.value=="backend")].version`. The
+  `.value` step is required because release-please's TOML updater wraps every
+  scalar in a tagged value, so `@.name=="backend"` matches nothing. If that
+  entry ever stops matching, CI's `uv sync --locked` fails the release PR.
 - No release PR opens for `chore`/`docs`/`ci` commits — only feat/fix/breaking
   changes drive a bump.
 - The workflow needs the `RELEASE_PLEASE_TOKEN` secret (fine-grained PAT with
