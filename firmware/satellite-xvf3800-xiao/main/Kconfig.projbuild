@@ -1,0 +1,16 @@
+menu "Satellite"
+
+    config SATELLITE_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            The 2.4 GHz network the satellite joins. The ESP32-S3 has no
+            5 GHz radio, so a 5 GHz-only SSID simply never appears in a scan.
+
+    config SATELLITE_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            Empty means an open network. WPA2 or newer is used otherwise.
+
+endmenu
