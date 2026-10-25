@@ -168,13 +168,28 @@ esp_err_t xvf_disable_mute_function(void) {
     return xvf_write(XVF_RESID_IO_CONFIG, XVF_CMD_MUTE_FUNCTION, &disabled, 1);
 }
 
+static uint32_t s_last_gpi_raw;
+static bool s_last_gpi_valid;
+
 esp_err_t xvf_read_mute_button(bool *pressed) {
     uint8_t raw[4] = {0};
     esp_err_t err = xvf_read(XVF_RESID_IO_CONFIG, XVF_CMD_GPI_VALUES, raw, sizeof(raw));
     if (err != ESP_OK) {
         return err;
     }
+
     const uint32_t value = raw[0] | (raw[1] << 8) | (raw[2] << 16) | ((uint32_t)raw[3] << 24);
+
+    /* Log the raw bytes on every change. The byte order and field width of
+     * this register are not documented in a form that can be trusted, so the
+     * log is the source of truth while the layout is being confirmed. */
+    if (!s_last_gpi_valid || value != s_last_gpi_raw) {
+        s_last_gpi_valid = true;
+        s_last_gpi_raw = value;
+        ESP_LOGI(TAG, "mute gpio: %02x %02x %02x %02x -> 0x%08x", raw[0], raw[1], raw[2], raw[3],
+                 (unsigned)value);
+    }
+
     /* Bit 0 reads 1 while the button is released and 0 while pressed. */
     *pressed = (value & 0x01) == 0;
     return ESP_OK;

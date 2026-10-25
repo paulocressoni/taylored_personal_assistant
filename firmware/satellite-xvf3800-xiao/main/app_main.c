@@ -16,9 +16,23 @@
 #include "wifi.h"
 #include "xvf_control.h"
 
+#include <stdint.h>
+
+#include "esp_timer.h"
+
 /* Every log line is prefixed with this tag, so you can tell which module
  * printed it. Each file will have its own tag. */
 static const char *TAG = "sat";
+
+/* The button is polled 50 times a second: an order of magnitude faster than
+ * the shortest press a person makes, so no press can slip between samples. */
+#define MUTE_POLL_MS 20
+
+/* Three consecutive identical reads (60 ms) before a level is believed. */
+#define MUTE_STABLE_POLLS 3
+
+/* Independent of the poll rate: the heartbeat stays at one line every 5 s. */
+#define HEARTBEAT_MS 5000
 
 void app_main(void) {
     /* The Wi-Fi driver keeps calibration data in NVS and refuses to start
@@ -63,19 +77,55 @@ void app_main(void) {
         ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
     }
 
-    bool was_pressed = false;
+    /* Mute is a latch: one press mutes, the next unmutes. That is what the
+     * hardware button on a voice assistant means, and it is what this
+     * firmware has to implement itself now that MUTE_FUNCTION_ENABLE=0 has
+     * made the button a pure event. */
+    bool muted = false;
+
+    /* Debounce state. A mechanical button bounces for a few milliseconds, and
+     * the XVF3800's own reading can be stale for the first moments after
+     * boot, so a level is only accepted after it has held for several polls. */
+    bool observed = false;
+    bool stable = false;
+    int stable_polls = 0;
+
+    int64_t next_heartbeat_ms = 0;
+
     for (;;) {
-        /* Polling is fine for a button at this rate, and keeps this step free
-         * of an interrupt-driven GPIO handler. */
         bool pressed = false;
-        if (xvf_read_mute_button(&pressed) == ESP_OK && pressed != was_pressed) {
-            was_pressed = pressed;
-            ESP_LOGI(TAG, "mute button %s", pressed ? "pressed" : "released");
+        if (xvf_read_mute_button(&pressed) == ESP_OK) {
+            if (pressed == observed) {
+                if (stable_polls < MUTE_STABLE_POLLS) {
+                    stable_polls++;
+                }
+            } else {
+                observed = pressed;
+                stable_polls = 1;
+            }
+
+            /* Accept a transition only once the new level has survived
+             * MUTE_STABLE_POLLS consecutive reads. stable is then updated, so
+             * the condition cannot fire twice for the same edge. */
+            if (stable_polls >= MUTE_STABLE_POLLS && stable != observed) {
+                stable = observed;
+                if (stable) {
+                    muted = !muted;
+                    ESP_LOGI(TAG, "mute %s", muted ? "on" : "off");
+                    leds_set(muted ? LED_STATE_MUTED : LED_STATE_IDLE);
+                }
+            }
         }
 
-        leds_set(pressed ? LED_STATE_MUTED : LED_STATE_IDLE);
+        /* The heartbeat is a separate concern from the button, so it counts
+         * elapsed time instead of sharing the poll interval. */
+        const int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms >= next_heartbeat_ms) {
+            next_heartbeat_ms = now_ms + HEARTBEAT_MS;
+            ESP_LOGI(TAG, "heartbeat: %s%s", wifi_is_connected() ? "online" : "offline",
+                     muted ? " (muted)" : "");
+        }
 
-        ESP_LOGI(TAG, "heartbeat: %s", wifi_is_connected() ? "online" : "offline");
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        vTaskDelay(pdMS_TO_TICKS(MUTE_POLL_MS));
     }
 }
