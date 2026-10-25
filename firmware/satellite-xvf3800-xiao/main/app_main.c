@@ -2,8 +2,8 @@
  * app_main.c — the entry point of the satellite firmware.
  *
  * ESP-IDF calls app_main() once, after the chip has booted and the FreeRTOS
- * scheduler is running. At this step the firmware joins the Wi-Fi network and
- * reports whether it is online.
+ * scheduler is running. At this step the firmware brings up the XVF3800 over
+ * I2C, takes over its LED ring, and reports the mute button.
  */
 
 #include "esp_err.h"
@@ -12,7 +12,9 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "leds.h"
 #include "wifi.h"
+#include "xvf_control.h"
 
 /* Every log line is prefixed with this tag, so you can tell which module
  * printed it. Each file will have its own tag. */
@@ -32,23 +34,48 @@ void app_main(void) {
 
     ESP_LOGI(TAG, "satellite booting");
 
-    /* Starting the radio takes a moment; the connection happens later, in the
-     * event handler. A failure here means the configuration is wrong (no
-     * SSID), not that the network is down. */
+    /* The audio path depends on the XVF3800, so talk to it before the radio.
+     * A failure is reported, not fatal: the log is more useful than a reboot
+     * loop, and the reasons are almost always wiring or the wrong firmware. */
+    err = xvf_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "XVF3800 unavailable: %s", esp_err_to_name(err));
+    }
+    xvf_log_identity();
+
+    /* Headphones are on the 3.5 mm jack for the bench, so the speaker
+     * amplifier stays off; see xvf_set_amp_enabled for why that also matters
+     * to the microphones. */
+    if (xvf_set_amp_enabled(false) != ESP_OK) {
+        ESP_LOGW(TAG, "could not configure the amplifier");
+    }
+    /* Without this the mute button mutes the XVF in hardware and the host
+     * never learns it was pressed. */
+    if (xvf_disable_mute_function() != ESP_OK) {
+        ESP_LOGW(TAG, "could not take over mute control");
+    }
+
+    leds_init();
+    leds_set(LED_STATE_IDLE);
+
     err = wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
     }
 
-    /* A task must never return: returning from app_main deletes the task.
-     * This loop is a placeholder for the satellite state machine that arrives
-     * in a later step. */
+    bool was_pressed = false;
     for (;;) {
-        ESP_LOGI(TAG, "heartbeat: %s", wifi_is_connected() ? "online" : "offline");
+        /* Polling is fine for a button at this rate, and keeps this step free
+         * of an interrupt-driven GPIO handler. */
+        bool pressed = false;
+        if (xvf_read_mute_button(&pressed) == ESP_OK && pressed != was_pressed) {
+            was_pressed = pressed;
+            ESP_LOGI(TAG, "mute button %s", pressed ? "pressed" : "released");
+        }
 
-        /* Block for 5 s. While blocked, the CPU runs the Wi-Fi and event
-         * loop tasks. pdMS_TO_TICKS converts ms to ticks; at the configured
-         * 1000 Hz tick rate one tick is one millisecond. */
+        leds_set(pressed ? LED_STATE_MUTED : LED_STATE_IDLE);
+
+        ESP_LOGI(TAG, "heartbeat: %s", wifi_is_connected() ? "online" : "offline");
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }

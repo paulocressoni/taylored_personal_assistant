@@ -7,6 +7,8 @@ idf_component_register(
     SRCS
         "app_main.c"
         "wifi.c"
+        "xvf_control.c"
+        "leds.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         esp_common
@@ -16,4 +18,6 @@ idf_component_register(
         esp_event
         esp_netif
         esp_timer
+        esp_driver_i2c
+        esp_driver_gpio
 )

@@ -35,3 +35,7 @@ AllowShortIfStatementsOnASingleLine: Never
 # The `*` belongs to the variable: `int16_t *frame`, not `int16_t* frame`.
 # This is ESP-IDF's convention and it makes `int *a, b` read correctly.
 PointerAlignment: Right
+
+# Indent `case` labels inside a switch. clang-format's LLVM default is to align
+# them with the `switch`, which makes a long switch look like it has no braces.
+IndentCaseLabels: true
