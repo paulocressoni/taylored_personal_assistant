@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/paulocressoni/taylored_personal_assistant/compare/v0.4.0...v0.4.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **voice:** report the secure-context requirement and document the first prod run ([#45](https://github.com/paulocressoni/taylored_personal_assistant/issues/45)) ([8f59940](https://github.com/paulocressoni/taylored_personal_assistant/commit/8f59940077a40b1dbbcfcb99cc788d3be208426b))
+
 ## [0.4.0](https://github.com/paulocressoni/taylored_personal_assistant/compare/v0.3.1...v0.4.0) (2026-10-23)
 
 
