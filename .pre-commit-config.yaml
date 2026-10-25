@@ -49,3 +49,13 @@ repos:
         language: system
         files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|html)$
         pass_filenames: false
+
+  # Firmware: C formatting. Scoped to firmware/ so the hook can never touch
+  # generated files, ESP-IDF components, or anything outside the satellite.
+  # The version is pinned exactly, like every other action and tool here, and
+  # is deliberately the same version the CI format check installs.
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v22.1.8
+    hooks:
+      - id: clang-format
+        files: ^firmware/.*\.(c|h)$
