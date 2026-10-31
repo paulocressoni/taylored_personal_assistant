@@ -26,7 +26,6 @@ static size_t s_cap;
 static size_t s_head;
 static size_t s_tail;
 static SemaphoreHandle_t s_lock;
-static uint32_t s_underruns;
 static uint32_t s_overruns;
 
 esp_err_t playout_init(void) {
@@ -76,10 +75,8 @@ size_t playout_write(const int16_t *samples, size_t count) {
 
 size_t playout_read(int16_t *out, size_t count) {
     size_t read = 0;
-    bool had_data;
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    had_data = s_head != s_tail;
     while (read < count && s_tail != s_head) {
         out[read++] = s_buf[s_tail];
         s_tail = (s_tail + 1) % s_cap;
@@ -87,12 +84,10 @@ size_t playout_read(int16_t *out, size_t count) {
     xSemaphoreGive(s_lock);
 
     if (read < count) {
+        /* Silence, not a stall: the clock must keep running. Whether this was
+         * a fault is not knowable here -- the end of an answer looks exactly
+         * like a gap in the middle of one -- so the caller judges it. */
         memset(out + read, 0, (count - read) * sizeof(int16_t));
-        /* Counted only when audio was actually interrupted: an idle ring is
-         * silence by design, not an underrun. */
-        if (had_data) {
-            s_underruns++;
-        }
     }
     return read;
 }
@@ -112,9 +107,8 @@ size_t playout_level(void) {
 }
 
 void playout_log_stats(void) {
-    if (s_underruns > 0 || s_overruns > 0) {
-        ESP_LOGW(TAG, "underruns=%u overruns=%u", (unsigned)s_underruns, (unsigned)s_overruns);
+    if (s_overruns > 0) {
+        ESP_LOGW(TAG, "overruns=%u (answer truncated: the ring was full)", (unsigned)s_overruns);
     }
-    s_underruns = 0;
     s_overruns = 0;
 }

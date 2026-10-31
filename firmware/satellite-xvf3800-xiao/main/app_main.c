@@ -55,6 +55,49 @@ static int16_t s_frame_right[AUDIO_FRAME_SAMPLES];
 static int16_t s_frame_out[AUDIO_FRAME_SAMPLES];
 
 /*
+ * The uplink task owns the socket write path. Separating it from capture is
+ * what makes the audio path immune to network latency: the capture task never
+ * waits, and this task can block as long as the socket needs without ever
+ * missing an I2S frame.
+ */
+static void uplink_task(void *arg) {
+    int16_t frame[AUDIO_FRAME_SAMPLES];
+    uint32_t sent = 0;
+    uint32_t failed = 0;
+    uint32_t frames = 0;
+
+    for (;;) {
+        const size_t got = satellite_take_mic(frame, AUDIO_FRAME_SAMPLES);
+        if (got == 0) {
+            /* Nothing captured yet: wait rather than spin. */
+            vTaskDelay(pdMS_TO_TICKS(5));
+            continue;
+        }
+
+        if (!satellite_is_ready()) {
+            /* No session, so there is nobody to send to. Discard silently:
+             * counting these as failures would drown the real ones. */
+            continue;
+        }
+
+        if (satellite_send_audio(frame, got)) {
+            sent++;
+        } else {
+            failed++;
+        }
+
+        if (++frames >= AUDIO_FRAMES_PER_LOG) {
+            /* A failure here is a frame the server never heard: it shows up as
+             * a hole in the transcript, not as an error anywhere else. */
+            ESP_LOGI(TAG, "uplink sent=%u failed=%u", (unsigned)sent, (unsigned)failed);
+            sent = 0;
+            failed = 0;
+            frames = 0;
+        }
+    }
+}
+
+/*
  * The playout task is the only writer on the transmit channel. It runs on its
  * own 20 ms cadence, driven by the I2S clock, and stays completely independent
  * of the network: the ring absorbs the server's bursts and this task drains it
@@ -65,7 +108,11 @@ static void playout_task(void *arg) {
     for (;;) {
         /* Always writes a full frame. An empty ring yields silence, so the
          * clock never stops and an idle speaker is quiet rather than clicking. */
-        playout_read(s_frame_out, AUDIO_FRAME_SAMPLES);
+        if (playout_read(s_frame_out, AUDIO_FRAME_SAMPLES) < AUDIO_FRAME_SAMPLES) {
+            /* A partial frame is normal at the end of an answer; satellite.c
+             * decides whether this one was a fault. */
+            satellite_note_audio_shortfall();
+        }
         audio_write(s_frame_out, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100));
     }
 }
@@ -77,8 +124,6 @@ static void playout_task(void *arg) {
  * that cannot slip.
  */
 static void capture_task(void *arg) {
-    uint32_t sent = 0;
-    uint32_t dropped = 0;
     uint32_t errors = 0;
     uint32_t frames = 0;
 
@@ -93,22 +138,17 @@ static void capture_task(void *arg) {
         if (audio_read(s_frame_left, s_frame_right, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100)) !=
             ESP_OK) {
             errors++;
-        } else if (satellite_send_audio(s_frame_left, AUDIO_FRAME_SAMPLES)) {
-            sent++;
         } else {
-            dropped++;
+            /* Handed over and forgotten: this task's only deadline is the next
+             * frame, so it must never wait for the network. */
+            satellite_queue_mic(s_frame_left, AUDIO_FRAME_SAMPLES);
         }
 
         if (++frames >= AUDIO_FRAMES_PER_LOG) {
-            /* Drops matter more than they look: a dropped frame is 20 ms of
-             * speech the server never heard, and the endpointer counts real
-             * time, so the transcript degrades quietly. The stack figure is
-             * measured headroom, not an estimate. */
-            ESP_LOGI(TAG, "audio sent=%u dropped=%u errors=%u (stack free %u bytes)",
-                     (unsigned)sent, (unsigned)dropped, (unsigned)errors,
+            /* The stack figure is measured headroom, not an estimate. Send
+             * failures are counted by the uplink task, which owns them. */
+            ESP_LOGI(TAG, "capture errors=%u (stack free %u bytes)", (unsigned)errors,
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
-            sent = 0;
-            dropped = 0;
             errors = 0;
             frames = 0;
         }
@@ -177,6 +217,13 @@ void app_main(void) {
     err = wifi_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wifi_start failed: %s", esp_err_to_name(err));
+    }
+
+    /* The uplink queue must exist before the capture task starts filling it. */
+    if (satellite_init() == ESP_OK) {
+        if (xTaskCreatePinnedToCore(uplink_task, "uplink", 4096, NULL, 9, NULL, 1) != pdPASS) {
+            ESP_LOGE(TAG, "could not start the uplink task");
+        }
     }
 
     /* The supervisor owns the socket: it waits for Wi-Fi, connects, retries

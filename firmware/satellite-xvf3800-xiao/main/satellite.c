@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
@@ -11,6 +12,7 @@
 #include "freertos/task.h"
 
 #include "audio_i2s.h"
+#include "freertos/semphr.h"
 #include "leds.h"
 #include "playout.h"
 #include "wifi.h"
@@ -33,8 +35,14 @@ static const char *TAG = "sat";
 #define RECONNECT_MIN_MS 1000
 #define RECONNECT_MAX_MS 30000
 
-/* How often the playout counters are reported. */
+/* How often the audio counters are reported. */
 #define STATS_MS 60000
+
+/* The uplink queue is deliberately short. It exists to absorb the windows when
+ * the WebSocket client holds its lock delivering answer audio, not to buffer
+ * minutes of speech: every queued frame is speech the server hears that much
+ * later, and barge-in depends on low uplink latency. */
+#define UPLINK_FRAMES 12
 
 /* Session state: the server acknowledged the start frame. */
 static volatile bool s_ready;
@@ -48,6 +56,19 @@ static volatile size_t s_reply_bytes;
 
 /* When the uplink last carried something, so the keepalive can stay quiet. */
 static volatile int64_t s_last_uplink_ms;
+
+/* Microphone frames waiting to be sent. Filled by the capture task, drained by
+ * the uplink task; the two never wait for each other. */
+static int16_t *s_uplink;
+static size_t s_uplink_head;
+static size_t s_uplink_tail;
+static SemaphoreHandle_t s_uplink_lock;
+static uint32_t s_uplink_overflow;
+
+/* Answer audio has started arriving for the current turn, and the turn has not
+ * finished yet: the window in which a dry playout ring is a real fault. */
+static volatile bool s_reply_in_flight;
+static uint32_t s_playout_shortfalls;
 
 /* Set when the server says the answer is complete. The LED returns to listening
  * once the ring has actually drained, not when the last frame arrives: the
@@ -65,6 +86,83 @@ static int64_t s_next_stats_ms;
 
 static int64_t now_ms(void) {
     return esp_timer_get_time() / 1000;
+}
+
+esp_err_t satellite_init(void) {
+    const size_t capacity = UPLINK_FRAMES * AUDIO_FRAME_SAMPLES;
+    s_uplink = heap_caps_malloc(capacity * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_uplink == NULL) {
+        s_uplink = heap_caps_malloc(capacity * sizeof(int16_t), MALLOC_CAP_INTERNAL);
+    }
+    if (s_uplink == NULL) {
+        ESP_LOGE(TAG, "no memory for the uplink queue");
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_uplink_lock = xSemaphoreCreateMutex();
+    if (s_uplink_lock == NULL) {
+        heap_caps_free(s_uplink);
+        s_uplink = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    ESP_LOGI(TAG, "uplink: %u frames (%u ms)", (unsigned)UPLINK_FRAMES,
+             (unsigned)(UPLINK_FRAMES * AUDIO_FRAME_MS));
+    return ESP_OK;
+}
+
+void satellite_queue_mic(const int16_t *samples, size_t count) {
+    if (s_uplink == NULL || count > AUDIO_FRAME_SAMPLES) {
+        return;
+    }
+
+    xSemaphoreTake(s_uplink_lock, portMAX_DELAY);
+    const size_t used = (s_uplink_head + UPLINK_FRAMES - s_uplink_tail) % UPLINK_FRAMES;
+    if (used + 1 >= UPLINK_FRAMES) {
+        /* Full means the network is behind. Dropping the oldest frame keeps the
+         * audio the server hears continuous, which matters more than covering
+         * every instant. */
+        s_uplink_tail = (s_uplink_tail + 1) % UPLINK_FRAMES;
+        s_uplink_overflow++;
+    }
+    memcpy(&s_uplink[s_uplink_head * AUDIO_FRAME_SAMPLES], samples, count * sizeof(int16_t));
+    s_uplink_head = (s_uplink_head + 1) % UPLINK_FRAMES;
+    xSemaphoreGive(s_uplink_lock);
+}
+
+size_t satellite_take_mic(int16_t *out, size_t max) {
+    if (s_uplink == NULL || max < AUDIO_FRAME_SAMPLES) {
+        return 0;
+    }
+
+    size_t taken = 0;
+    xSemaphoreTake(s_uplink_lock, portMAX_DELAY);
+    if (s_uplink_tail != s_uplink_head) {
+        memcpy(out, &s_uplink[s_uplink_tail * AUDIO_FRAME_SAMPLES],
+               AUDIO_FRAME_SAMPLES * sizeof(int16_t));
+        s_uplink_tail = (s_uplink_tail + 1) % UPLINK_FRAMES;
+        taken = AUDIO_FRAME_SAMPLES;
+    }
+    xSemaphoreGive(s_uplink_lock);
+    return taken;
+}
+
+void satellite_note_audio_shortfall(void) {
+    /* Only a fault while the server is still sending: at the end of an answer
+     * the ring is supposed to run out, and the last frame is always partial. */
+    if (s_reply_in_flight) {
+        s_playout_shortfalls++;
+    }
+}
+
+static void clear_uplink(void) {
+    if (s_uplink == NULL) {
+        return;
+    }
+    xSemaphoreTake(s_uplink_lock, portMAX_DELAY);
+    s_uplink_head = 0;
+    s_uplink_tail = 0;
+    xSemaphoreGive(s_uplink_lock);
 }
 
 void satellite_device_id(char *out, size_t len) {
@@ -126,6 +224,8 @@ void satellite_on_ws_text(const char *json, size_t len) {
         s_ready = true;
         s_wait_ms = RECONNECT_MIN_MS;
         s_last_uplink_ms = now_ms();
+        s_reply_in_flight = false;
+        clear_uplink();
         ESP_LOGI(TAG, "session ready");
         leds_set(LED_STATE_LISTENING);
     } else if (strcmp(type->valuestring, "transcript") == 0) {
@@ -140,12 +240,14 @@ void satellite_on_ws_text(const char *json, size_t len) {
          * the ring does not talk over them. */
         playout_flush();
         s_audio_end_pending = false;
+        s_reply_in_flight = false;
         leds_set(s_muted ? LED_STATE_MUTED : LED_STATE_LISTENING);
     } else if (strcmp(type->valuestring, "audio_end") == 0) {
         ESP_LOGI(TAG, "reply audio: %u bytes", (unsigned)s_reply_bytes);
         s_reply_bytes = 0;
         /* Not idle yet: the ring may still hold seconds of speech. The
          * supervisor flips the LED once it is empty. */
+        s_reply_in_flight = false;
         s_audio_end_pending = true;
     } else if (strcmp(type->valuestring, "error") == 0) {
         const cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
@@ -180,6 +282,7 @@ void satellite_on_ws_binary(const uint8_t *data, size_t len) {
     }
 
     s_reply_bytes += len;
+    s_reply_in_flight = true;
     s_audio_end_pending = false;
     leds_set(s_muted ? LED_STATE_MUTED : LED_STATE_SPEAKING);
 }
@@ -191,7 +294,9 @@ void satellite_on_ws_down(void) {
     s_ready = false;
     s_down = true;
     s_audio_end_pending = false;
+    s_reply_in_flight = false;
     playout_flush();
+    clear_uplink();
     leds_set(LED_STATE_IDLE);
 }
 
@@ -244,6 +349,12 @@ static void supervisor_task(void *arg) {
         if (now >= s_next_stats_ms) {
             s_next_stats_ms = now + STATS_MS;
             playout_log_stats();
+            if (s_uplink_overflow > 0 || s_playout_shortfalls > 0) {
+                ESP_LOGW(TAG, "uplink overflow=%u, playout shortfalls=%u",
+                         (unsigned)s_uplink_overflow, (unsigned)s_playout_shortfalls);
+                s_uplink_overflow = 0;
+                s_playout_shortfalls = 0;
+            }
         }
 
         /* The answer has been fully delivered and fully played. */

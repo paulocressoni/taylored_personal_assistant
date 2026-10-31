@@ -259,11 +259,11 @@ bool ws_is_connected(void) {
 }
 
 bool ws_send_audio(const int16_t *samples, size_t count) {
-    /* A short timeout on purpose: this is called from the audio task every
-     * 20 ms, and waiting on a stalled socket would delay the next capture and
-     * overflow the receive DMA. A dropped frame is far cheaper than a stalled
-     * audio clock. */
-    if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(5)) != pdTRUE) {
+    /* Called from the uplink task, never from the audio task, so waiting here
+     * is safe: the capture path has already handed the frame over. The client
+     * holds its own lock for the whole of a receive-and-dispatch cycle, so
+     * during a burst of answer audio a short timeout would always fail. */
+    if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(50)) != pdTRUE) {
         return false;
     }
 
@@ -271,7 +271,7 @@ bool ws_send_audio(const int16_t *samples, size_t count) {
     if (s_client != NULL && esp_websocket_client_is_connected(s_client)) {
         const int bytes = (int)(count * sizeof(int16_t));
         sent = esp_websocket_client_send_bin(s_client, (const char *)samples, bytes,
-                                             pdMS_TO_TICKS(20)) == bytes;
+                                             pdMS_TO_TICKS(100)) == bytes;
     }
     xSemaphoreGive(s_lock);
     return sent;
