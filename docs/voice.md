@@ -414,8 +414,10 @@ argument, and the Web Audio wiring itself is verified by hand.
 
 ## Hardware notes (reSpeaker XVF3800 + XIAO ESP32S3)
 
-The Python simulator already speaks this contract; the firmware does not exist yet
-(`firmware/` is empty). What the board requires:
+The firmware lives in `firmware/satellite-xvf3800-xiao/`; `firmware/README.md` carries
+the pin map, the XVF3800 flashing procedure, the LED table and the bring-up results. The
+Python simulator speaks the same contract, so the protocol can be exercised with no board
+attached. What the board requires:
 
 - **I2S firmware ≥ v1.0.9**, host at **16 kHz, stereo, 32-bit** samples; the host reads the
   left channel (both I2S output channels carry ASR beam 0) and downshifts 32 → 16 bit for
