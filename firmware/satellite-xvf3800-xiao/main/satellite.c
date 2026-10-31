@@ -81,6 +81,10 @@ static volatile bool s_audio_end_pending;
 static volatile bool s_down;
 static bool s_armed;
 static uint32_t s_wait_ms = RECONNECT_MIN_MS;
+
+/* Previous radio state, so the supervisor can react to the transition rather
+ * than to the level: an outage must reset the backoff exactly once. */
+static bool s_radio_up;
 static int64_t s_retry_at_ms;
 static int64_t s_next_stats_ms;
 
@@ -318,7 +322,19 @@ static void supervisor_task(void *arg) {
             s_wait_ms = s_wait_ms * 2 <= RECONNECT_MAX_MS ? s_wait_ms * 2 : RECONNECT_MAX_MS;
         }
 
-        if (!wifi_is_connected()) {
+        const bool radio_up = wifi_is_connected();
+        if (radio_up && !s_radio_up) {
+            /* The link returned. Sitting out the rest of the backoff would
+             * leave the device dark for up to RECONNECT_MAX_MS after the
+             * network is already usable, so start the delay over from the
+             * shortest one and try immediately. */
+            s_wait_ms = RECONNECT_MIN_MS;
+            s_retry_at_ms = now;
+            ESP_LOGI(TAG, "radio is up, connecting now");
+        }
+        s_radio_up = radio_up;
+
+        if (!radio_up) {
             /* No point holding a socket when the radio is down. */
             if (s_armed) {
                 ws_stop();
