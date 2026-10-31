@@ -20,15 +20,25 @@ static const char *TAG = "leds";
 static led_state_t s_current;
 static bool s_initialized;
 
+/* Every command is a separate I2C transaction, and a failure used to be
+ * discarded: the ring then stayed in whatever state the last successful write
+ * left it, with nothing in the log to explain it. */
+static void expect(esp_err_t err, const char *what) {
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s write failed: %s", what, esp_err_to_name(err));
+    }
+}
+
 void leds_init(void) {
     s_initialized = true;
     s_current = LED_STATE_IDLE;
 
     /* The ring runs a rainbow, then a direction-of-arrival animation, unless
      * the host takes over. Selecting an effect explicitly stops both. */
-    xvf_set_led_effect(LED_EFFECT_SINGLE);
-    xvf_set_led_brightness(LED_BRIGHTNESS);
-    xvf_set_led_color(0x0000FF);
+    expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
+    expect(xvf_set_led_brightness(LED_BRIGHTNESS), "brightness");
+    expect(xvf_set_led_color(0x0000FF), "colour");
+    ESP_LOGI(TAG, "state -> %d (init)", (int)LED_STATE_IDLE);
 }
 
 void leds_set(led_state_t state) {
@@ -38,37 +48,49 @@ void leds_set(led_state_t state) {
     s_initialized = true;
     s_current = state;
 
+    /* Every state below ends with the same brightness write, so the effect is
+     * only skipped for "off", which has no colour to show. */
+    bool has_colour = true;
+
     switch (state) {
         case LED_STATE_OFF:
-            xvf_set_led_effect(LED_EFFECT_OFF);
-            return;
+            expect(xvf_set_led_effect(LED_EFFECT_OFF), "effect");
+            has_colour = false;
+            break;
         case LED_STATE_IDLE:
-            xvf_set_led_effect(LED_EFFECT_SINGLE);
-            xvf_set_led_color(0x0000FF);
+            expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
+            expect(xvf_set_led_color(0x0000FF), "colour");
             break;
         case LED_STATE_LISTENING:
-            xvf_set_led_effect(LED_EFFECT_BREATH);
-            xvf_set_led_color(0x00FF00);
+            /* Steady rather than breathing: "the session is ready" is a state,
+             * not an animation, and a steady colour is unmistakable across a
+             * room while a slow pulse at low brightness is not. */
+            expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
+            expect(xvf_set_led_color(0x00FF00), "colour");
             break;
         case LED_STATE_THINKING:
-            xvf_set_led_effect(LED_EFFECT_BREATH);
-            xvf_set_led_color(0xFF8000);
+            expect(xvf_set_led_effect(LED_EFFECT_BREATH), "effect");
+            expect(xvf_set_led_color(0xFF8000), "colour");
             break;
         case LED_STATE_SPEAKING:
-            xvf_set_led_effect(LED_EFFECT_SINGLE);
-            xvf_set_led_color(0x00FFFF);
+            expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
+            expect(xvf_set_led_color(0x00FFFF), "colour");
             break;
         case LED_STATE_ERROR:
-            xvf_set_led_effect(LED_EFFECT_BREATH);
-            xvf_set_led_color(0xFF0000);
+            expect(xvf_set_led_effect(LED_EFFECT_BREATH), "effect");
+            expect(xvf_set_led_color(0xFF0000), "colour");
             break;
         case LED_STATE_MUTED:
-            xvf_set_led_effect(LED_EFFECT_SINGLE);
-            xvf_set_led_color(0xFF0000);
+            expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
+            expect(xvf_set_led_color(0xFF0000), "colour");
             break;
         default:
             ESP_LOGW(TAG, "unknown led state %d", (int)state);
             return;
     }
-    xvf_set_led_brightness(LED_BRIGHTNESS);
+
+    if (has_colour) {
+        expect(xvf_set_led_brightness(LED_BRIGHTNESS), "brightness");
+    }
+    ESP_LOGI(TAG, "state -> %d", (int)state);
 }
