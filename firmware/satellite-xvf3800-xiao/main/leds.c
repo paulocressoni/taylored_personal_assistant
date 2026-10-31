@@ -6,12 +6,16 @@
 
 static const char *TAG = "leds";
 
-/* Effect ids understood by the XVF3800's LED engine. */
+/* Effect ids understood by the XVF3800's LED engine. Only the two the firmware
+ * uses are named.
+ *
+ * The breath effect (id 1) is deliberately not used: at this brightness it is
+ * dark for most of its cycle, and in practice a breathing state reads as "the
+ * ring is off". A steady colour is unambiguous. Re-adding motion means first
+ * raising LED_BRIGHTNESS and setting LED_SPEED explicitly, then confirming it
+ * by eye. */
 #define LED_EFFECT_OFF 0
-#define LED_EFFECT_BREATH 1
-#define LED_EFFECT_RAINBOW 2
 #define LED_EFFECT_SINGLE 3
-#define LED_EFFECT_DOA 4
 
 /* Brightness is global; 48 of 255 is bright enough to read in a lit room
  * without washing out the colours on the ring. */
@@ -69,7 +73,7 @@ void leds_set(led_state_t state) {
             expect(xvf_set_led_color(0x00FF00), "colour");
             break;
         case LED_STATE_THINKING:
-            expect(xvf_set_led_effect(LED_EFFECT_BREATH), "effect");
+            expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
             expect(xvf_set_led_color(0xFF8000), "colour");
             break;
         case LED_STATE_SPEAKING:
@@ -77,7 +81,9 @@ void leds_set(led_state_t state) {
             expect(xvf_set_led_color(0x00FFFF), "colour");
             break;
         case LED_STATE_ERROR:
-            expect(xvf_set_led_effect(LED_EFFECT_BREATH), "effect");
+            /* Steady for the same reason as thinking: a fault the user cannot
+             * see is a fault that costs an hour of debugging. */
+            expect(xvf_set_led_effect(LED_EFFECT_SINGLE), "effect");
             expect(xvf_set_led_color(0xFF0000), "colour");
             break;
         case LED_STATE_MUTED:
