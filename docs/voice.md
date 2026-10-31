@@ -414,8 +414,10 @@ argument, and the Web Audio wiring itself is verified by hand.
 
 ## Hardware notes (reSpeaker XVF3800 + XIAO ESP32S3)
 
-The Python simulator already speaks this contract; the firmware does not exist yet
-(`firmware/` is empty). What the board requires:
+The firmware lives in `firmware/satellite-xvf3800-xiao/`; `firmware/README.md` carries
+the pin map, the XVF3800 flashing procedure, the LED table and the bring-up results. The
+Python simulator speaks the same contract, so the protocol can be exercised with no board
+attached. What the board requires:
 
 - **I2S firmware ≥ v1.0.9**, host at **16 kHz, stereo, 32-bit** samples; the host reads the
   left channel (both I2S output channels carry ASR beam 0) and downshifts 32 → 16 bit for
@@ -453,6 +455,15 @@ The Python simulator already speaks this contract; the firmware does not exist y
   does.
 - The browser client has not yet been validated end-to-end against a live backend; the
   socket contract itself is proven by `smoke_09`.
+- **The first turn of a session has nothing to bias its language detection.** `_stt_bias()`
+  returns `_last_lang`, which is empty until a turn has finished, so turn one sends no
+  `language` at all and the provider auto-detects from a few seconds of audio. English
+  containing a Portuguese cognate ("Brasil") in a Brazilian accent was decoded as Portuguese;
+  because Whisper is one multilingual model, forcing a language produces a fluent translation
+  rather than gibberish, so the transcript looked plausible and every later stage followed it.
+  The misdetection then **sticks for the whole session**, since the next turn is hinted with
+  it. Seeding the first turn's hint from the stored language preference — step 3 of
+  `resolve_lang`'s chain, still a stub until M13 — closes it.
 - **Chunk seams are audible.** Each chunk is a separate TTS request, so the reply has a
   prosodic seam wherever it was cut. Clause breaks turn that into a plausible pause, but the
   one after the opening chunk is still noticeable — see the latency section for the mechanism

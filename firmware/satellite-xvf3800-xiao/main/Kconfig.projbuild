@@ -1,0 +1,34 @@
+menu "Satellite"
+
+    config SATELLITE_WIFI_SSID
+        string "Wi-Fi SSID"
+        default ""
+        help
+            The 2.4 GHz network the satellite joins. The ESP32-S3 has no
+            5 GHz radio, so a 5 GHz-only SSID simply never appears in a scan.
+
+    config SATELLITE_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+        help
+            Empty means an open network. WPA2 or newer is used otherwise.
+
+    config SATELLITE_SERVER_URI
+        string "Voice WebSocket URI"
+        default "ws://192.168.1.10:8000/ws/voice"
+        help
+            The voice socket, without the API key: the firmware appends
+            ?api_key= itself. A development server listens on 8000; the
+            deployed stack publishes the socket through nginx on 8080.
+            Plain ws:// only, because the deployment terminates no TLS for
+            LAN devices.
+
+    config SATELLITE_API_KEY
+        string "Shared API key"
+        default ""
+        help
+            The value of ASSISTANT_API_KEY on the server. It is stored in
+            sdkconfig, which is gitignored, so it never reaches the repository.
+            A device with a wrong key is refused with close code 1008.
+
+endmenu
