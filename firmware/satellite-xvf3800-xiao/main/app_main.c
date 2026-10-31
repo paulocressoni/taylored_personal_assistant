@@ -37,24 +37,20 @@ static const char *TAG = "sat";
 /* Independent of the poll rate: the heartbeat stays at one line every 5 s. */
 #define HEARTBEAT_MS 5000
 
-/* One peak reading per second: 50 frames of 20 ms. */
-#define PEAK_FRAMES_PER_LOG 50
+/* One counter line per second: 50 frames of 20 ms. */
+#define AUDIO_FRAMES_PER_LOG 50
 
 /* Frames read and discarded after starting, so the first measurement does not
  * include data captured before the XVF3800's clocks settled. */
 #define STARTUP_DRAIN_FRAMES 5
 
 /*
- * Frame buffers live in .bss, not on the task stack. Three 640-byte arrays do
- * not fit comfortably in a small stack, and FreeRTOS task stacks are
- * deliberately modest: only this task touches these, so a static buffer is
- * both safer and cheaper.
- *
- * s_silence needs no initialiser: .bss is zero-filled at startup.
+ * Frame buffers live in .bss, not on the task stack: two 640-byte arrays plus
+ * the socket call do not fit comfortably in a modest FreeRTOS stack, and only
+ * this task touches them.
  */
 static int16_t s_frame_left[AUDIO_FRAME_SAMPLES];
 static int16_t s_frame_right[AUDIO_FRAME_SAMPLES];
-static int16_t s_silence[AUDIO_FRAME_SAMPLES];
 
 /*
  * Capture runs in its own task because an I2S read blocks until the DMA buffer
@@ -63,53 +59,43 @@ static int16_t s_silence[AUDIO_FRAME_SAMPLES];
  * that cannot slip.
  */
 static void capture_task(void *arg) {
-    int peak_left = 0;
-    int peak_right = 0;
-    int frames = 0;
-    int errors = 0;
+    uint32_t sent = 0;
+    uint32_t dropped = 0;
+    uint32_t errors = 0;
+    uint32_t frames = 0;
 
     /* The receive DMA can hold data from before the XVF3800's clocks settled,
      * which shows up as a full-scale burst in the first reading. Drain those
-     * frames before measuring anything. */
+     * frames before sending anything. */
     for (int i = 0; i < STARTUP_DRAIN_FRAMES; i++) {
         audio_read(s_frame_left, s_frame_right, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100));
     }
 
     for (;;) {
-        /* This task is the only writer on the transmit channel. Until audio
-         * is streamed from the server, silence keeps the shared clock fed and
-         * gives the DSP a far-end reference to cancel against. */
-        audio_write(s_silence, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100));
-
+        /* The transmit side is fed from the receive path in the step that adds
+         * playback. Until then the transmit DMA underruns into silence, which
+         * is the far-end reference the echo canceller expects. */
         if (audio_read(s_frame_left, s_frame_right, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100)) !=
             ESP_OK) {
             errors++;
+        } else if (satellite_send_audio(s_frame_left, AUDIO_FRAME_SAMPLES)) {
+            sent++;
         } else {
-            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
-                const int l = s_frame_left[i] < 0 ? -s_frame_left[i] : s_frame_left[i];
-                const int r = s_frame_right[i] < 0 ? -s_frame_right[i] : s_frame_right[i];
-                if (l > peak_left) {
-                    peak_left = l;
-                }
-                if (r > peak_right) {
-                    peak_right = r;
-                }
-            }
+            dropped++;
         }
 
-        if (++frames >= PEAK_FRAMES_PER_LOG) {
-            /* Both channels carry the same ASR beam, so the two numbers should
-             * track each other; a large difference means the slots are read or
-             * clocked wrongly. The stack figure is the smallest number of
-             * bytes that were ever free, so it is measured headroom rather
-             * than an estimate. */
-            ESP_LOGI(TAG, "mic peak L=%d R=%d (%d frames, %d errors, stack free %u bytes)",
-                     peak_left, peak_right, frames, errors,
+        if (++frames >= AUDIO_FRAMES_PER_LOG) {
+            /* Drops matter more than they look: a dropped frame is 20 ms of
+             * speech the server never heard, and the endpointer counts real
+             * time, so the transcript degrades quietly. The stack figure is
+             * measured headroom, not an estimate. */
+            ESP_LOGI(TAG, "audio sent=%u dropped=%u errors=%u (stack free %u bytes)",
+                     (unsigned)sent, (unsigned)dropped, (unsigned)errors,
                      (unsigned)uxTaskGetStackHighWaterMark(NULL));
-            peak_left = 0;
-            peak_right = 0;
-            frames = 0;
+            sent = 0;
+            dropped = 0;
             errors = 0;
+            frames = 0;
         }
     }
 }
@@ -173,11 +159,9 @@ void app_main(void) {
      * with backoff, and keeps the session alive between turns. */
     satellite_start();
 
-    /* Mute is a latch: one press mutes, the next unmutes. That is what the
-     * hardware button on a voice assistant means, and it is what this
-     * firmware has to implement itself now that MUTE_FUNCTION_ENABLE=0 has
-     * made the button a pure event. */
-    bool muted = false;
+    /* The mute latch lives in the satellite module, because it is the audio
+     * path that has to honour it; this loop only drives the button and the
+     * LED. */
 
     /* Debounce state. A mechanical button bounces for a few milliseconds, and
      * the XVF3800's own reading can be stale for the first moments after
@@ -206,9 +190,10 @@ void app_main(void) {
             if (stable_polls >= MUTE_STABLE_POLLS && stable != observed) {
                 stable = observed;
                 if (stable) {
-                    muted = !muted;
+                    const bool muted = satellite_toggle_mute();
                     ESP_LOGI(TAG, "mute %s", muted ? "on" : "off");
-                    leds_set(muted ? LED_STATE_MUTED : LED_STATE_IDLE);
+                    leds_set(muted ? LED_STATE_MUTED
+                                   : (satellite_is_ready() ? LED_STATE_LISTENING : LED_STATE_IDLE));
                 }
             }
         }
@@ -219,7 +204,7 @@ void app_main(void) {
         if (now_ms >= next_heartbeat_ms) {
             next_heartbeat_ms = now_ms + HEARTBEAT_MS;
             ESP_LOGI(TAG, "heartbeat: %s%s%s", wifi_is_connected() ? "online" : "offline",
-                     satellite_is_ready() ? " ready" : "", muted ? " (muted)" : "");
+                     satellite_is_ready() ? " ready" : "", satellite_is_muted() ? " (muted)" : "");
         }
 
         vTaskDelay(pdMS_TO_TICKS(MUTE_POLL_MS));

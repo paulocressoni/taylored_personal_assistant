@@ -30,3 +30,12 @@ bool ws_is_connected(void);
  * @return true when it was queued; false when the socket is down.
  */
 bool ws_send_text(const char *text);
+
+/**
+ * Send one frame of captured audio as a binary message.
+ *
+ * @param samples Mono PCM at 16 kHz; sent unchanged, with no encoding.
+ * @param count   Number of samples.
+ * @return true when the frame was accepted by the transport.
+ */
+bool ws_send_audio(const int16_t *samples, size_t count);

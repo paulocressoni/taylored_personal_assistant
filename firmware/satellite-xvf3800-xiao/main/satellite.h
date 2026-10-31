@@ -21,7 +21,27 @@ void satellite_start(void);
 /** Report the session state: the server has acknowledged the start frame. */
 bool satellite_is_ready(void);
 
+/**
+ * Send one frame of microphone audio to the server.
+ *
+ * Does nothing until the session is ready. While muted the frame is replaced
+ * with silence rather than skipped, so the socket stays alive and the server's
+ * endpointer hears nothing to trigger on.
+ *
+ * @param samples Mono PCM at 16 kHz.
+ * @param count   Number of samples.
+ * @return true when the frame was sent.
+ */
+bool satellite_send_audio(const int16_t *samples, size_t count);
+
+/** Flip the mute latch and return the new state. */
+bool satellite_toggle_mute(void);
+
+/** Report whether the microphone is muted. */
+bool satellite_is_muted(void);
+
 /* Called by the WebSocket client, from its own task. */
 void satellite_on_ws_connected(void);
 void satellite_on_ws_text(const char *json, size_t len);
+void satellite_on_ws_binary(const uint8_t *data, size_t len);
 void satellite_on_ws_down(void);

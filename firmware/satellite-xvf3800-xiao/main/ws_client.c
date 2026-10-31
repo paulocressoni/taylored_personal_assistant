@@ -130,8 +130,10 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
             if (data == NULL) {
                 break;
             }
-            /* 0x01 is a text frame; 0x02 binary, which the next step uses. */
-            if (data->op_code == 0x01) {
+            /* 0x01 is a text frame; 0x02 is the answer's audio. */
+            if (data->op_code == 0x02) {
+                satellite_on_ws_binary((const uint8_t *)data->data_ptr, (size_t)data->data_len);
+            } else if (data->op_code == 0x01) {
                 if (data->payload_offset == 0) {
                     s_text_len = 0;
                 }
@@ -254,6 +256,25 @@ bool ws_is_connected(void) {
     const bool connected = s_client != NULL && esp_websocket_client_is_connected(s_client);
     xSemaphoreGive(s_lock);
     return connected;
+}
+
+bool ws_send_audio(const int16_t *samples, size_t count) {
+    /* A short timeout on purpose: this is called from the audio task every
+     * 20 ms, and waiting on a stalled socket would delay the next capture and
+     * overflow the receive DMA. A dropped frame is far cheaper than a stalled
+     * audio clock. */
+    if (s_lock == NULL || xSemaphoreTake(s_lock, pdMS_TO_TICKS(5)) != pdTRUE) {
+        return false;
+    }
+
+    bool sent = false;
+    if (s_client != NULL && esp_websocket_client_is_connected(s_client)) {
+        const int bytes = (int)(count * sizeof(int16_t));
+        sent = esp_websocket_client_send_bin(s_client, (const char *)samples, bytes,
+                                             pdMS_TO_TICKS(20)) == bytes;
+    }
+    xSemaphoreGive(s_lock);
+    return sent;
 }
 
 bool ws_send_text(const char *text) {
