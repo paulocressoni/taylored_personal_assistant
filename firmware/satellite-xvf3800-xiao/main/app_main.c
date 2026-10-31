@@ -2,8 +2,8 @@
  * app_main.c — the entry point of the satellite firmware.
  *
  * ESP-IDF calls app_main() once, after the chip has booted and the FreeRTOS
- * scheduler is running. At this step the firmware brings up the XVF3800 over
- * I2C, takes over its LED ring, and reports the mute button.
+ * scheduler is running. At this step the firmware also opens the I2S audio
+ * port and measures what the microphones deliver.
  */
 
 #include "esp_err.h"
@@ -12,6 +12,7 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "audio_i2s.h"
 #include "leds.h"
 #include "wifi.h"
 #include "xvf_control.h"
@@ -33,6 +34,59 @@ static const char *TAG = "sat";
 
 /* Independent of the poll rate: the heartbeat stays at one line every 5 s. */
 #define HEARTBEAT_MS 5000
+
+/* One peak reading per second: 50 frames of 20 ms. */
+#define PEAK_FRAMES_PER_LOG 50
+
+/*
+ * Capture runs in its own task because an I2S read blocks until the DMA buffer
+ * has data. Sharing the main loop with the mute poll would either delay the
+ * audio or make the button miss presses, and the audio deadline is the one
+ * that cannot slip.
+ */
+static void capture_task(void *arg) {
+    int16_t left[AUDIO_FRAME_SAMPLES];
+    int16_t right[AUDIO_FRAME_SAMPLES];
+    const int16_t silence[AUDIO_FRAME_SAMPLES] = {0};
+
+    int peak_left = 0;
+    int peak_right = 0;
+    int frames = 0;
+    int errors = 0;
+
+    for (;;) {
+        /* The speaker path is idle until playback exists; writing silence
+         * keeps the shared clock fed and gives the DSP a far-end reference. */
+        audio_write(silence, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100));
+
+        if (audio_read(left, right, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100)) != ESP_OK) {
+            errors++;
+        } else {
+            for (size_t i = 0; i < AUDIO_FRAME_SAMPLES; i++) {
+                const int l = left[i] < 0 ? -left[i] : left[i];
+                const int r = right[i] < 0 ? -right[i] : right[i];
+                if (l > peak_left) {
+                    peak_left = l;
+                }
+                if (r > peak_right) {
+                    peak_right = r;
+                }
+            }
+        }
+
+        if (++frames >= PEAK_FRAMES_PER_LOG) {
+            /* Both channels carry the same ASR beam, so the two numbers should
+             * track each other; a large difference means the slots are read or
+             * clocked wrongly. */
+            ESP_LOGI(TAG, "mic peak L=%d R=%d (%d frames, %d errors)", peak_left, peak_right,
+                     frames, errors);
+            peak_left = 0;
+            peak_right = 0;
+            frames = 0;
+            errors = 0;
+        }
+    }
+}
 
 void app_main(void) {
     /* The Wi-Fi driver keeps calibration data in NVS and refuses to start
@@ -71,6 +125,13 @@ void app_main(void) {
 
     leds_init();
     leds_set(LED_STATE_IDLE);
+
+    err = audio_init();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "I2S unavailable: %s", esp_err_to_name(err));
+    } else {
+        xTaskCreatePinnedToCore(capture_task, "capture", 4096, NULL, 10, NULL, 1);
+    }
 
     err = wifi_start();
     if (err != ESP_OK) {

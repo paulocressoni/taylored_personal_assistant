@@ -9,6 +9,7 @@ idf_component_register(
         "wifi.c"
         "xvf_control.c"
         "leds.c"
+        "audio_i2s.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         esp_common
@@ -20,4 +21,5 @@ idf_component_register(
         esp_timer
         esp_driver_i2c
         esp_driver_gpio
+        esp_driver_i2s
 )

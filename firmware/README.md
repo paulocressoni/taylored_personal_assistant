@@ -14,7 +14,7 @@ Two buses connect them:
 | Bus | Pins | Carries |
 |---|---|---|
 | I2C | SDA GPIO5, SCL GPIO6, address `0x2C` | control: version, LEDs, amplifier, mute |
-| I2S | BCLK GPIO8, WS GPIO7, MCLK GPIO9, DIN GPIO43, DOUT GPIO44 | audio: 16 kHz, 32-bit, stereo |
+| I2S | BCLK GPIO8, WS GPIO7, DIN GPIO43, DOUT GPIO44 (MCLK unused) | audio: 16 kHz, 32-bit stereo |
 
 The ESP32 is the I2S **master**; the XVF3800 runs the I2S **slave** image and
 receives the clocks. Nothing is resampled anywhere: the server contract is
