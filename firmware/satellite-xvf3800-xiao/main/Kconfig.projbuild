@@ -13,4 +13,22 @@ menu "Satellite"
         help
             Empty means an open network. WPA2 or newer is used otherwise.
 
+    config SATELLITE_SERVER_URI
+        string "Voice WebSocket URI"
+        default "ws://192.168.1.10:8000/ws/voice"
+        help
+            The voice socket, without the API key: the firmware appends
+            ?api_key= itself. A development server listens on 8000; the
+            deployed stack publishes the socket through nginx on 8080.
+            Plain ws:// only, because the deployment terminates no TLS for
+            LAN devices.
+
+    config SATELLITE_API_KEY
+        string "Shared API key"
+        default ""
+        help
+            The value of ASSISTANT_API_KEY on the server. It is stored in
+            sdkconfig, which is gitignored, so it never reaches the repository.
+            A device with a wrong key is refused with close code 1008.
+
 endmenu
