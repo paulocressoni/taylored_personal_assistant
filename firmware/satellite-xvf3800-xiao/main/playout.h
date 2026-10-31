@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -34,12 +35,25 @@ size_t playout_write(const int16_t *samples, size_t count);
  *
  * Always fills the buffer: anything missing is filled with silence, so the
  * audio clock keeps running and an empty ring is silent rather than a stall.
+ * Playback only begins once a prebuffer has accumulated, so gaps between the
+ * server's sentence-sized bursts are ridden out instead of heard.
  *
  * @param out   Destination, `count` samples.
  * @param count Number of samples wanted.
  * @return How many samples were real audio; the rest were silence.
  */
 size_t playout_read(int16_t *out, size_t count);
+
+/**
+ * Whether the ring is currently being drained.
+ *
+ * False while it is still filling towards the prebuffer and again after it has
+ * run dry, so a caller counting underruns can tell a real gap in an answer from
+ * one that has simply not started yet.
+ *
+ * @return true when `playout_read` is handing out real audio.
+ */
+bool playout_is_playing(void);
 
 /** Discard everything buffered. This is the barge-in signal. */
 void playout_flush(void);

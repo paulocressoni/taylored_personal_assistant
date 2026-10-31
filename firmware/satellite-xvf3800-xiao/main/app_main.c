@@ -108,9 +108,14 @@ static void playout_task(void *arg) {
     for (;;) {
         /* Always writes a full frame. An empty ring yields silence, so the
          * clock never stops and an idle speaker is quiet rather than clicking. */
-        if (playout_read(s_frame_out, AUDIO_FRAME_SAMPLES) < AUDIO_FRAME_SAMPLES) {
-            /* A partial frame is normal at the end of an answer; satellite.c
-             * decides whether this one was a fault. */
+        const bool was_playing = playout_is_playing();
+        const size_t got = playout_read(s_frame_out, AUDIO_FRAME_SAMPLES);
+        if (was_playing && got < AUDIO_FRAME_SAMPLES) {
+            /* Only a ring that ran dry mid-answer is a fault; one that has not
+             * started yet is just waiting for the prebuffer, and satellite.c
+             * decides whether the answer is still in flight. */
+            ESP_LOGW(TAG, "playout ran dry after %u of %u samples", (unsigned)got,
+                     (unsigned)AUDIO_FRAME_SAMPLES);
             satellite_note_audio_shortfall();
         }
         audio_write(s_frame_out, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100));
