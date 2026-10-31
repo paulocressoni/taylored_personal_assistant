@@ -12,6 +12,7 @@ idf_component_register(
         "audio_i2s.c"
         "ws_client.c"
         "satellite.c"
+        "playout.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         esp_common

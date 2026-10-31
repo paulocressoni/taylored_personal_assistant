@@ -15,6 +15,7 @@
 
 #include "audio_i2s.h"
 #include "leds.h"
+#include "playout.h"
 #include "satellite.h"
 #include "wifi.h"
 #include "xvf_control.h"
@@ -51,6 +52,23 @@ static const char *TAG = "sat";
  */
 static int16_t s_frame_left[AUDIO_FRAME_SAMPLES];
 static int16_t s_frame_right[AUDIO_FRAME_SAMPLES];
+static int16_t s_frame_out[AUDIO_FRAME_SAMPLES];
+
+/*
+ * The playout task is the only writer on the transmit channel. It runs on its
+ * own 20 ms cadence, driven by the I2S clock, and stays completely independent
+ * of the network: the ring absorbs the server's bursts and this task drains it
+ * at exactly the rate the speaker consumes. That decoupling is what stops
+ * network jitter from becoming an audible stutter.
+ */
+static void playout_task(void *arg) {
+    for (;;) {
+        /* Always writes a full frame. An empty ring yields silence, so the
+         * clock never stops and an idle speaker is quiet rather than clicking. */
+        playout_read(s_frame_out, AUDIO_FRAME_SAMPLES);
+        audio_write(s_frame_out, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100));
+    }
+}
 
 /*
  * Capture runs in its own task because an I2S read blocks until the DMA buffer
@@ -72,9 +90,6 @@ static void capture_task(void *arg) {
     }
 
     for (;;) {
-        /* The transmit side is fed from the receive path in the step that adds
-         * playback. Until then the transmit DMA underruns into silence, which
-         * is the far-end reference the echo canceller expects. */
         if (audio_read(s_frame_left, s_frame_right, AUDIO_FRAME_SAMPLES, pdMS_TO_TICKS(100)) !=
             ESP_OK) {
             errors++;
@@ -142,6 +157,15 @@ void app_main(void) {
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "I2S unavailable: %s", esp_err_to_name(err));
     } else {
+        /* Playback is optional: without a ring the device is still a working
+         * microphone, so a failure here is reported and not fatal. */
+        if (playout_init() == ESP_OK) {
+            if (xTaskCreatePinnedToCore(playout_task, "playout", 4096, NULL, 11, NULL, 1) !=
+                pdPASS) {
+                ESP_LOGE(TAG, "could not start the playout task");
+            }
+        }
+
         /* 8192 bytes is measured, not guessed: the high-water mark logged each
          * second reports the real margin. A create failure is reported rather
          * than ignored, because without this task the device is deaf. */

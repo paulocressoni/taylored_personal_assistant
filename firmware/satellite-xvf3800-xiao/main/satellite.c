@@ -12,6 +12,7 @@
 
 #include "audio_i2s.h"
 #include "leds.h"
+#include "playout.h"
 #include "wifi.h"
 #include "ws_client.h"
 
@@ -32,6 +33,9 @@ static const char *TAG = "sat";
 #define RECONNECT_MIN_MS 1000
 #define RECONNECT_MAX_MS 30000
 
+/* How often the playout counters are reported. */
+#define STATS_MS 60000
+
 /* Session state: the server acknowledged the start frame. */
 static volatile bool s_ready;
 
@@ -45,6 +49,11 @@ static volatile size_t s_reply_bytes;
 /* When the uplink last carried something, so the keepalive can stay quiet. */
 static volatile int64_t s_last_uplink_ms;
 
+/* Set when the server says the answer is complete. The LED returns to listening
+ * once the ring has actually drained, not when the last frame arrives: the
+ * speaker may still be several seconds behind. */
+static volatile bool s_audio_end_pending;
+
 /* Transport ownership: an event handler must never tear the client down,
  * because it runs inside the client's own task and the teardown would wait for
  * that task to end. It records the drop instead; the supervisor acts on it. */
@@ -52,6 +61,7 @@ static volatile bool s_down;
 static bool s_armed;
 static uint32_t s_wait_ms = RECONNECT_MIN_MS;
 static int64_t s_retry_at_ms;
+static int64_t s_next_stats_ms;
 
 static int64_t now_ms(void) {
     return esp_timer_get_time() / 1000;
@@ -124,10 +134,19 @@ void satellite_on_ws_text(const char *json, size_t len) {
             ESP_LOGI(TAG, "heard: %s", text->valuestring);
         }
         leds_set(LED_STATE_THINKING);
+    } else if (strcmp(type->valuestring, "speech_start") == 0) {
+        /* Barge-in. The server heard the user start talking, so everything
+         * still queued for the speaker is already obsolete: discard it now so
+         * the ring does not talk over them. */
+        playout_flush();
+        s_audio_end_pending = false;
+        leds_set(s_muted ? LED_STATE_MUTED : LED_STATE_LISTENING);
     } else if (strcmp(type->valuestring, "audio_end") == 0) {
         ESP_LOGI(TAG, "reply audio: %u bytes", (unsigned)s_reply_bytes);
         s_reply_bytes = 0;
-        leds_set(s_muted ? LED_STATE_MUTED : LED_STATE_LISTENING);
+        /* Not idle yet: the ring may still hold seconds of speech. The
+         * supervisor flips the LED once it is empty. */
+        s_audio_end_pending = true;
     } else if (strcmp(type->valuestring, "error") == 0) {
         const cJSON *detail = cJSON_GetObjectItemCaseSensitive(root, "detail");
         ESP_LOGE(TAG, "server error: %s", cJSON_IsString(detail) ? detail->valuestring : "unknown");
@@ -139,9 +158,30 @@ void satellite_on_ws_text(const char *json, size_t len) {
 }
 
 void satellite_on_ws_binary(const uint8_t *data, size_t len) {
-    /* The answer's audio. Playing it is the next step; for now the byte count
-     * proves the server's speech came back over the same socket. */
+    static int16_t pcm[AUDIO_FRAME_SAMPLES];
+    size_t offset = 0;
+
+    /* The wire format is little-endian signed 16-bit, which is the ESP32's
+     * native layout, so copying the bytes into an int16_t array is the whole
+     * conversion. Copied rather than cast because `data` has no alignment
+     * guarantee, and an unaligned 16-bit load traps on some cores. */
+    while (offset + sizeof(int16_t) <= len) {
+        size_t bytes = len - offset;
+        if (bytes > sizeof(pcm)) {
+            bytes = sizeof(pcm);
+        }
+        const size_t samples = bytes / sizeof(int16_t);
+        memcpy(pcm, data + offset, samples * sizeof(int16_t));
+
+        /* Silently drops what does not fit. A truncated answer is a much
+         * smaller problem than blocking the socket task. */
+        playout_write(pcm, samples);
+        offset += samples * sizeof(int16_t);
+    }
+
     s_reply_bytes += len;
+    s_audio_end_pending = false;
+    leds_set(s_muted ? LED_STATE_MUTED : LED_STATE_SPEAKING);
 }
 
 void satellite_on_ws_down(void) {
@@ -150,6 +190,8 @@ void satellite_on_ws_down(void) {
     }
     s_ready = false;
     s_down = true;
+    s_audio_end_pending = false;
+    playout_flush();
     leds_set(LED_STATE_IDLE);
 }
 
@@ -195,6 +237,19 @@ static void supervisor_task(void *arg) {
             if (!ws_send_text("{\"type\":\"keepalive\"}")) {
                 ESP_LOGW(TAG, "keepalive failed");
             }
+        }
+
+        /* Audio faults are invisible to the listener beyond "it stuttered",
+         * so they are counted and reported once a minute. */
+        if (now >= s_next_stats_ms) {
+            s_next_stats_ms = now + STATS_MS;
+            playout_log_stats();
+        }
+
+        /* The answer has been fully delivered and fully played. */
+        if (s_audio_end_pending && playout_level() == 0) {
+            s_audio_end_pending = false;
+            leds_set(s_muted ? LED_STATE_MUTED : LED_STATE_LISTENING);
         }
 
         vTaskDelay(pdMS_TO_TICKS(SUPERVISOR_POLL_MS));
