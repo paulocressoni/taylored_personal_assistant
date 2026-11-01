@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_websocket_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -21,6 +22,49 @@ static SemaphoreHandle_t s_lock;
 static esp_websocket_client_handle_t s_client;
 static char s_text[WS_TEXT_MAX];
 static size_t s_text_len;
+
+/* When the current session was established, and whether its ending has been
+ * reported yet. A teardown raises more than one event -- an error is followed
+ * by a disconnect -- and each would otherwise count as a separate lost
+ * session. */
+static int64_t s_connected_ms;
+static bool s_end_reported;
+
+static const char *error_type_name(esp_websocket_error_type_t type) {
+    switch (type) {
+        case WEBSOCKET_ERROR_TYPE_NONE:
+            return "none";
+        case WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT:
+            return "tcp transport";
+        case WEBSOCKET_ERROR_TYPE_PONG_TIMEOUT:
+            return "pong timeout";
+        case WEBSOCKET_ERROR_TYPE_HANDSHAKE:
+            return "handshake";
+        case WEBSOCKET_ERROR_TYPE_SERVER_CLOSE:
+            return "server close";
+        default:
+            return "unknown";
+    }
+}
+
+/* Log how long the session lived. A regular 1800 s pattern in this number
+ * names the culprit faster than any server-side forensics: it separates "the
+ * network is flaky" from "something on the path kills a connection every half
+ * hour", which are fixed in completely different places. */
+static void report_session_end(const char *how) {
+    if (s_end_reported) {
+        return;
+    }
+    s_end_reported = true;
+    if (s_connected_ms == 0) {
+        ESP_LOGW(TAG, "session ended before it was established (%s)", how);
+        return;
+    }
+    /* Both sides in milliseconds: esp_timer_get_time() is microseconds, and
+     * mixing the two silently yields the uptime instead of the duration. */
+    const long long lived_s = (long long)((esp_timer_get_time() / 1000 - s_connected_ms) / 1000);
+    ESP_LOGW(TAG, "session ended after %lld s (%s)", lived_s, how);
+}
 
 /* Percent-encode anything that is not unreserved in a URI (RFC 3986), so an
  * API key containing '+', '/' or '=' survives the query string. */
@@ -100,11 +144,26 @@ static void handle_close(uint16_t code) {
     /* 1008 is policy: a wrong key, or voice switched off on the server.
      * Retrying will not fix it, so it is worth saying so plainly. */
     switch (code) {
-        case 1008:
-            ESP_LOGE(TAG, "server refused the session (1008): check the API key and VOICE_ENABLED");
+        case 1000:
+            ESP_LOGI(TAG, "server closed normally (1000)");
+            break;
+        case 1001:
+            ESP_LOGW(TAG, "server is going away (1001): shutting down or reloading");
             break;
         case 1003:
             ESP_LOGE(TAG, "server rejected the start frame (1003)");
+            break;
+        case 1006:
+            ESP_LOGW(TAG, "connection lost without a close frame (1006)");
+            break;
+        case 1008:
+            ESP_LOGE(TAG, "server refused the session (1008): check the API key and VOICE_ENABLED");
+            break;
+        case 1011:
+            /* The reference server sends this when its side of the WebSocket
+             * keepalive times out, which means it stopped hearing from us --
+             * a stalled uplink, not a rejected session. */
+            ESP_LOGE(TAG, "server reported an internal error (1011): often a keepalive timeout");
             break;
         case 1013:
             ESP_LOGW(TAG, "server is busy or rate limiting (1013)");
@@ -122,6 +181,8 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     switch (id) {
         case WEBSOCKET_EVENT_CONNECTED:
             ESP_LOGI(TAG, "connected");
+            s_connected_ms = esp_timer_get_time() / 1000;
+            s_end_reported = false;
             satellite_on_ws_connected();
             send_start_frame(client);
             break;
@@ -152,25 +213,41 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
 
         case WEBSOCKET_EVENT_CLOSED:
             /* A CLOSE frame arrives as this event, not as a DATA frame, but the
-             * event data still carries the RFC 6455 status code. */
+             * event data still carries the RFC 6455 status code. This client
+             * version exposes no reason string, so the code is all there is. */
             if (data != NULL) {
                 handle_close((uint16_t)data->close_status_code);
             }
+            report_session_end("close frame");
             satellite_on_ws_down();
             break;
 
-        case WEBSOCKET_EVENT_ERROR:
-            /* A failed HTTP upgrade is not a dropped session: the server never
-             * spoke WebSocket at all. The usual causes are a wrong host, a
-             * wrong port, or a key the proxy rejected. */
-            if (data != NULL && data->error_handle.error_type == WEBSOCKET_ERROR_TYPE_HANDSHAKE) {
+        case WEBSOCKET_EVENT_ERROR: {
+            /* The error type says which layer gave up, and that decides what to
+             * do about it: a transport error is the network path, a handshake
+             * error is the URI or the key, a pong timeout is a server that
+             * stopped answering. Only the transport and handshake events fill
+             * the rest of error_handle -- reading it for any other type prints
+             * uninitialised memory, which reads like a real errno and is not. */
+            const esp_websocket_error_type_t type =
+                data != NULL ? data->error_handle.error_type : WEBSOCKET_ERROR_TYPE_NONE;
+            if (type == WEBSOCKET_ERROR_TYPE_TCP_TRANSPORT) {
+                ESP_LOGW(TAG, "error: tcp transport (socket errno %d, esp_err 0x%x)",
+                         data->error_handle.esp_transport_sock_errno,
+                         (unsigned)data->error_handle.esp_tls_last_esp_err);
+            } else if (type == WEBSOCKET_ERROR_TYPE_HANDSHAKE) {
                 ESP_LOGE(TAG, "handshake failed (HTTP %d): check the URI and the API key",
                          data->error_handle.esp_ws_handshake_status_code);
+            } else {
+                ESP_LOGW(TAG, "error: %s", error_type_name(type));
             }
+            report_session_end(error_type_name(type));
             satellite_on_ws_down();
             break;
+        }
 
         case WEBSOCKET_EVENT_DISCONNECTED:
+            report_session_end("disconnected");
             satellite_on_ws_down();
             break;
 
