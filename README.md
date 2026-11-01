@@ -902,7 +902,10 @@ uv run python scripts/smoke_08_voice_pipeline.py --lang en
 
 `scripts/voice_latency.py` reports where the time actually goes (p50/p90 per stage), and
 [`docs/voice.md`](docs/voice.md) records the frame contract, the measured latency against
-the budget, and everything the ESP32/reSpeaker firmware will need. The traces a voice turn
+the budget, and everything the ESP32/reSpeaker firmware will need. The satellite itself — the
+ESP-IDF firmware, its toolchain, its task model and a troubleshooting catalogue — is documented
+in [`docs/satellite.md`](docs/satellite.md), with the pin map and bring-up results in
+[`firmware/README.md`](firmware/README.md). The traces a voice turn
 leaves behind — one `stt` span per turn, one `tts` span per sentence, six stage scalars on
 the trace root — are documented in [docs/observability.md](docs/observability.md), and the
 panels that read them (plus the barge-in rate no panel can show) in
@@ -931,5 +934,5 @@ the values that have to match in more than one place.
 | Conversation memory | LangGraph checkpointing — SQLite in dev, Postgres in prod (M11) | ✅ done |
 | Chat UI | Vite/React UI with WS token streaming and a multi-session sidebar (M10) | ✅ done |
 | Voice pipeline | Multilingual speech in/out: server-side VAD, Groq STT, sentence-streamed TTS, barge-in, per-stage timings (M29) | ✅ done |
-| Satellite appliance | reSpeaker XVF3800 + XIAO ESP32-S3 streaming to `WS /ws/voice`, with a server-side wake word | **Delivery 1 — in progress** |
+| Satellite appliance | reSpeaker XVF3800 + XIAO ESP32-S3 streaming to `WS /ws/voice`, with a server-side wake word | Firmware and wireless audio done ([docs/satellite.md](docs/satellite.md)); wake word next |
 | Skills, identity & memory | Settings (M13), time/weather (M14), device push (M15), permissions (M16), alarms (M17), calendar (M18), Spotify (M19), long-term memory (M20), evals (M21), speaker ID (M30) | not started |
