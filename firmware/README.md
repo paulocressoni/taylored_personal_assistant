@@ -154,6 +154,8 @@ which cost an hour of debugging twice before the animation was removed.
 | `ring full` | on event | never — the answer exceeded the ring |
 | `playout ran dry` | on event | only the final half-frame of an answer |
 | `session lost` / `radio is up, connecting now` | on event | a network outage, and its recovery |
+| `session ended after N s (…)` | on event | how long the lost session lived, and which layer gave up |
+| `error: tcp transport` / `error: none` | on event | `none` is a send that stalled past `network_timeout_ms`; the transport error follows it |
 
 `playout ran dry after 160 of 320 samples` at the end of an answer is the tail
 half-frame, not a fault. A shortfall in the *middle* of an answer is audible as
@@ -170,7 +172,25 @@ same LAN:
 | Barge-in: speaking over the answer stops it and starts a new turn | pass |
 | LED ring matches every state in the table above | pass |
 | Wi-Fi down 83 s, then restored | pass — session re-established without a power cycle, and the next utterance worked |
-| 24 h unattended soak, counters clean | _pending_ |
+| 19.7 h unattended soak | pass — `capture errors=0` and `uplink overflow=0` throughout, no crash or watchdog reset, stack high-water unchanged for the last 19.5 h, and no latency drift (first audio 2.2–6.4 s early, 2.2–3.9 s late) |
+| Spoken length fits the playout ring | **fails on long answers** — see below |
+
+Two things the soak found that the ad-hoc tests could not:
+
+- **A spoken answer over ~38 s is truncated.** The ring is 30 s and playback
+  drains it while it fills, so the real ceiling is about 38 seconds. Answer
+  lengths across 51 replies were 2.3 s minimum, 12.8 s median, 48.1 s maximum,
+  and exactly the six answers at or above 38 s hit `ring full`. Enlarging the
+  ring only hides this: the fix is a cap on what the server speaks, not more
+  buffer.
+- **Sessions die silently and often.** 185 sessions in 19.7 h, about one every
+  six minutes, with **zero Wi-Fi drops** logged: the radio never disassociated.
+  Every loss is a stalled send (`transport_poll_write` after
+  `network_timeout_ms`) with **no CLOSE frame from the server**, so the TCP flow
+  stopped being forwarded rather than being closed politely. Session lifetimes
+  ranged from 3 s to 1799 s with a hard ceiling at 30 minutes across two
+  independent datasets. Recovery costs about 1.2 s and always succeeded, so this
+  is a property of the network path, not of the firmware.
 
 End-to-end latency, first audio, is about 4.5 s on this hardware: ~0.27 s
 transcribe, ~2.5–2.8 s to the graph's first token, ~1.0–1.7 s to the first TTS
