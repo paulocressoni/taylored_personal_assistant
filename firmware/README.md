@@ -4,6 +4,11 @@ The satellite is the XIAO ESP32-S3 module seated on the reSpeaker XVF3800
 carrier. It captures audio and plays the spoken answer. Speech recognition, the
 model and speech synthesis all run on the server.
 
+This file is the reference: versions, pins, commands, log lines. For why any of
+it is the way it is — the toolchain from zero, the task model, the bugs behind
+each design choice, and a symptom→cause→fix catalogue — read
+[`docs/satellite.md`](../docs/satellite.md).
+
 | Part | Firmware | Role |
 |---|---|---|
 | XIAO ESP32-S3 | `satellite-xvf3800-xiao/` in this directory | Wi-Fi, WebSocket, state machine, LED policy |
@@ -82,23 +87,22 @@ supports both USB DFU and I2C DFU; that is "safe mode".
 
 ## Building and flashing the ESP32 side
 
-ESP-IDF v5.4 lives in `~/esp/esp-idf` and its tools in `~/.espressif`. The two
-`PATH` prefixes are not optional:
-
-- `~/.local/share/esp-idf-python` holds a `python3` symlink to 3.12. ESP-IDF
-  builds its virtualenv per Python minor version; if the system `python3` is
-  newer, `export.sh` looks for a virtualenv that does not exist and refuses to
-  run.
-- `~/.local/share/idf-build-tools/bin` holds `cmake` and `ninja` installed
-  without root.
+ESP-IDF v5.4 lives in `~/esp/esp-idf`. Load it into the current shell, then build:
 
 ```bash
 cd firmware/satellite-xvf3800-xiao
-export PATH="$HOME/.local/share/idf-build-tools/bin:$HOME/.local/share/esp-idf-python:$PATH"
-. ~/esp/esp-idf/export.sh
+source ../env.sh              # or the `esp-idf` function, see docs/satellite.md §3
 idf.py build
 idf.py -p /dev/ttyACM0 flash monitor
 ```
+
+`env.sh` validates the paths, prepends the two entries that must come first on
+`PATH` (a Python 3.12 shim, and `cmake`/`ninja` installed without root), and
+echoes where each piece came from. It must be **sourced**, not executed.
+
+Toolchain setup, the reason each `PATH` entry exists, the full `idf.py`
+reference and the monitor keys are in
+[`docs/satellite.md`](../docs/satellite.md) §3 and §4.
 
 The **XIAO** USB-C port is the one that flashes and prints the console. The
 **XMOS** port (next to the 3.5 mm jack) powers the whole board and is the one
@@ -160,6 +164,10 @@ which cost an hour of debugging twice before the animation was removed.
 `playout ran dry after 160 of 320 samples` at the end of an answer is the tail
 half-frame, not a fault. A shortfall in the *middle* of an answer is audible as
 a hole in the speech and means the ring emptied — raise `PLAYOUT_SECONDS`.
+
+For every other symptom encountered while building this, including the ones
+that look like firmware bugs but are not, see the catalogue in
+[`docs/satellite.md`](../docs/satellite.md) §8.
 
 ## Bring-up results
 
