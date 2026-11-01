@@ -519,6 +519,48 @@ is the sequence used here, and every step is reversible.
 Then the acceptance tests, which are about endurance rather than features: barge-in, Wi-Fi killed
 for 30 s, and a multi-hour soak (§9).
 
+### The device's identity
+
+Two identifiers matter, and they come from different chips:
+
+| Identifier | Where it comes from | Used for |
+|---|---|---|
+| `device_id`, e.g. `xiao-68ee8f511704` | the ESP32's Wi-Fi MAC address, read at boot and formatted as `xiao-` + 12 hex digits | the `start` frame, then the server's session id and every trace and log line |
+| XVF3800 DFU serial, e.g. `114993702262400687` | the audio chip, readable with `dfu-util -l` while in recovery | the physical board identity, if you ever need to distinguish two identical units |
+
+The MAC is stable across reflashes and reboots, which is what makes it usable as a key. Changing the
+board means changing the `device_id`, so a session's history does not silently continue under a new
+device. The firmware builds the `session_id` it sends in the start frame as `sat-<device_id>`
+(`ws_client.c`), and the server adopts it — that prefix is what keeps satellite sessions
+distinguishable from browser ones in the trace store.
+
+There is no pairing step and no per-device secret beyond the shared API key: the firmware carries
+the key from `menuconfig`, and any device holding it can open a voice session until
+`voice_max_sessions` limits are reached.
+
+### When it stops answering
+
+Work down this ladder; each rung rules out everything above it.
+
+1. **Look at the ring.** Blue = booted, no session. Green = session ready, so the fault is in the
+   audio path, not the network. Orange frozen = waiting for a reply that never came. Dark = no
+   power, or the firmware never started — check the console first.
+2. **Read the heartbeat.** `heartbeat: online ready` every 10 s means the socket is up. `offline`
+   means it is not, and the supervisor is already retrying; a `session lost` line above says why
+   (a close code) or that there was no close frame.
+3. **Read the capture lines.** `capture errors=0 (stack free N bytes)` with `N` constant is healthy.
+   Repeated errors mean I2S trouble; a falling `N` means a stack problem.
+4. **Check the server side.** `docker compose … logs backend` should show `voice session open` for
+   this device. No session at all means the device never reached the socket — go back to step 2.
+   A session that opens and closes repeatedly is the silent-TCP-death pattern (§9).
+5. **Check the key and the port together.** `unauthorized` / close `1008` means one of them is
+   wrong: 8080 is nginx and wants the production key, 8000 is uvicorn and wants the development key.
+6. **Check the network path.** Zero `wifi:state: run -> init` lines rules out the radio. If the
+   losses have no close frame, something in the path is dropping the flow; the router's TCP session
+   timeout is the first thing to look at.
+7. **Re-flash only after all of the above.** `idf.py app-flash` is the cheap test; a full
+   `erase-flash` also wipes NVS, which is only occasionally the culprit.
+
 ---
 
 ## 8. Troubleshooting catalogue
@@ -632,7 +674,8 @@ grep -c "playout ran dry"               ~/soak.log   # ~1 per answer: tail half-
 grep -E "uplink overflow"               ~/soak.log   # 0
 grep -E "capture errors"                ~/soak.log | tail -2   # errors=0, stack free flat
 grep -cE "Guru Meditation|abort\(\)"    ~/soak.log   # 0
-grep -c "session lost"                  ~/soak.log   # few, each followed by a reconnect
+grep -c "session lost"                  ~/soak.log   # every one must be followed by "ws: connected"
+grep -E "session ended after"           ~/soak.log   # how long each lost session lived
 ```
 
 The stack figure is the leak detector: a high-water mark only ever falls, so a constant value hours
