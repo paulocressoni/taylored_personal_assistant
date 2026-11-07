@@ -591,12 +591,33 @@ node --version                          # v24.x — pinned in frontend/.nvmrc
 **Linux/macOS:**
 
 ```bash
-nvm install 24.19.0         # the version pinned in frontend/.nvmrc
+# 1. Install nvm (Node version manager). Pinned tag — see
+#    https://github.com/nvm-sh/nvm/releases for a newer one.
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.41.0/install.sh | bash
+
+# The installer appends the loading lines to ~/.bashrc (or ~/.zshrc) but does not
+# touch the current shell, so load it now:
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm --version              # 0.41.0
+
+# 2. Install the pinned Node (frontend/.nvmrc → 24.19.0) and switch to it
+nvm install 24.19.0
 nvm use 24.19.0
-node --version              # v24.x
-# no nvm? NodeSource:  curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-#                      sudo apt install -y nodejs
+node --version             # v24.19.0
+npm --version              # 11.x
+
+# no nvm? system-wide alternative:
+#   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+#   sudo apt install -y nodejs
 ```
+
+> **Prefer not to pipe a script into `bash`?** Clone the same pinned tag instead, then add the
+> three `NVM_DIR` / `nvm.sh` / `bash_completion` lines from the
+> [nvm README](https://github.com/nvm-sh/nvm#install--update-script) to `~/.bashrc` yourself:
+> ```bash
+> git clone --depth 1 --branch v0.41.0 https://github.com/nvm-sh/nvm.git "$HOME/.nvm"
+> ```
 
 **Open a new terminal** after installing — the PATH only refreshes in new sessions.
 
@@ -1201,7 +1222,7 @@ The failures this walkthrough actually hits, in the order you meet them:
 | `RuntimeError: The ENV environment variable is required. Set ENV=dev or ENV=prod.` | `app/core/config.py` resolves `.env.{ENV}` before pydantic runs, so `ENV` must exist first — importing it in a bare `python -c`/`pytest`/`uvicorn` has none | bash: `ENV=dev uv run …` · PowerShell: `$env:ENV="dev"` first · or use the `make` targets, which set it |
 | `ValidationError … DEEPSEEK_API_KEY is required` / `… ASSISTANT_API_KEY is required` | `.env.dev` missing, empty, or still holding `REPLACE_ME` | fill the real values ([Step 3a](#3a-create-your-local-envdev-and-envprod-for-prod)), then re-run [Step 3c](#3c-verify-the-configuration-loads) |
 | `ValidationError … VOICE_STT_API_KEY` / `VOICE_TTS_API_KEY` | `VOICE_ENABLED=true` without both voice keys — voice is opt-in but fail-fast once enabled | comment `VOICE_ENABLED` out, or set both keys |
-| `npx: command not found` (exit 127) in the `frontend eslint` / `frontend prettier` pre-commit hooks | `git` runs hooks without your shell rc, so nvm's Node is not on PATH | hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`; also make sure `frontend/node_modules` exists (`cd frontend && npm ci`) |
+| `npx: command not found` (exit 127) in the `frontend eslint` / `frontend prettier` pre-commit hooks | Node (or nvm) is not installed — `git` runs hooks without your shell rc, so nvm's PATH never applies | install nvm + Node 24.19.0 ([Step 7a](#7a-install-node-one-time)); the hooks then resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`. Also ensure `frontend/node_modules` exists (`cd frontend && npm ci`) |
 | `permission denied … /run/docker.sock` although `id` lists the `docker` group | the session predates `usermod -aG docker` | log out and back in, or `newgrp docker` |
 | Compose: `required variable … is missing a value` / `APP_VERSION …` | the matching `--env-file` was not passed, or `APP_VERSION` is unset | use the `make` targets, or pass `--env-file infra/compose/.env.dev` (prod: `.env.prod`) |
 | Backend healthy but the UI says *"Authentication failed — check VITE_API_KEY"* | frontend `VITE_API_KEY` ≠ backend `ASSISTANT_API_KEY` | make them equal ([Step 7d](#7d-set-the-shared-api-key)); in prod the key is baked into the image |

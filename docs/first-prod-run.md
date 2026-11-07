@@ -96,12 +96,16 @@ uv run python -c "import app._version as v; print(v.__version__)"   # sanity che
 ### 2.2 Node 24 + npm — pinned to `frontend/.nvmrc`
 
 Ubuntu/Debian archives often ship an older Node than this repo accepts (`engines` requires
-`node >=24.19.0`, `npm >=11.17.0`). Use a version manager so `.nvmrc` is authoritative:
+`node >=24.19.0`, `npm >=11.17.0`). Use nvm so `.nvmrc` is authoritative — NodeSource is the
+fallback if the box must have a system-wide Node:
 
 ```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
-export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+# 1. nvm — pinned tag; newer releases: https://github.com/nvm-sh/nvm/releases
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.41.0/install.sh | bash
+export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"    # the installer edits ~/.bashrc, not this shell
+nvm --version                                        # 0.41.0
 
+# 2. Node from .nvmrc, then the locked dependencies
 cd frontend
 nvm install          # reads .nvmrc → 24.19.0, and switches to it
 nvm use
@@ -109,6 +113,9 @@ node -v && npm -v    # v24.19.0 / 11.x
 
 npm ci               # lockfile-exact install (never `npm install` for this)
 ```
+
+No-nvm alternative (system-wide, needs sudo): `curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -`
+then `sudo apt install -y nodejs`.
 
 ### 2.3 Pre-commit hooks
 
@@ -118,9 +125,9 @@ uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
 The hooks run `ruff`, `detect-secrets`, `commitizen` and the local frontend hooks. The frontend
-ones shell out to `npx eslint` / `npx prettier`, so **`node` must be on the PATH of the shell that
-runs `git commit`**. If `nvm` is only loaded in interactive shells, a hook run from a task or IDE
-fails with `npx: command not found`; run commits from a terminal where `nvm use` has been applied.
+ones run `eslint` / `prettier` through `frontend/scripts/precommit-node.sh`, which resolves
+`.nvmrc`'s Node under `~/.nvm` itself — `git commit` does not read your shell rc, so nvm's PATH
+setup is invisible to it. Node installed somewhere else? Put its `bin` directory on PATH.
 
 ### 2.4 The full gate, once
 
@@ -304,8 +311,8 @@ reboot" means *returns after the passphrase* — do not claim an unattended cold
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `npm: command not found` | Node not installed, or the shell predates the nvm install | §2.2, then open a new shell |
-| `npx: command not found` inside a git hook | The hook's shell has no nvm PATH | Commit from a terminal where `nvm use` ran |
+| `npm: command not found` | Node not installed, or the shell predates the nvm install | §2.2, then `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"` or open a new shell |
+| `npx: command not found` inside a git hook | Node is missing, or lives outside `~/.nvm` / `/usr/local/bin` / `/usr/bin` | §2.2; the hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`, otherwise put Node's `bin` dir on PATH |
 | `uv: command not found` | `~/.local/bin` not on PATH, or run from a non-interactive shell | `export PATH="$HOME/.local/bin:$PATH"` |
 | `permission denied ... /run/docker.sock` while `id` lists the group | Session predates `usermod -aG docker` | Log out and back in, or `newgrp docker` |
 | `pull access denied` / `unauthorized` on GHCR | You are pulling a **private** package (e.g. from your own fork) without a `read:packages` token — the published ones are public | §3 |

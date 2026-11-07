@@ -292,7 +292,8 @@ targeting this `device_id` fires.
   too). Node comes from `frontend/.nvmrc`.
 - **Node pinning:** `frontend/.nvmrc` (read by nvm/fnm and CI) + `engines` in
   `package.json` (declared requirement) + optional `engine-strict=true` in `.npmrc` to
-  turn warnings into errors.
+  turn warnings into errors. nvm itself is installed in [README Step 7a](../README.md#7a-install-node-one-time);
+  then `nvm install` from `frontend/` reads `.nvmrc`.
 
 ## Troubleshooting
 
@@ -302,5 +303,5 @@ targeting this `device_id` fires.
 | `src/api/types.ts` import fails | Run `npm run types` (backend must be up) |
 | "Connection failed — is the backend running on :8000?" | Backend not up, or the Vite proxy path changed — check `make dev-up` and `vite.config.ts` |
 | Two sockets open in dev tools | That's StrictMode's mount/unmount/remount — the cleanup closes the first; only real if the second one *stays open* |
-| Pre-commit frontend hooks fail with `npx: command not found` (exit 127) | Node is installed by nvm / a per-user prefix and `git`'s hook environment never reads your shell rc | The hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`; if Node lives elsewhere, put its `bin` dir on PATH. `make lint`-style terminal checks are unaffected |
+| Pre-commit frontend hooks fail with `npx: command not found` (exit 127) | Node (or nvm) is missing, or Node lives outside the prefixes the hook script probes | install nvm + Node per README Step 7a; the hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`, otherwise put Node's `bin` dir on PATH |
 | Pre-commit frontend hooks fail on Windows | Missing `bash` (need Git Bash) or missing `frontend/node_modules` (run `npm ci`) |
