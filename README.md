@@ -198,6 +198,7 @@ taylored_personal_assistant/
 | Python | 3.12 | Managed by `uv` (auto-downloaded if missing) |
 | Node.js | 24 (LTS) | Runs the frontend; pinned in `frontend/.nvmrc` |
 | npm | 11 | Bundled with Node — frontend package manager |
+| GNU Make | 3.81+ (any GNU make) | Runs the workflow targets (`make dev-up`, `make test`). Linux: `sudo apt install make` · macOS: `xcode-select --install` · Windows: WSL2 or Chocolatey — see [Step 1c](#1c-install-make-one-time) |
 | Docker | any recent | For the containerized backend (M07) — [install steps below](#docker-m07--containerized-backend); Windows uses Docker Desktop |
 | VS Code | any recent | With the extensions listed in [Step 4](#step-4--set-up-vs-code) |
 
@@ -234,8 +235,41 @@ Close and reopen your terminal so `uv` is on your PATH.
 
 ### 1b. Verify
 
-```powershell
+```
 uv --version
+```
+
+### 1c. Install `make` (one-time)
+
+`make` runs the repo's workflow targets — `make dev-up`, `make test`, `make lint`, `make prod-up`.
+The Makefile needs **GNU make** and a POSIX shell. Without it those targets fail with
+`make: command not found`; every target also has a direct shell equivalent (see the
+[Docker cheat sheet](docs/docker-cheatsheet.md) and the [command cheat sheet](#daily-command-cheat-sheet)), so it is convenient rather than mandatory.
+
+**Windows (PowerShell)** — `make` is **not** part of Git for Windows. Either run the targets from
+WSL2 (`sudo apt install make` inside the distro), or install a native GNU make:
+
+```powershell
+choco install make        # or: use the PowerShell equivalents instead
+```
+
+**Linux/macOS:**
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y make
+
+# Fedora / RHEL
+sudo dnf install -y make
+
+# macOS — the Xcode Command Line Tools ship GNU make
+xcode-select --install
+```
+
+Verify:
+
+```
+make --version            # GNU Make 3.81+ (4.x on Linux distros)
 ```
 
 ---
@@ -1224,6 +1258,7 @@ The failures this walkthrough actually hits, in the order you meet them:
 | `ValidationError … VOICE_STT_API_KEY` / `VOICE_TTS_API_KEY` | `VOICE_ENABLED=true` without both voice keys — voice is opt-in but fail-fast once enabled | comment `VOICE_ENABLED` out, or set both keys |
 | `npx: command not found` (exit 127) in the `frontend eslint` / `frontend prettier` pre-commit hooks | Node (or nvm) is not installed — `git` runs hooks without your shell rc, so nvm's PATH never applies | install nvm + Node 24.19.0 ([Step 7a](#7a-install-node-one-time)); the hooks then resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`. Also ensure `frontend/node_modules` exists (`cd frontend && npm ci`) |
 | `permission denied … /run/docker.sock` although `id` lists the `docker` group | the session predates `usermod -aG docker` | log out and back in, or `newgrp docker` |
+| `make: command not found` | GNU make is not installed (it is not part of Git for Windows, and minimal Ubuntu images lack it) | [Step 1c](#1c-install-make-one-time) — or use the direct shell equivalent of the target |
 | Compose: `required variable … is missing a value` / `APP_VERSION …` | the matching `--env-file` was not passed, or `APP_VERSION` is unset | use the `make` targets, or pass `--env-file infra/compose/.env.dev` (prod: `.env.prod`) |
 | Backend healthy but the UI says *"Authentication failed — check VITE_API_KEY"* | frontend `VITE_API_KEY` ≠ backend `ASSISTANT_API_KEY` | make them equal ([Step 7d](#7d-set-the-shared-api-key)); in prod the key is baked into the image |
 

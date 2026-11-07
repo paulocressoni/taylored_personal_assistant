@@ -52,9 +52,11 @@ Use URL-safe characters only — the key travels as a WebSocket query parameter
 | Ports | `8080` and `3000` free | `ss -tlnH \| grep -E ':(8080\|3000)$'` |
 
 Install Docker from Docker's own repository (never snap — strict confinement breaks host volume
-paths), then enable it at boot and add yourself to the group:
+paths), then enable it at boot and add yourself to the group. The same step installs the rest of
+the deploy toolchain the Makefile needs (`make`, `git`, `curl`, `ca-certificates`):
 
 ```bash
+sudo apt update && sudo apt install -y make git curl ca-certificates
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 ```

@@ -244,6 +244,10 @@ The Langfuse UI is at `http://<host>:3000` (port published by the prod overlay; 
 
 ### One command (Linux / macOS — `make`, repo root)
 
+GNU make is not installed by default on minimal Ubuntu images (`sudo apt install make`) or with
+Git for Windows (use WSL2 or Chocolatey; see [README Step 1c](../README.md#1c-install-make-one-time)).
+Every target below has a raw `docker compose` equivalent in the sections above.
+
 | Target | Purpose |
 |---|---|
 | `make dev-up` | **Full stack** incl. Langfuse (`up --build -d --wait`) |
