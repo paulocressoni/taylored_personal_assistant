@@ -47,7 +47,18 @@ frontend (M10/M11), voice devices (M29)).
 
 ## Running the server
 
+**Windows (PowerShell):**
+
 ```powershell
+# from the repo root
+cd backend
+$env:ENV="dev"
+uv run uvicorn app.main:app --reload
+```
+
+**Linux/macOS:**
+
+```bash
 # repo root — ENV defaults to dev, uvicorn --reload
 make dev-up
 
@@ -58,8 +69,16 @@ ENV=dev uv run uvicorn app.main:app --reload
 
 Then:
 
+**Windows (PowerShell):**
+
 ```powershell
 curl.exe http://localhost:8000/health        # -> {"status":"ok"}
+```
+
+**Linux/macOS:**
+
+```bash
+curl http://localhost:8000/health            # -> {"status":"ok"}
 ```
 
 Interactive docs (generated from the Pydantic schemas): `http://localhost:8000/docs`.
@@ -171,11 +190,22 @@ Response — `ChatResponse`:
 
 Example:
 
+**Windows (PowerShell):**
+
 ```powershell
 curl.exe -X POST http://localhost:8000/chat `
   -H "Content-Type: application/json" `
   -H "X-API-Key: <ASSISTANT_API_KEY>" `
   -d "{\`"session_id\`":\`"s1\`",\`"message\`":\`"hello\`"}"
+```
+
+**Linux/macOS:**
+
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <ASSISTANT_API_KEY>" \
+  -d '{"session_id":"s1","message":"hello"}'
 ```
 
 **How it works:** Pydantic validates the body at the boundary (a 422 is returned without
@@ -287,8 +317,17 @@ default `backend/checkpoints.db`, configurable via `CHECKPOINT_DB_PATH` in
 
 ### GET /sessions/{session_id}/history
 
+**Windows (PowerShell):**
+
 ```powershell
 curl.exe -H "X-API-Key: <ASSISTANT_API_KEY>" `
+  http://localhost:8000/sessions/demo/history
+```
+
+**Linux/macOS:**
+
+```bash
+curl -H "X-API-Key: <ASSISTANT_API_KEY>" \
   http://localhost:8000/sessions/demo/history
 ```
 
@@ -298,8 +337,17 @@ routes read the same store implicitly.
 
 ### DELETE /sessions/{session_id}
 
+**Windows (PowerShell):**
+
 ```powershell
 curl.exe -X DELETE http://localhost:8000/sessions/demo `
+  -H "X-API-Key: <ASSISTANT_API_KEY>"
+```
+
+**Linux/macOS:**
+
+```bash
+curl -X DELETE http://localhost:8000/sessions/demo \
   -H "X-API-Key: <ASSISTANT_API_KEY>"
 ```
 
@@ -379,7 +427,17 @@ own bound. Consequences:
 The lifespan still runs inside the `with TestClient(app)` context manager, so the real
 graph is compiled — but never called, because the fake replaces it before any request.
 
+**Windows (PowerShell):**
+
 ```powershell
+cd backend
+$env:ENV="dev"
+uv run pytest tests/test_api.py
+```
+
+**Linux/macOS:**
+
+```bash
 cd backend
 ENV=dev uv run pytest tests/test_api.py
 ```

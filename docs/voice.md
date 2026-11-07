@@ -177,7 +177,8 @@ inside it to cut at.
 
 ### Config-only experiment: `VOICE_VAD_MIN_SILENCE_MS=300`
 
-Same command, still on the pre-change tree, with `$env:VOICE_VAD_MIN_SILENCE_MS='300'`. No
+Same command, still on the pre-change tree, with `$env:VOICE_VAD_MIN_SILENCE_MS='300'`
+on Windows or `VOICE_VAD_MIN_SILENCE_MS=300` prefixed to the command on Linux/macOS. No
 code change.
 
 | Stage | p50 | p90 |

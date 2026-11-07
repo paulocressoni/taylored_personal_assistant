@@ -44,10 +44,20 @@ browser-facing URLs (`NEXTAUTH_URL`) use `localhost`.
 
 ### 1. Compose secrets — `infra/compose/.env.dev` (prod: `.env.prod`)
 
+**Windows (PowerShell):**
+
 ```powershell
 cd infra/compose
 Copy-Item .env.dev.example .env.dev     # then fill in the real secrets
 # production box:  Copy-Item .env.prod.example .env.prod
+```
+
+**Linux/macOS:**
+
+```bash
+cd infra/compose
+cp .env.dev.example .env.dev            # then fill in the real secrets
+# production box:  cp .env.prod.example .env.prod
 ```
 
 Generate the random secrets (SALT, ENCRYPTION_KEY, NEXTAUTH_SECRET must be **64 hex
@@ -109,7 +119,17 @@ docker compose -f infra/compose/docker-compose.base.yml -f infra/compose/docker-
 
 Run the Langfuse smoke test (a CLI graph run that asserts a trace is produced):
 
+**Windows (PowerShell):**
+
 ```powershell
+cd backend
+$env:ENV="dev"
+uv run python -m scripts.smoke_07_langfuse
+```
+
+**Linux/macOS:**
+
+```bash
 cd backend
 ENV=dev uv run python -m scripts.smoke_07_langfuse
 ```
@@ -292,6 +312,8 @@ Two versions move independently: the **app** (the GHCR image, pinned by
 
 The git tag IS the image tag, so a release is `APP_VERSION` + the prod targets
 (the deployment host runs Linux, so `make` is available there):
+
+**Linux/macOS:**
 
 ```bash
 APP_VERSION=0.5.0 make prod-up     # pull + up -d --no-build --wait

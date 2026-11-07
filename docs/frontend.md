@@ -104,8 +104,16 @@ frontend/
    `ASSISTANT_API_KEY`. Copy the env template and fill it in with that **same** value
    (the hook sends it as `X-API-Key` on HTTP and `?api_key=` on the WebSocket):
 
+   **Windows (PowerShell):**
+
    ```powershell
    Copy-Item .env.example .env.local   # then set VITE_API_KEY=<ASSISTANT_API_KEY>
+   ```
+
+   **Linux/macOS:**
+
+   ```bash
+   cp .env.example .env.local          # then set VITE_API_KEY=<ASSISTANT_API_KEY>
    ```
 
    A mismatch → `401` on HTTP and socket close `1008` on WS (see "Auth" below).

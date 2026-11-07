@@ -216,6 +216,8 @@ Four rules the **Save** button enforces (all are Langfuse v4 changes):
 Repeatable and scriptable — useful when rebuilding the dashboards. This is how
 widget 1a in §5 was created:
 
+**Windows (PowerShell):**
+
 ```powershell
 $c = @{}
 Get-Content backend/.env.prod | Where-Object { $_ -match '^\s*LANGFUSE_(PUBLIC_KEY|SECRET_KEY)\s*=' } | ForEach-Object { $k,$v = $_ -split '=',2; $c[$k.Trim()] = $v.Trim() }
@@ -230,6 +232,22 @@ $body = @{
 
 Invoke-RestMethod -Uri 'http://127.0.0.1:3000/api/public/unstable/dashboard-widgets' `
   -Method Post -Headers $h -ContentType 'application/json' -Body $body
+```
+
+**Linux/macOS** — load the two keys from `backend/.env.prod`, then let `curl -u`
+build the Basic auth header:
+
+```bash
+set -a; . backend/.env.prod; set +a
+curl -u "$LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Cost per day", "description": "", "view": "observations", "dimensions": [],
+    "metrics": [{"measure": "totalCost", "agg": "sum"}],
+    "filters": [{"column": "type", "type": "string", "operator": "=", "value": "GENERATION"}],
+    "chartType": "LINE_TIME_SERIES", "chartConfig": {"type": "LINE_TIME_SERIES"}
+  }' \
+  http://127.0.0.1:3000/api/public/unstable/dashboard-widgets
 ```
 
 `GET` the same path to list what exists. These endpoints are flagged
