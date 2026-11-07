@@ -134,24 +134,31 @@ cd frontend && npm run test && npm run build
 ## 3. Repository and registry
 
 ```bash
-git clone https://github.com/<owner>/taylored_personal_assistant.git
+OWNER=paulocressoni          # the account that publishes the images (your fork's owner if you forked)
+TAG=0.4.3-test               # the release tag with the leading "v" stripped
+git clone "https://github.com/$OWNER/taylored_personal_assistant.git"
 cd taylored_personal_assistant
-git checkout v<tag>        # or stay on main; the Makefile derives APP_VERSION from
+git checkout "v$TAG"       # or stay on main; the Makefile derives APP_VERSION from
                            # backend/app/_version.py, which release-please keeps at the latest release
 ```
 
-The GHCR images are **private**. Log in with a token that carries **`read:packages`** (a classic
-PAT scoped to nothing else is enough; fine-grained tokens need *Packages: read*):
+The GHCR images are **private** in the owner's account. Log in as **yourself**, with your own
+token that carries **`read:packages`** (a classic PAT scoped to nothing else is enough;
+fine-grained tokens need *Packages: read*) — `-u` is *your* GitHub username, not the owner's:
 
 ```bash
-docker login ghcr.io -u <owner>
+echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
+# interactive instead:  docker login ghcr.io -u YOUR_GITHUB_USERNAME   (paste the token)
 ```
+
+> If the owner switched the packages to **public**, skip the login entirely — `docker pull`
+> works anonymously. See [the cheat sheet](docker-cheatsheet.md#who-can-pull-these-images).
 
 Verify the release exists before starting anything:
 
 ```bash
-docker pull ghcr.io/<owner>/taylored-personal-assistant-backend:<tag>
-docker pull ghcr.io/<owner>/taylored-personal-assistant-frontend:<tag>
+docker pull "ghcr.io/$OWNER/taylored-personal-assistant-backend:$TAG"
+docker pull "ghcr.io/$OWNER/taylored-personal-assistant-frontend:$TAG"
 ```
 
 ---
@@ -222,7 +229,7 @@ image instead of guessing:
 
 ```bash
 docker run --rm --entrypoint sh \
-  ghcr.io/<owner>/taylored-personal-assistant-frontend:<tag> \
+  "ghcr.io/$OWNER/taylored-personal-assistant-frontend:$TAG" \
   -c 'grep -rhoE ".{0,120}X-API-Key.{0,10}" /usr/share/nginx/html/assets/*.js' \
   | grep -oE '[A-Za-z0-9_-]{40,}'
 ```
@@ -266,7 +273,7 @@ fingerprint, not a bad key — retry with `curl` (as above) before regenerating 
 ## 6. First start
 
 ```bash
-make prod-pull      # proves registry auth and that <tag> exists
+make prod-pull      # proves registry auth and that "$TAG" exists
 make prod-up        # pull + up -d --no-build --wait
 ```
 

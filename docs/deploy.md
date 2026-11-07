@@ -56,8 +56,9 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
 > values that must match in more than one place — the steps whose absence here fails silently. The
 > list below assumes that setup is done.
 
-1. **Get the code and log in to GHCR** on the box (images are private, so the login needs a token with
-   `read:packages`): `docker login ghcr.io -u <owner>`. If you have just been added to the Docker group,
+1. **Get the code and log in to GHCR** on the box (the owner's packages are private, so the login
+   needs *your own* token with `read:packages` — `docker login ghcr.io -u YOUR_GITHUB_USERNAME`;
+   public packages need no login at all). If you have just been added to the Docker group,
    start a **new login session** first — group membership does not apply to shells that already exist.
 2. **Create the two secret files from their templates** — they are never committed:
    - `infra/compose/.env.prod` (mode 600): Langfuse secrets, `APP_DB_*`

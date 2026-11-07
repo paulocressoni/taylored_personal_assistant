@@ -184,11 +184,29 @@ Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
 > `permission denied ... /run/docker.sock`. Log out and back in (or `newgrp docker` for one
 > shell) and check with `id -nG | grep -x docker` in the session that will run the commands.
 
+### Who can pull these images
+
+`docker login -u <name>` is **not** "logging in as that person" — GHCR never takes a password.
+The credential is a personal access token, and the token determines the identity. So the
+`-u` value in a pull command is **your own** GitHub username, never the package owner's.
+
+| Situation | What to do |
+|---|---|
+| **Packages public** (recommended here — the source repo is already public) | Nothing. `docker pull` works anonymously. One-time switch: GitHub → your profile → **Packages** → the package → **Package settings** → *Danger zone* → **Change visibility** → Public. New tags inherit it. |
+| **Private, a few trusted people** | Each person creates their **own** classic PAT with `read:packages` (fine-grained: *Packages: read*), gets access under *Package settings* → **Manage access**, then runs `docker login ghcr.io -u <their-username>`. |
+| **Someone who should not see these images at all** | Fork the repo and publish their own: the frontend key is baked per build, so their `VITE_API_KEY` / `ASSISTANT_API_KEY` should be their own values anyway. |
+
+> **Public frontend image = public `VITE_API_KEY`.** The key is inlined into the bundle, so
+> publishing the package lets anyone extract it. That key already reaches every browser that
+> loads the UI, and the prod stack publishes only nginx on `:8080`, so keep the host LAN-only
+> (or behind a VPN). If it leaks: rotate the secret, cut a new release, re-pull.
+
 **Windows (PowerShell):**
 
 ```powershell
-# Pull a release (requires GHCR auth; the images are private — use a token with read:packages)
-docker login ghcr.io -u paulocressoni
+# Private packages only. Authenticate as YOURSELF with a PAT that has `read:packages`
+# (public packages need no login — skip straight to the pulls). Replace the placeholder:
+docker login ghcr.io -u YOUR_GITHUB_USERNAME      # then paste the token at the prompt
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 ```
@@ -196,8 +214,10 @@ docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 **Linux/macOS:**
 
 ```bash
-# Pull a release (requires GHCR auth; the images are private — use a token with read:packages)
-docker login ghcr.io -u paulocressoni
+# Private packages only. Authenticate as YOURSELF with a PAT that has `read:packages`
+# (public packages need no login — skip straight to the pulls). Replace the placeholder
+# and export GHCR_TOKEN with your token first.
+echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 ```
