@@ -600,6 +600,12 @@ node --version              # v24.x
 
 **Open a new terminal** after installing — the PATH only refreshes in new sessions.
 
+> **Git hooks and Node.** `git commit` runs hooks without your shell rc, so a Node installed
+> by `nvm` is not on the hook's PATH and a bare `npx` would fail with exit 127. The repo's
+> frontend hooks therefore go through [frontend/scripts/precommit-node.sh](frontend/scripts/precommit-node.sh),
+> which resolves `.nvmrc`'s Node under `~/.nvm` (or `~/.local/bin`, `/usr/local/bin`, `/usr/bin`)
+> before running `npx`. Installed Node somewhere else? Put its `bin` directory on PATH.
+
 ### 7b. Install frontend dependencies
 
 **Windows (PowerShell):**
@@ -1183,6 +1189,22 @@ git commit                             # pre-commit hooks fire automatically
 2. Always use `uv run` / `uv add` — never bare `pip install`.
 3. Never commit `.env`; always commit `uv.lock`, `.python-version`, `.env.example`, and `.secrets.baseline`.
 4. Frontend: never commit `node_modules`; always commit `package-lock.json`, `src/api/types.ts`, and `.nvmrc`; use `npm ci` for reproducible installs.
+
+---
+
+## Troubleshooting
+
+The failures this walkthrough actually hits, in the order you meet them:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `RuntimeError: The ENV environment variable is required. Set ENV=dev or ENV=prod.` | `app/core/config.py` resolves `.env.{ENV}` before pydantic runs, so `ENV` must exist first — importing it in a bare `python -c`/`pytest`/`uvicorn` has none | bash: `ENV=dev uv run …` · PowerShell: `$env:ENV="dev"` first · or use the `make` targets, which set it |
+| `ValidationError … DEEPSEEK_API_KEY is required` / `… ASSISTANT_API_KEY is required` | `.env.dev` missing, empty, or still holding `REPLACE_ME` | fill the real values ([Step 3a](#3a-create-your-local-envdev-and-envprod-for-prod)), then re-run [Step 3c](#3c-verify-the-configuration-loads) |
+| `ValidationError … VOICE_STT_API_KEY` / `VOICE_TTS_API_KEY` | `VOICE_ENABLED=true` without both voice keys — voice is opt-in but fail-fast once enabled | comment `VOICE_ENABLED` out, or set both keys |
+| `npx: command not found` (exit 127) in the `frontend eslint` / `frontend prettier` pre-commit hooks | `git` runs hooks without your shell rc, so nvm's Node is not on PATH | hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`; also make sure `frontend/node_modules` exists (`cd frontend && npm ci`) |
+| `permission denied … /run/docker.sock` although `id` lists the `docker` group | the session predates `usermod -aG docker` | log out and back in, or `newgrp docker` |
+| Compose: `required variable … is missing a value` / `APP_VERSION …` | the matching `--env-file` was not passed, or `APP_VERSION` is unset | use the `make` targets, or pass `--env-file infra/compose/.env.dev` (prod: `.env.prod`) |
+| Backend healthy but the UI says *"Authentication failed — check VITE_API_KEY"* | frontend `VITE_API_KEY` ≠ backend `ASSISTANT_API_KEY` | make them equal ([Step 7d](#7d-set-the-shared-api-key)); in prod the key is baked into the image |
 
 ---
 

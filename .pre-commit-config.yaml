@@ -34,18 +34,22 @@ repos:
     hooks:
       - id: commitizen
 
-  # Frontend: JS/TS lint + format (uses the project's own node_modules)
+  # Frontend: JS/TS lint + format (uses the project's own node_modules).
+  # Both go through frontend/scripts/precommit-node.sh: git hooks run with a
+  # minimal PATH that excludes nvm / ~/.local/bin, so a bare `npx` fails with
+  # exit 127 even when Node works in the terminal. The script resolves Node
+  # itself and reports a missing node_modules instead of a cryptic error.
   - repo: local
     hooks:
       - id: frontend-lint
         name: frontend eslint
-        entry: bash -c 'cd frontend && npx eslint --fix .'
+        entry: bash frontend/scripts/precommit-node.sh eslint --fix .
         language: system
         files: ^frontend/.*\.(ts|tsx|js|jsx)$
         pass_filenames: false
       - id: frontend-format
         name: frontend prettier
-        entry: bash -c 'cd frontend && npx prettier --write .'
+        entry: bash frontend/scripts/precommit-node.sh prettier --write .
         language: system
         files: ^frontend/.*\.(ts|tsx|js|jsx|json|css|html)$
         pass_filenames: false
