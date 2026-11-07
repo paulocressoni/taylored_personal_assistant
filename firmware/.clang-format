@@ -1,0 +1,41 @@
+# Style for the satellite firmware. clang-format searches upward from each
+# source file, finds this file in firmware/, and applies it to everything
+# below. Nothing outside firmware/ is affected.
+
+# Every setting not named below is inherited from LLVM, which is the ancestor
+# of both Google's and Espressif's house styles.
+---
+BasedOnStyle: LLVM
+
+# ESP-IDF's own sources use 4 spaces, and 4 keeps nested blocks readable.
+# (LLVM's default is 2, which gets dense in deeply nested code.)
+IndentWidth: 4
+
+# Hard-wrap at 100 columns: wide enough for a real function signature, narrow
+# enough to read two files side by side.
+ColumnLimit: 100
+
+# Keep the author's include order. Left at the default, clang-format sorts
+# each block alphabetically and destroys the convention used in every file
+# here: standard library, blank line, ESP-IDF, blank line, project headers.
+SortIncludes: Never
+
+# Preprocessor directives (#include, #define, #if) stay at column 0
+# regardless of the surrounding indentation.
+IndentPPDirectives: None
+
+# Never collapse a function body onto one line. This code is read line by
+# line while debugging a 20 ms audio deadline; hidden control flow costs more
+# than the saved lines.
+AllowShortFunctionsOnASingleLine: None
+
+# Same for a bare `if (x) return;` — keep every branch visible.
+AllowShortIfStatementsOnASingleLine: Never
+
+# The `*` belongs to the variable: `int16_t *frame`, not `int16_t* frame`.
+# This is ESP-IDF's convention and it makes `int *a, b` read correctly.
+PointerAlignment: Right
+
+# Indent `case` labels inside a switch. clang-format's LLVM default is to align
+# them with the `switch`, which makes a long switch look like it has no braces.
+IndentCaseLabels: true

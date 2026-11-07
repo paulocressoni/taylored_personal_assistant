@@ -406,6 +406,22 @@ browser already exercises.
 - Killing the Wi-Fi for 30 s and restoring it re-establishes the session with no power cycle.
 - The satellite runs for 24 h unattended without wedging, dropping the socket permanently, or needing a reboot.
 
+**STATUS: done.** All four criteria met on the reference unit (`xiao-68ee8f511704`); the full acceptance record,
+including the two findings below, is in [`firmware/README.md`](../firmware/README.md) under *Bring-up results*, and
+the firmware itself is described in [`docs/satellite.md`](satellite.md).
+
+Two results from the 19.7 h soak are carried forward rather than fixed here:
+
+- **A spoken answer over ~38 s is truncated** by the playout ring. Answer lengths ran 2.3 s minimum, 12.8 s median,
+  48.1 s maximum, and the six at or above the ceiling are exactly the six that hit `ring full`. This is a
+  reply-length problem, not a buffer-size problem: the fix is a cap on what the server speaks, and it belongs with
+  the latency work in D1.5. Enlarging the ring would only make the truncation rarer and therefore harder to notice.
+- **Sessions die silently, about once every six minutes**, with **zero Wi-Fi drops**: every loss is a stalled send
+  with no CLOSE frame, so the TCP flow stopped being forwarded rather than being closed politely. Lifetimes ranged
+  from 3 s to 1799 s with a hard ceiling at 30 minutes across two independent datasets. Recovery costs ~1.2 s and
+  never failed, so this is a property of the network path. Worth one check of the router's TCP session timeout
+  before it is accepted as environmental.
+
 **NOTES:** `voice_max_sessions = 3` — a satellite holds one for as long as it is powered. Two satellites plus a
 browser tab is already the cap; raise it deliberately, and remember each open session can hold a provider slot.
 

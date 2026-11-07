@@ -1,0 +1,7 @@
+# Managed dependencies, resolved by the ESP-IDF component manager on the first
+# build and cached in managed_components/ (gitignored).
+dependencies:
+  idf: ">=5.4"
+  # The WebSocket client is kept out of the ESP-IDF core and versioned
+  # separately, so it is pinned by range here. 1.8.0 is what resolves today.
+  espressif/esp_websocket_client: "^1.2.0"

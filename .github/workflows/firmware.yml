@@ -1,0 +1,65 @@
+name: firmware
+
+# Only run when the firmware (or this workflow) actually changes. A backend
+# or frontend PR must not pay for a firmware build.
+on:
+    pull_request:
+        paths:
+            - "firmware/**"
+            - ".github/workflows/firmware.yml"
+    push:
+        branches: [main]
+        paths:
+            - "firmware/**"
+            - ".github/workflows/firmware.yml"
+
+# The jobs only read the checkout. Nothing is published and no secret is used.
+permissions:
+    contents: read
+
+jobs:
+    # Compile the firmware. This is the only check that can catch a real
+    # regression in the C code; it needs no hardware and no credentials,
+    # because sdkconfig.defaults carries no Wi-Fi credentials or API keys.
+    build:
+        runs-on: ubuntu-latest
+        container:
+            # The official prebuilt image: ESP-IDF v5.4.4 with the Xtensa
+            # toolchain and the Python environment already installed.
+            image: espressif/idf:v5.4.4
+        defaults:
+            run:
+                working-directory: firmware/satellite-xvf3800-xiao
+        steps:
+            - uses: actions/checkout@v7.0.1
+
+            # GitHub replaces a container job's entrypoint, so the image's own
+            # /opt/esp/entrypoint.sh — the thing that sources export.sh and puts
+            # idf.py, the Xtensa gcc and the Python venv on PATH — never runs.
+            # Each step therefore sources export.sh itself.
+            - name: Build
+              run: |
+                  . /opt/esp/idf/export.sh
+                  idf.py set-target esp32s3
+                  idf.py build
+
+    # Enforce the same formatting the pre-commit hook enforces, so a commit
+    # made with --no-verify (or from an editor without the hooks installed)
+    # cannot land unformatted C. Uses the same clang-format version as D.2.
+    format:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v7.0.1
+
+            - uses: actions/setup-python@v7.1.0
+              with:
+                  python-version: "3.12"
+
+            - name: Check C formatting
+              # git ls-files lists tracked files only: ignored build output and
+              # downloaded components are never formatted. Without --dry-run
+              # this command would rewrite the files; with --Werror it fails
+              # instead, which is what a check must do.
+              run: |
+                  python3 -m pip install --disable-pip-version-check clang-format==22.1.8
+                  clang-format --dry-run --Werror $(git ls-files 'firmware/*.c' 'firmware/*.h')

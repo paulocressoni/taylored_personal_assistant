@@ -1,0 +1,28 @@
+# These values seed sdkconfig the first time the project is configured.
+# After that, sdkconfig is the source of truth and this file is only a
+# template for a fresh checkout.
+
+# Which chip we are building for.
+CONFIG_IDF_TARGET="esp32s3"
+
+# The XIAO ESP32-S3 has 8 MB of flash, connected over quad I/O.
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+
+# The XIAO ESP32-S3 has 8 MB of octal PSRAM. We enable it now so the
+# heap knows about it; the playout ring will live there.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# 240 MHz: the audio path has a 20 ms real-time deadline.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# Use the XIAO's native USB-Serial/JTAG as the console, not UART0.
+# This is what makes /dev/ttyACM0 show the logs without a USB-UART chip.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=n
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# A 1 kHz FreeRTOS tick = 1 ms resolution, so pdMS_TO_TICKS(20) is
+# exactly 20 ms. At the default 100 Hz it would round to 20 or 30 ms.
+CONFIG_FREERTOS_HZ=1000
