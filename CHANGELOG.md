@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/paulocressoni/taylored_personal_assistant/compare/v0.4.0...v0.5.0) (2026-11-07)
+
+
+### Features
+
+* **firmware:** satellite firmware v1 — wireless audio transport (D1.3) ([#50](https://github.com/paulocressoni/taylored_personal_assistant/issues/50)) ([5b49d47](https://github.com/paulocressoni/taylored_personal_assistant/commit/5b49d47b78db9d2606fa5c4ea21933d2fb462628))
+
+
+### Bug Fixes
+
+* **voice:** report the secure-context requirement and document the first prod run ([#45](https://github.com/paulocressoni/taylored_personal_assistant/issues/45)) ([8f59940](https://github.com/paulocressoni/taylored_personal_assistant/commit/8f59940077a40b1dbbcfcb99cc788d3be208426b))
+
 ## [0.4.0](https://github.com/paulocressoni/taylored_personal_assistant/compare/v0.3.1...v0.4.0) (2026-10-23)
 
 
