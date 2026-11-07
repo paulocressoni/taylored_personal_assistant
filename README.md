@@ -737,11 +737,10 @@ On every tagged release, CI builds, Trivy-scans, and pushes **two images** to GH
 and proxying `/ws` + API to the backend). Each is tagged `X.Y.Z`, `sha-<sha>`, and
 `latest` (browsing only). The git tag IS the image tag — prod runs the pinned `:X.Y.Z`,
 never `:latest`. The frontend image bakes the shared API key at build time from the
-`VITE_API_KEY` repo secret (must equal the backend's `ASSISTANT_API_KEY`). Pull + run
-instructions live in the [Docker cheat sheet](docs/docker-cheatsheet.md); the packages are
-**private by default**, so others either need their own `read:packages` token or the owner
-flips them to public (*Package settings → Change visibility*) — see
-[who can pull these images](docs/docker-cheatsheet.md#who-can-pull-these-images).
+`VITE_API_KEY` repo secret (must equal the backend's `ASSISTANT_API_KEY`). Both packages are
+**public**, so `docker pull` needs no token and no `docker login` — see
+[who can pull these images](docs/docker-cheatsheet.md#who-can-pull-these-images) for the
+pull commands.
 
 ---
 

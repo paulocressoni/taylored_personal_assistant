@@ -142,17 +142,12 @@ git checkout "v$TAG"       # or stay on main; the Makefile derives APP_VERSION f
                            # backend/app/_version.py, which release-please keeps at the latest release
 ```
 
-The GHCR images are **private** in the owner's account. Log in as **yourself**, with your own
-token that carries **`read:packages`** (a classic PAT scoped to nothing else is enough;
-fine-grained tokens need *Packages: read*) — `-u` is *your* GitHub username, not the owner's:
-
-```bash
-echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-# interactive instead:  docker login ghcr.io -u YOUR_GITHUB_USERNAME   (paste the token)
-```
-
-> If the owner switched the packages to **public**, skip the login entirely — `docker pull`
-> works anonymously. See [the cheat sheet](docker-cheatsheet.md#who-can-pull-these-images).
+The GHCR images are **public**, so there is no registry login: `docker pull` works anonymously
+and `make prod-pull` needs no credentials. (A fork that publishes its own images gets **private**
+packages by default — then each consumer logs in as **themselves** with a PAT carrying
+`read:packages`: `docker login ghcr.io -u YOUR_GITHUB_USERNAME`. `-u` is your own username, never
+the owner's; the token is the credential. Details in
+[the cheat sheet](docker-cheatsheet.md#who-can-pull-these-images).)
 
 Verify the release exists before starting anything:
 
@@ -313,7 +308,7 @@ reboot" means *returns after the passphrase* — do not claim an unattended cold
 | `npx: command not found` inside a git hook | The hook's shell has no nvm PATH | Commit from a terminal where `nvm use` ran |
 | `uv: command not found` | `~/.local/bin` not on PATH, or run from a non-interactive shell | `export PATH="$HOME/.local/bin:$PATH"` |
 | `permission denied ... /run/docker.sock` while `id` lists the group | Session predates `usermod -aG docker` | Log out and back in, or `newgrp docker` |
-| `pull access denied` / `unauthorized` on GHCR | Not logged in, or the token lacks `read:packages` | §3 |
+| `pull access denied` / `unauthorized` on GHCR | You are pulling a **private** package (e.g. from your own fork) without a `read:packages` token — the published ones are public | §3 |
 | **"Authentication failed — check VITE_API_KEY"** | `ASSISTANT_API_KEY` ≠ the `VITE_API_KEY` secret baked into the image | §4.3 to recover the baked value, then align the backend (§0) |
 | Langfuse login redirects in a loop or fails | `NEXTAUTH_URL` ≠ the browser's exact address | §4.1 |
 | Stack healthy, **Traces empty** | Langfuse key pair mismatch, or `LANGFUSE_ENABLED` false | §0 and §4.2 |

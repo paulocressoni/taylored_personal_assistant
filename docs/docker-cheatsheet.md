@@ -186,38 +186,24 @@ Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
 
 ### Who can pull these images
 
-`docker login -u <name>` is **not** "logging in as that person" — GHCR never takes a password.
-The credential is a personal access token, and the token determines the identity. So the
-`-u` value in a pull command is **your own** GitHub username, never the package owner's.
+Both packages are **public**: `docker pull` works anonymously on any machine — no `docker
+login`, no token, nothing to configure. Only the *publisher* needs credentials (CI uses the
+workflow's own `GITHUB_TOKEN`).
 
 | Situation | What to do |
 |---|---|
-| **Packages public** (recommended here — the source repo is already public) | Nothing. `docker pull` works anonymously. One-time switch: GitHub → your profile → **Packages** → the package → **Package settings** → *Danger zone* → **Change visibility** → Public. New tags inherit it. |
-| **Private, a few trusted people** | Each person creates their **own** classic PAT with `read:packages` (fine-grained: *Packages: read*), gets access under *Package settings* → **Manage access**, then runs `docker login ghcr.io -u <their-username>`. |
+| **Using these images** | Just pull (see below). The command is identical in PowerShell and bash. |
+| **Your own fork publishes to GHCR** | New container packages are **private by default**. Either flip each one once (profile → **Packages** → package → **Package settings** → *Danger zone* → **Change visibility** → Public; new tags inherit it), or keep it private and have each consumer log in as **themselves** with a PAT carrying `read:packages` — `docker login ghcr.io -u THEIR_USERNAME`. `-u` is never the package owner's name: the token is the credential. |
 | **Someone who should not see these images at all** | Fork the repo and publish their own: the frontend key is baked per build, so their `VITE_API_KEY` / `ASSISTANT_API_KEY` should be their own values anyway. |
 
-> **Public frontend image = public `VITE_API_KEY`.** The key is inlined into the bundle, so
-> publishing the package lets anyone extract it. That key already reaches every browser that
-> loads the UI, and the prod stack publishes only nginx on `:8080`, so keep the host LAN-only
-> (or behind a VPN). If it leaks: rotate the secret, cut a new release, re-pull.
+> **The frontend image contains `VITE_API_KEY`.** The key is inlined into the JS bundle, so
+> anyone who pulls the image can read it. It is a perimeter gate, not user identity, and the
+> prod stack publishes only nginx on `:8080` — keep the host LAN-only (or behind a VPN).
+> If it leaks: rotate the secret, cut a new release, re-pull.
 
-**Windows (PowerShell):**
+Pull a release (identical in PowerShell and bash):
 
-```powershell
-# Private packages only. Authenticate as YOURSELF with a PAT that has `read:packages`
-# (public packages need no login — skip straight to the pulls). Replace the placeholder:
-docker login ghcr.io -u YOUR_GITHUB_USERNAME      # then paste the token at the prompt
-docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
-docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 ```
-
-**Linux/macOS:**
-
-```bash
-# Private packages only. Authenticate as YOURSELF with a PAT that has `read:packages`
-# (public packages need no login — skip straight to the pulls). Replace the placeholder
-# and export GHCR_TOKEN with your token first.
-echo "$GHCR_TOKEN" | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
 ```
