@@ -244,8 +244,11 @@ the shared API key from `app.core.config.settings` and appends it to the URI as
 
 ```powershell
 cd backend
+$env:ENV="dev"
 uv run python scripts/ws_probe.py "tell me a short joke"
 ```
+
+(or on Linux/macOS: `cd backend && ENV=dev uv run python scripts/ws_probe.py "tell me a short joke"`)
 
 ## WS /ws/voice (M29)
 

@@ -274,11 +274,20 @@ What this does in one shot:
 
 ### 2c. Verify the editable install works
 
-```powershell
-uv run python -c "import app.core.config; print(app.core.config.__file__)"
+```bash
+uv run python -c "import app._version as v, app.language.detector as d; print(v.__version__, d.__file__)"
 ```
 
-Expected output ends with `...\backend\app\core\config.py` on Windows, `.../backend/app/core/config.py` on Linux/macOS. If it fails, jump to [Troubleshooting](#troubleshooting).
+Expected: the version from `backend/app/_version.py` (e.g. `0.4.0`) followed by a path ending in
+`...\backend\app\language\detector.py` on Windows, `.../backend/app/language/detector.py` on
+Linux/macOS. A real path proves the editable install, and importing `detector` also proves a
+third-party dependency loads.
+
+> **Do not run `import app.core.config` yet.** That module is fail-fast by design: it raises
+> `RuntimeError: The ENV environment variable is required. Set ENV=dev or ENV=prod.` unless `ENV`
+> is exported, and once `ENV` is set it still refuses to load until `DEEPSEEK_API_KEY` and
+> `ASSISTANT_API_KEY` hold real values in `.env.{ENV}`. [Step 3c](#3c-verify-the-configuration-loads)
+> checks it at the point where that can actually succeed.
 
 > **Why not activate the venv?** You can, but you don't need to. `uv run` executes inside the project venv automatically and never touches your system Python. If you do want activation (e.g. for interactive `python` in a REPL):
 > **Windows (PowerShell):**
@@ -354,6 +363,36 @@ from app.core.config import settings
 
 api_key = settings.deepseek_api_key   # typed, loaded from env/.env
 ```
+
+### 3c. Verify the configuration loads
+
+Once `.env.dev` holds real keys, the same import that fails early (Step 2c) must succeed — this
+is the real fail-fast check:
+
+**Windows (PowerShell):**
+
+```powershell
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
+uv run python -c "import app.core.config; print(app.core.config.__file__)"
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+ENV=dev uv run python -c "import app.core.config; print(app.core.config.__file__)"
+```
+
+Expected: a path ending in `.../backend/app/core/config.py` with no traceback. If it raises, the
+message names what is missing:
+
+| Error | Missing |
+|---|---|
+| `RuntimeError: The ENV environment variable is required` | `ENV` is not set (use `ENV=dev` / `$env:ENV="dev"`, or `make dev-up`, which sets it) |
+| `ValidationError … DEEPSEEK_API_KEY is required` | key still empty/`REPLACE_ME` in `backend/.env.dev` |
+| `ValidationError … ASSISTANT_API_KEY is required` | same, for the shared API key |
+| `ValidationError … VOICE_*_API_KEY` | `VOICE_ENABLED=true` without both voice keys — comment it out or fill both |
 
 ---
 
@@ -839,6 +878,7 @@ curl.exe -X POST http://localhost:8000/chat `
   -d '{"session_id":"s1","message":"hello"}'
 # WS streaming — from backend/ (the probe sends the shared API key
 # automatically as ?api_key=):
+$env:ENV="dev"
 uv run python scripts/ws_probe.py "tell me a short joke"
 ```
 
@@ -856,7 +896,7 @@ curl -X POST http://localhost:8000/chat \
   -d '{"session_id":"s1","message":"hello"}'
 # WS streaming — from backend/ (the probe sends the shared API key
 # automatically as ?api_key=):
-uv run python scripts/ws_probe.py "tell me a short joke"
+ENV=dev uv run python scripts/ws_probe.py "tell me a short joke"
 ```
 
 - Input/Output are validated by **Pydantic v2** at the boundary (`schemas.py`) — bad input
@@ -1026,6 +1066,11 @@ Caveats:
 
 Run everything from `backend/` unless noted.
 
+> **Anything that boots app code needs `ENV`.** `pytest`, `uvicorn`, and every
+> `scripts/*.py` import `app.core.config`, which fails fast without it:
+> bash `ENV=dev uv run …`, PowerShell `$env:ENV="dev"` once per session. The `make`
+> targets set it for you. `uv sync` / `uv add` / `ruff` do **not** need it.
+
 | Task | Command |
 |---|---|
 | Add a dependency | `uv add <package>` |
@@ -1036,12 +1081,12 @@ Run everything from `backend/` unless noted.
 | Bump all locked versions | `uv lock --upgrade` |
 | Lint + fix | `uv run ruff check --fix .` |
 | Format | `uv run ruff format .` |
-| Run tests | `uv run pytest` |
+| Run tests | `make test` (repo root) · bash: `ENV=dev uv run pytest` · PowerShell: `$env:ENV="dev"; uv run pytest` |
 | Run the full dev stack (M12) | Linux/macOS: `make dev-up` (repo root) · Windows: `docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait` |
 | Run the full stack without Langfuse | `make dev-up-light` (repo root) |
 | Stop the stack / tail logs | `make dev-down` · `make dev-logs` (repo root) |
-| Run the API dev server only (no Docker) | `make dev-local` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |
-| Stream a WS chat | `uv run python scripts/ws_probe.py "<message>"` |
+| Run the API dev server only (no Docker) | `make dev-local` (repo root) · bash: `ENV=dev uv run uvicorn app.main:app --reload` (backend/) |
+| Stream a WS chat | bash: `ENV=dev uv run python scripts/ws_probe.py "<message>"` (backend/) |
 | Run the frontend dev server | `cd frontend && npm run dev` (repo root → :5173) |
 | Frontend lint | `cd frontend && npm run lint` |
 | Frontend format (write / check) | `cd frontend && npm run format` · `npm run format:check` |
@@ -1062,7 +1107,7 @@ The good news: with `uv` there is **no "activate the venv" ritual** — `uv run`
 |---|---|---|
 | Fresh clone or after `git pull` | `uv sync` | Installs deps to match `uv.lock` — the #1 "it worked before, not now" fix |
 | Pre-commit not firing on commit | `uv run pre-commit install` | Re-installs the git hook (once per clone; needed again after some checkouts) |
-| Sanity-check the environment | `uv run python -c "import app.core.config; print(app.core.config.__file__)"` | Confirms venv + editable install in one line |
+| Sanity-check the environment | `uv run python -c "import app._version as v, app.language.detector as d; print(v.__version__, d.__file__)"` | Confirms venv + editable install (no `ENV`/secrets needed) |
 | Fresh clone / after `git pull` (frontend) | `cd frontend && npm ci` | Installs locked frontend deps to match `package-lock.json` |
 
 > You do **not** need to run `uv run pre-commit install` every session — only after a fresh clone or if hooks silently stop firing.
@@ -1073,6 +1118,7 @@ The good news: with `uv` there is **no "activate the venv" ritual** — `uv run`
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
 uv sync                    # sync deps to the new uv.lock
 uv run pytest              # make sure everything still passes
 ```
@@ -1082,7 +1128,7 @@ uv run pytest              # make sure everything still passes
 ```bash
 cd ~/Workspace/taylored_personal_assistant/backend
 uv sync                    # sync deps to the new uv.lock
-uv run pytest              # make sure everything still passes
+ENV=dev uv run pytest      # make sure everything still passes
 ```
 
 ### After adding/removing dependencies
@@ -1111,6 +1157,7 @@ cd frontend && npm run format:check # check frontend formatting
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
 docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait   # full local stack (M12)
 # ... edit code ...
+$env:ENV="dev"
 cd backend && uv run pytest            # run tests
 cd backend && uv run ruff check --fix .   # lint + autofix
 git add .
@@ -1123,7 +1170,7 @@ git commit                             # pre-commit hooks fire automatically
 cd ~/Workspace/taylored_personal_assistant
 make dev-up                            # full local stack with hot reload (M12)
 # ... edit code ...
-cd backend && uv run pytest            # run tests
+cd backend && ENV=dev uv run pytest    # run tests
 cd backend && uv run ruff check --fix .   # lint + autofix
 git add .
 git commit                             # pre-commit hooks fire automatically
@@ -1150,12 +1197,27 @@ conversation as typed ones.
 
 It is **off by default**. To try it:
 
+**Windows (PowerShell):**
+
 ```powershell
 # 1. backend/.env.dev: VOICE_ENABLED=true, VOICE_STT_API_KEY (Groq), VOICE_TTS_API_KEY (OpenAI)
 # 2. regenerate the spoken fixtures once, then run the pipeline with no socket involved
 cd backend
+$env:ENV="dev"
 uv run python scripts/make_voice_fixtures.py
 uv run python scripts/smoke_08_voice_pipeline.py --lang en
+
+# 3. or in the browser: backend + frontend running, then press "Speak" in the composer
+```
+
+**Linux/macOS:**
+
+```bash
+# 1. backend/.env.dev: VOICE_ENABLED=true, VOICE_STT_API_KEY (Groq), VOICE_TTS_API_KEY (OpenAI)
+# 2. regenerate the spoken fixtures once, then run the pipeline with no socket involved
+cd backend
+ENV=dev uv run python scripts/make_voice_fixtures.py
+ENV=dev uv run python scripts/smoke_08_voice_pipeline.py --lang en
 
 # 3. or in the browser: backend + frontend running, then press "Speak" in the composer
 ```

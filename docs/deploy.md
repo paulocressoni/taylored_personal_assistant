@@ -140,7 +140,7 @@ docker compose -p taylored-assistant-prod \
 2. `http://<host>:8080/health` answers, and the UI loads.
 3. **A typed chat turn** returns an answer.
 4. **A voice turn** — press **Speak** in the composer, or drive the socket directly from a dev machine:
-   `uv run python scripts/smoke_09_voice_ws.py --url ws://<host>:8080/ws/voice`.
+   `ENV=dev uv run python scripts/smoke_09_voice_ws.py --url ws://<host>:8080/ws/voice`.
    Note the backend publishes **no host port** in prod, so the socket is only reachable through nginx
    on 8080 — and the script takes the API key from your *local* `backend/.env.dev`, which must match
    the box's `ASSISTANT_API_KEY`. This is the check that proves the whole audio path including the

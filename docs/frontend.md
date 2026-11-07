@@ -90,7 +90,7 @@ frontend/
 
 1. Backend up first — either the **full stack** (`make dev-up` from the repo root, which
    also serves the frontend from a container) or the **backend only** (`make dev-local`,
-   or `uv run uvicorn app.main:app --reload` from `backend/`). The frontend is useless
+   or `ENV=dev uv run uvicorn app.main:app --reload` from `backend/`). The frontend is useless
    without it.
 2. Install deps and generate the API types:
 

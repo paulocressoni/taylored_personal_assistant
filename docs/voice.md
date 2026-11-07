@@ -358,6 +358,7 @@ language, or the app refuses to boot.
 
 ```powershell
 cd backend
+$env:ENV="dev"
 
 # 1. Synthesize the spoken fixtures ONCE (spends a little OpenAI credit).
 uv run python scripts/make_voice_fixtures.py      # tests/fixtures/voice_{en,de,pt}.wav
@@ -372,6 +373,9 @@ uv run python scripts/smoke_09_voice_ws.py --lang de --out reply_de.wav
 # 4. The measurement that decides whether the budget above is met.
 uv run python scripts/voice_latency.py --runs 5 --warmup 1
 ```
+
+On Linux/macOS prefix each `uv run` command with `ENV=dev` instead of the `$env:ENV="dev"`
+line (e.g. `ENV=dev uv run python scripts/smoke_08_voice_pipeline.py --lang en`).
 
 `smoke_08` drives the **real** `VoiceSession` (real VAD, real providers, real resampler)
 and writes the reply as a WAV, so the only thing left to explain a slow turn is the

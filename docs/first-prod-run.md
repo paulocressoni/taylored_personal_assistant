@@ -88,7 +88,7 @@ uv --version
 
 cd backend
 uv sync                                    # creates .venv from uv.lock
-uv run python -c "import app.core.config"  # sanity check
+uv run python -c "import app._version as v; print(v.__version__)"   # sanity check
 ```
 
 `uv` also downloads Python 3.12 itself (`uv python install 3.12`) — no system Python work.
