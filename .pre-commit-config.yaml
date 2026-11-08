@@ -9,8 +9,13 @@ repos:
       - id: detect-private-key
 
   # Backend: Python lint + format (explicitly scoped to backend/)
+  # Pinned to the same version the project depends on (backend/pyproject.toml,
+  # ruff>=0.16.3). The two drifting apart is not cosmetic: `make lint` uses the
+  # CLI and the hook used an older one, so rules added to the default set in
+  # between (EXE002, for a script that was executable without a shebang) failed
+  # CI while the commit passed.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.4
+    rev: v0.16.3
     hooks:
       - id: ruff
         args: [--fix]
