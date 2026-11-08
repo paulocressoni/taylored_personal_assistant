@@ -25,8 +25,10 @@ Messages are validated by the commit-msg hook (commitizen). Install hooks:
     cd backend && uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 
 The pre-commit config also lints/formats the frontend (ESLint + Prettier via `local`
-hooks). Those hooks need `frontend/node_modules` installed (`cd frontend && npm ci`) and a
-POSIX shell (`bash`) — use Git Bash on Windows.
+hooks). Those hooks need `frontend/node_modules` installed (`cd frontend && npm ci`), a POSIX
+shell (`bash`) — use Git Bash on Windows — and Node 24.19.0. Git hooks do not source your
+shell rc, so the hooks call `frontend/scripts/precommit-node.sh`, which finds `.nvmrc`'s Node
+under `~/.nvm` (or `~/.local/bin`, `/usr/local/bin`, `/usr/bin`) instead of relying on PATH.
 
 ## Version bump mapping (SemVer)
 - fix:  -> PATCH  (1.2.3 -> 1.2.4)

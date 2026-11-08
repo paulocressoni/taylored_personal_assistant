@@ -20,10 +20,25 @@ password manager.
 
 | Value | Where it must match | What happens if it doesn't |
 |---|---|---|
-| **API key** | `backend/.env.prod` → `ASSISTANT_API_KEY` **and** the GitHub repository secret `VITE_API_KEY` (baked into the frontend image at build) | The UI loads, then every request fails with *"Authentication failed — check VITE_API_KEY"* (WS close 1008 / HTTP 401) |
+| **API key** | `backend/.env.prod` → `ASSISTANT_API_KEY` **and** the value baked into the frontend image (publishers: the `VITE_API_KEY` repository secret they build with) | The UI loads, then every request fails with *"Authentication failed — check VITE_API_KEY"* (WS close 1008 / HTTP 401) |
 | **Langfuse project keys** | `infra/compose/.env.prod` → `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` / `_SECRET_KEY` **and** `backend/.env.prod` → `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | No crash and no log error: the project is created with one pair, the SDK sends the other, and **every trace is silently rejected** |
 
-Generate the API key once:
+**Who chooses the key depends on who builds the frontend image** — the SPA can only send the key
+that was compiled into it at build time:
+
+| You are… | The key | How |
+|---|---|---|
+| running **these published images** | fixed by the image tag; identical for every deployment of that tag | recover it and use it verbatim ([§4.3](#43-recovering-the-baked-frontend-key)). Generating your own does **not** work: the backend would reject the SPA it is serving |
+| publishing your **own** images (owner or fork) | yours to choose | generate one below, set it as the `VITE_API_KEY` repository secret **before** tagging, and put the same value in `backend/.env.prod` |
+
+This key gates **every** client, not only the browser: a satellite sends the same value as
+`?api_key=` on `/ws/voice`, and it cannot connect at all with an empty one. That copy is compiled
+into the firmware (`CONFIG_SATELLITE_API_KEY`, see the
+[firmware README](../firmware/README.md)), so a headless deployment still needs the key — only the
+*frontend image* is browser-specific. Point a device at `:8080` with the prod key or at `:8000`
+with the dev key; the two are not interchangeable.
+
+Generate a key only in the second case:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -32,9 +47,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 Use URL-safe characters only — the key travels as a WebSocket query parameter
 (`?api_key=…`) on the fallback transport.
 
-> **If you are not the repo owner**, you cannot read the existing `VITE_API_KEY` secret. Either
-> fork, set your own secret and publish your own images (see the publish workflow), or recover the
-> baked value from a published frontend image with the command in §4.2.
+> `VITE_API_KEY` is a **write-only repository secret**, so a consumer of the published images
+> cannot look it up in GitHub. §4.3 extracts it from the image instead — possible only because the
+> value ships inside a public artifact.
 
 ---
 
@@ -52,9 +67,11 @@ Use URL-safe characters only — the key travels as a WebSocket query parameter
 | Ports | `8080` and `3000` free | `ss -tlnH \| grep -E ':(8080\|3000)$'` |
 
 Install Docker from Docker's own repository (never snap — strict confinement breaks host volume
-paths), then enable it at boot and add yourself to the group:
+paths), then enable it at boot and add yourself to the group. The same step installs the rest of
+the deploy toolchain the Makefile needs (`make`, `git`, `curl`, `ca-certificates`):
 
 ```bash
+sudo apt update && sudo apt install -y make git curl ca-certificates
 sudo systemctl enable --now docker
 sudo usermod -aG docker "$USER"
 ```
@@ -88,7 +105,7 @@ uv --version
 
 cd backend
 uv sync                                    # creates .venv from uv.lock
-uv run python -c "import app.core.config"  # sanity check
+uv run python -c "import app._version as v; print(v.__version__)"   # sanity check
 ```
 
 `uv` also downloads Python 3.12 itself (`uv python install 3.12`) — no system Python work.
@@ -96,12 +113,16 @@ uv run python -c "import app.core.config"  # sanity check
 ### 2.2 Node 24 + npm — pinned to `frontend/.nvmrc`
 
 Ubuntu/Debian archives often ship an older Node than this repo accepts (`engines` requires
-`node >=24.19.0`, `npm >=11.17.0`). Use a version manager so `.nvmrc` is authoritative:
+`node >=24.19.0`, `npm >=11.17.0`). Use nvm so `.nvmrc` is authoritative — NodeSource is the
+fallback if the box must have a system-wide Node:
 
 ```bash
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
-export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"
+# 1. nvm — pinned tag; newer releases: https://github.com/nvm-sh/nvm/releases
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.41.0/install.sh | bash
+export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"    # the installer edits ~/.bashrc, not this shell
+nvm --version                                        # 0.41.0
 
+# 2. Node from .nvmrc, then the locked dependencies
 cd frontend
 nvm install          # reads .nvmrc → 24.19.0, and switches to it
 nvm use
@@ -109,6 +130,9 @@ node -v && npm -v    # v24.19.0 / 11.x
 
 npm ci               # lockfile-exact install (never `npm install` for this)
 ```
+
+No-nvm alternative (system-wide, needs sudo): `curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -`
+then `sudo apt install -y nodejs`.
 
 ### 2.3 Pre-commit hooks
 
@@ -118,9 +142,9 @@ uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
 The hooks run `ruff`, `detect-secrets`, `commitizen` and the local frontend hooks. The frontend
-ones shell out to `npx eslint` / `npx prettier`, so **`node` must be on the PATH of the shell that
-runs `git commit`**. If `nvm` is only loaded in interactive shells, a hook run from a task or IDE
-fails with `npx: command not found`; run commits from a terminal where `nvm use` has been applied.
+ones run `eslint` / `prettier` through `frontend/scripts/precommit-node.sh`, which resolves
+`.nvmrc`'s Node under `~/.nvm` itself — `git commit` does not read your shell rc, so nvm's PATH
+setup is invisible to it. Node installed somewhere else? Put its `bin` directory on PATH.
 
 ### 2.4 The full gate, once
 
@@ -134,24 +158,26 @@ cd frontend && npm run test && npm run build
 ## 3. Repository and registry
 
 ```bash
-git clone https://github.com/<owner>/taylored_personal_assistant.git
+OWNER=paulocressoni          # the account that publishes the images (your fork's owner if you forked)
+TAG=0.4.3-test               # the release tag with the leading "v" stripped
+git clone "https://github.com/$OWNER/taylored_personal_assistant.git"
 cd taylored_personal_assistant
-git checkout v<tag>        # or stay on main; the Makefile derives APP_VERSION from
+git checkout "v$TAG"       # or stay on main; the Makefile derives APP_VERSION from
                            # backend/app/_version.py, which release-please keeps at the latest release
 ```
 
-The GHCR images are **private**. Log in with a token that carries **`read:packages`** (a classic
-PAT scoped to nothing else is enough; fine-grained tokens need *Packages: read*):
-
-```bash
-docker login ghcr.io -u <owner>
-```
+The GHCR images are **public**, so there is no registry login: `docker pull` works anonymously
+and `make prod-pull` needs no credentials. (A fork that publishes its own images gets **private**
+packages by default — then each consumer logs in as **themselves** with a PAT carrying
+`read:packages`: `docker login ghcr.io -u YOUR_GITHUB_USERNAME`. `-u` is your own username, never
+the owner's; the token is the credential. Details in
+[the cheat sheet](docker-cheatsheet.md#who-can-pull-these-images).)
 
 Verify the release exists before starting anything:
 
 ```bash
-docker pull ghcr.io/<owner>/taylored-personal-assistant-backend:<tag>
-docker pull ghcr.io/<owner>/taylored-personal-assistant-frontend:<tag>
+docker pull "ghcr.io/$OWNER/taylored-personal-assistant-backend:$TAG"
+docker pull "ghcr.io/$OWNER/taylored-personal-assistant-frontend:$TAG"
 ```
 
 ---
@@ -201,7 +227,7 @@ All seven random secrets must be **distinct** — do not reuse one value in seve
 |---|---|---|
 | `ENV` | `prod` | the app requires `dev` or `prod` |
 | `DEEPSEEK_API_KEY` | from DeepSeek | fail-fast: the app will not boot without it |
-| `ASSISTANT_API_KEY` | **the same value as the `VITE_API_KEY` GitHub secret** | see §0; 32+ URL-safe chars |
+| `ASSISTANT_API_KEY` | **exactly what your frontend image sends**: for the published images, the `VITE_API_KEY` baked into that tag (§4.3); if you built the image, the value you passed at build time | see §0; 32+ URL-safe chars |
 | `DEFAULT_TIMEZONE` | e.g. `Europe/Berlin` | IANA name |
 | `SUPPORTED_LANGUAGES` | `["en","de","pt-BR"]` | JSON list |
 | `VOICE_ENABLED` | `true` to turn voice on | boot fails if a key or a voice is missing |
@@ -217,19 +243,53 @@ Do **not** set `CHECKPOINT_DB_PATH` in prod — `docker-compose.prod.yml` inject
 
 ### 4.3 Recovering the baked frontend key
 
-If you inherited a deployment and nobody remembers `VITE_API_KEY`, read it out of the published
-image instead of guessing:
+**Anyone deploying a published frontend image needs this step**, not only someone who inherited a
+deployment. `vite build` ran in CI with the publisher's `VITE_API_KEY`, so the bundle carries that
+key forever. Your `backend/.env.prod` is the only side you can set, and it must hold the exact same
+value.
+
+Why you should not skip it or invent your own value: the UI loads normally and every request then
+fails with HTTP `401` / WS close `1008` (*"Authentication failed — check VITE_API_KEY"*). `/health`
+still answers `200`, because it needs no key — so the stack looks healthy while chat is dead, and
+the symptom reads as a backend bug.
+
+Read the value out of the image you are about to deploy (the packages are public, so this needs no
+login):
 
 ```bash
+OWNER=paulocressoni        # the account that published the image
+TAG=0.4.0                  # the release you deploy — NOT latest
 docker run --rm --entrypoint sh \
-  ghcr.io/<owner>/taylored-personal-assistant-frontend:<tag> \
+  "ghcr.io/$OWNER/taylored-personal-assistant-frontend:$TAG" \
   -c 'grep -rhoE ".{0,120}X-API-Key.{0,10}" /usr/share/nginx/html/assets/*.js' \
   | grep -oE '[A-Za-z0-9_-]{40,}'
 ```
 
 That prints the key the SPA sends (one 40+ character URL-safe literal per matching bundle; a
-single-chunk build yields exactly one line). Then either copy it into `ASSISTANT_API_KEY`, or treat
-it as compromised, set a new `VITE_API_KEY` secret and cut a new release.
+single-chunk build yields exactly one line). Put it into `backend/.env.prod`, then start the stack:
+
+```
+ASSISTANT_API_KEY=<the value it printed>
+```
+
+Check the pair together once the stack is up — `200` means the two values agree, `401` means they
+do not (`/health` cannot tell you this):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "X-API-Key: $(grep '^ASSISTANT_API_KEY=' backend/.env.prod | cut -d= -f2-)" \
+  "http://<host>:8080/sessions/smoke/history"
+```
+
+Two consequences to know before relying on this key:
+
+- **It is not private.** It is inlined in a publicly pullable image, and every deployment of the
+  same tag shares it. It gates the API surface, not individual users — keep the host on the LAN or
+  behind a VPN (only nginx `:8080` is published).
+- **You cannot rotate it on your own.** A new value only ships inside a new image tag, which only
+  the publisher can build. Want a key nobody else has? Fork the repo, set your own `VITE_API_KEY`
+  secret and publish (or build) your own frontend image — then the backend value is yours to
+  choose (§0).
 
 ---
 
@@ -266,7 +326,7 @@ fingerprint, not a bad key — retry with `curl` (as above) before regenerating 
 ## 6. First start
 
 ```bash
-make prod-pull      # proves registry auth and that <tag> exists
+make prod-pull      # proves registry auth and that "$TAG" exists
 make prod-up        # pull + up -d --no-build --wait
 ```
 
@@ -302,11 +362,11 @@ reboot" means *returns after the passphrase* — do not claim an unattended cold
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `npm: command not found` | Node not installed, or the shell predates the nvm install | §2.2, then open a new shell |
-| `npx: command not found` inside a git hook | The hook's shell has no nvm PATH | Commit from a terminal where `nvm use` ran |
+| `npm: command not found` | Node not installed, or the shell predates the nvm install | §2.2, then `export NVM_DIR="$HOME/.nvm"; . "$NVM_DIR/nvm.sh"` or open a new shell |
+| `npx: command not found` inside a git hook | Node is missing, or lives outside `~/.nvm` / `/usr/local/bin` / `/usr/bin` | §2.2; the hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`, otherwise put Node's `bin` dir on PATH |
 | `uv: command not found` | `~/.local/bin` not on PATH, or run from a non-interactive shell | `export PATH="$HOME/.local/bin:$PATH"` |
 | `permission denied ... /run/docker.sock` while `id` lists the group | Session predates `usermod -aG docker` | Log out and back in, or `newgrp docker` |
-| `pull access denied` / `unauthorized` on GHCR | Not logged in, or the token lacks `read:packages` | §3 |
+| `pull access denied` / `unauthorized` on GHCR | You are pulling a **private** package (e.g. from your own fork) without a `read:packages` token — the published ones are public | §3 |
 | **"Authentication failed — check VITE_API_KEY"** | `ASSISTANT_API_KEY` ≠ the `VITE_API_KEY` secret baked into the image | §4.3 to recover the baked value, then align the backend (§0) |
 | Langfuse login redirects in a loop or fails | `NEXTAUTH_URL` ≠ the browser's exact address | §4.1 |
 | Stack healthy, **Traces empty** | Langfuse key pair mismatch, or `LANGFUSE_ENABLED` false | §0 and §4.2 |

@@ -1,6 +1,6 @@
 # Docker cheat sheet
 
-Quick reference for the containerized backend (M07). Assumes Docker is **already installed** and the engine is running — no install steps here.
+Quick reference for the containerized backend (M07). Assumes Docker is **already installed** and the engine is running — install steps for Windows (Docker Desktop) and Ubuntu (Docker's apt repo) are in the [main README](../README.md#docker-m07--containerized-backend).
 
 ## Is Docker ready?
 
@@ -11,9 +11,11 @@ Quick reference for the containerized backend (M07). Assumes Docker is **already
 | End-to-end sanity | `docker run hello-world` |
 | List images + size | `docker images` |
 
-> `docker` is just a **client** — the engine lives in Docker Desktop's WSL2 VM. If you get *"cannot connect to the Docker daemon"*, the app isn't running. If `docker` is *"not recognized"*, open a new terminal (PATH) — the machine PATH may have been updated after your terminal started.
+> `docker` is just a **client** — the engine is a separate daemon: Docker Desktop's WSL2 VM on Windows, the `docker.service` systemd unit on Linux. If you get *"cannot connect to the Docker daemon"*, the engine isn't running (`sudo systemctl start docker` on Linux; start Docker Desktop on Windows). If `docker` is *"not recognized"*, open a new terminal (PATH) — or, on Linux, you were just added to the `docker` group and need a new session.
 
 ## What's needed to start the backend
+
+**Windows (PowerShell):**
 
 ```powershell
 # 1. Build the image (context = backend/)
@@ -25,6 +27,20 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 # 3. Verify it's healthy
 docker ps                                    # PORTS: 0.0.0.0:8000->8000/tcp ; STATUS: (healthy)
 curl.exe http://localhost:8000/health        # -> {"status":"ok"}
+```
+
+**Linux/macOS:**
+
+```bash
+# 1. Build the image (context = backend/)
+docker build -t assistant-backend backend/
+
+# 2. Run a container from it (detached, background), publishing port 8000
+docker run -d --name assistant-backend -p 8000:8000 assistant-backend
+
+# 3. Verify it's healthy
+docker ps                                    # PORTS: 0.0.0.0:8000->8000/tcp ; STATUS: (healthy)
+curl http://localhost:8000/health            # -> {"status":"ok"}
 ```
 
 Rebuild after code changes: repeat step 1, then `docker rm -f assistant-backend` and step 2 again.
@@ -161,41 +177,80 @@ Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
 > injects `VITE_API_KEY` as a build ARG from the **`VITE_API_KEY` GitHub repository secret**
 > (Settings → Secrets and variables → Actions), which must hold the same value as the
 > backend's `ASSISTANT_API_KEY`. Key changed? Update the secret **before** cutting the next
-> release tag, then re-pull the new `frontend:X.Y.Z`.
+> release tag, then re-pull the new `frontend:X.Y.Z`. That is the **publisher's** path — a
+> consumer of someone else's images cannot change the key and recovers the baked value instead
+> ([first-prod-run §4.3](first-prod-run.md#43-recovering-the-baked-frontend-key)).
 
 > **Docker group membership needs a new session.** `usermod -aG docker <user>` only writes
 > `/etc/group`; shells started before it keep their old group set and still get
 > `permission denied ... /run/docker.sock`. Log out and back in (or `newgrp docker` for one
 > shell) and check with `id -nG | grep -x docker` in the session that will run the commands.
 
-```powershell
-# Pull a release (requires GHCR auth; the images are private — use a token with read:packages)
-docker login ghcr.io -u paulocressoni
+### Who can pull these images
+
+Both packages are **public**: `docker pull` works anonymously on any machine — no `docker
+login`, no token, nothing to configure. Only the *publisher* needs credentials (CI uses the
+workflow's own `GITHUB_TOKEN`).
+
+| Situation | What to do |
+|---|---|
+| **Using these images** | Just pull (see below). Then copy the key baked into the frontend tag into `backend/.env.prod` → `ASSISTANT_API_KEY` — [first-prod-run §4.3](first-prod-run.md#43-recovering-the-baked-frontend-key) has the command and explains why a self-generated key fails. The pull command is identical in PowerShell and bash. |
+| **Your own fork publishes to GHCR** | New container packages are **private by default**. Either flip each one once (profile → **Packages** → package → **Package settings** → *Danger zone* → **Change visibility** → Public; new tags inherit it), or keep it private and have each consumer log in as **themselves** with a PAT carrying `read:packages` — `docker login ghcr.io -u THEIR_USERNAME`. `-u` is never the package owner's name: the token is the credential. |
+| **Someone who should not see these images at all** | Fork the repo and publish their own: the frontend key is baked per build, so their `VITE_API_KEY` / `ASSISTANT_API_KEY` should be their own values anyway. |
+
+> **The frontend image contains `VITE_API_KEY`.** The key is inlined into the JS bundle, so
+> anyone who pulls the image can read it — and every deployment of that tag shares it. It is a
+> perimeter gate, not user identity, and the prod stack publishes only nginx on `:8080` — keep
+> the host LAN-only (or behind a VPN). Only the publisher can rotate it: a new value ships in a
+> new image tag (update the secret → cut a release → re-pull); a consumer who wants a key nobody
+> else has must build and publish their own frontend image.
+
+Pull a release (identical in PowerShell and bash):
+
+```
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-backend:0.3.0
 docker pull ghcr.io/paulocressoni/taylored-personal-assistant-frontend:0.3.0
+```
 
-# Run the production stack. `-p taylored-assistant-prod` gives prod its OWN
-# compose project -> separate volumes/networks/containers from dev
-# (taylored-assistant-dev), so conversation data is never shared. Both can
-# even run at once (prod publishes :8080; dev uses 8000/5173/3000).
-#
-# Since the prod overlay gained observability, prod runs the FULL stack:
-# app images + the Langfuse profile (`--profile observability`) + the
-# `app-db` Postgres that backs the production graph checkpointer. Secrets
-# come from `.env.prod`. All services carry `restart: unless-stopped`, so a
-# full host reboot brings the whole stack back by itself (after the root volume
-# is unlocked, if it is encrypted).
+Then run the production stack. `-p taylored-assistant-prod` gives prod its OWN
+compose project -> separate volumes/networks/containers from dev
+(`taylored-assistant-dev`), so conversation data is never shared. Both can
+even run at once (prod publishes :8080; dev uses 8000/5173/3000).
+
+Since the prod overlay gained observability, prod runs the FULL stack:
+app images + the Langfuse profile (`--profile observability`) + the
+`app-db` Postgres that backs the production graph checkpointer. Secrets
+come from `.env.prod`. All services carry `restart: unless-stopped`, so a
+full host reboot brings the whole stack back by itself (after the root volume
+is unlocked, if it is encrypted).
+
+**Windows (PowerShell):**
+
+```powershell
 $env:APP_VERSION = '0.4.1-test'   # the tag you deployed (git tag == image tag, never :latest)
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability pull
 docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability up -d --no-build --wait
-# open http://localhost:8080  (nginx) — chat streams over /ws through the proxy
-#     http://<host>:3000  Langfuse UI (port published by the prod overlay;
-#                         see infra/compose/.env.prod, infra/observability/dashboards.md
-#                         and infra/observability/alerts.md)
-# after a reboot, confirm everything came back: `docker compose ... ps` shows all "Up"
 ```
 
+**Linux/macOS:**
+
+```bash
+export APP_VERSION=0.4.1-test     # the tag you deployed (git tag == image tag, never :latest)
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability pull
+docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.prod.yml --env-file infra/compose/.env.prod --profile observability up -d --no-build --wait
+```
+
+Then open `http://localhost:8080` (nginx) — chat streams over `/ws` through the proxy.
+The Langfuse UI is at `http://<host>:3000` (port published by the prod overlay; see
+`infra/compose/.env.prod`, [dashboards.md](../infra/observability/dashboards.md) and
+[alerts.md](../infra/observability/alerts.md)). After a reboot, confirm everything came back:
+`docker compose ... ps` shows all services "Up".
+
 ### One command (Linux / macOS — `make`, repo root)
+
+GNU make is not installed by default on minimal Ubuntu images (`sudo apt install make`) or with
+Git for Windows (use WSL2 or Chocolatey; see [README Step 1c](../README.md#1c-install-make-one-time)).
+Every target below has a raw `docker compose` equivalent in the sections above.
 
 | Target | Purpose |
 |---|---|
@@ -224,10 +279,21 @@ docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.ym
 
 Shortcut — set once per terminal, then plain `docker compose` works:
 
+**Windows (PowerShell):**
+
 ```powershell
 $env:COMPOSE_FILE = "infra/compose/docker-compose.base.yml;infra/compose/docker-compose.dev.yml"
 $env:COMPOSE_ENV_FILES = "infra/compose/.env.dev"
 $env:COMPOSE_PROJECT_NAME = "taylored-assistant-dev"   # isolate dev from prod
+docker compose --profile observability up --build -d --wait
+```
+
+**Linux/macOS** — the `COMPOSE_FILE` separator is `:`, not `;`:
+
+```bash
+export COMPOSE_FILE=infra/compose/docker-compose.base.yml:infra/compose/docker-compose.dev.yml
+export COMPOSE_ENV_FILES=infra/compose/.env.dev
+export COMPOSE_PROJECT_NAME=taylored-assistant-dev   # isolate dev from prod
 docker compose --profile observability up --build -d --wait
 ```
 
@@ -291,7 +357,9 @@ docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.y
 | `docker system prune` | Remove unused images/containers/networks (careful) |
 | `docker system df` | Disk usage breakdown |
 
-Project-level cleanup (PowerShell — the `make` equivalents are `dev-down` / `dev-down -v`):
+Project-level cleanup (the commands below work in both shells; on Linux/macOS
+`make dev-down` is the short form — to also drop the volumes, use the raw
+`docker compose … down -v` line):
 
 ```powershell
 # stop the dev stack, keep named volumes
@@ -311,12 +379,19 @@ docker compose -p taylored-assistant-prod -f infra/compose/docker-compose.base.y
 
 **Full wipe — everything on the machine** (containers, volumes, images, networks):
 
+**Windows (PowerShell):**
+
 ```powershell
 docker rm -f (docker ps -aq)          # stop + remove ALL containers
 docker system prune -a --volumes -f   # remove all unused images/volumes/networks + build cache
 ```
 
-> On Linux/macOS use `$(docker ps -aq)` instead of PowerShell's `(docker ps -aq)`.
+**Linux/macOS:**
+
+```bash
+docker rm -f $(docker ps -aq)         # stop + remove ALL containers
+docker system prune -a --volumes -f   # remove all unused images/volumes/networks + build cache
+```
 
 ## Network stuck — "Resource is still in use"
 
@@ -347,9 +422,21 @@ to it — the attached containers are the network's "endpoints".
 > so it never frees the network — even though `docker compose ps` still lists the containers.
 > If `down` keeps failing with this message, don't loop on it; remove the containers directly:
 
+**Windows (PowerShell):**
+
 ```powershell
 # 1. Stop + remove every project container (force = the reliable fallback)
 docker rm -f (docker ps -a -q -f name=taylored-assistant)
+
+# 2. The network is now free — delete it (or `docker network prune -f` for all unused)
+docker network rm taylored-assistant_default
+```
+
+**Linux/macOS:**
+
+```bash
+# 1. Stop + remove every project container (force = the reliable fallback)
+docker rm -f $(docker ps -a -q -f name=taylored-assistant)
 
 # 2. The network is now free — delete it (or `docker network prune -f` for all unused)
 docker network rm taylored-assistant_default

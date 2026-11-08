@@ -90,7 +90,7 @@ frontend/
 
 1. Backend up first — either the **full stack** (`make dev-up` from the repo root, which
    also serves the frontend from a container) or the **backend only** (`make dev-local`,
-   or `uv run uvicorn app.main:app --reload` from `backend/`). The frontend is useless
+   or `ENV=dev uv run uvicorn app.main:app --reload` from `backend/`). The frontend is useless
    without it.
 2. Install deps and generate the API types:
 
@@ -104,8 +104,16 @@ frontend/
    `ASSISTANT_API_KEY`. Copy the env template and fill it in with that **same** value
    (the hook sends it as `X-API-Key` on HTTP and `?api_key=` on the WebSocket):
 
+   **Windows (PowerShell):**
+
    ```powershell
    Copy-Item .env.example .env.local   # then set VITE_API_KEY=<ASSISTANT_API_KEY>
+   ```
+
+   **Linux/macOS:**
+
+   ```bash
+   cp .env.example .env.local          # then set VITE_API_KEY=<ASSISTANT_API_KEY>
    ```
 
    A mismatch → `401` on HTTP and socket close `1008` on WS (see "Auth" below).
@@ -284,7 +292,8 @@ targeting this `device_id` fires.
   too). Node comes from `frontend/.nvmrc`.
 - **Node pinning:** `frontend/.nvmrc` (read by nvm/fnm and CI) + `engines` in
   `package.json` (declared requirement) + optional `engine-strict=true` in `.npmrc` to
-  turn warnings into errors.
+  turn warnings into errors. nvm itself is installed in [README Step 7a](../README.md#7a-install-node-one-time);
+  then `nvm install` from `frontend/` reads `.nvmrc`.
 
 ## Troubleshooting
 
@@ -294,4 +303,5 @@ targeting this `device_id` fires.
 | `src/api/types.ts` import fails | Run `npm run types` (backend must be up) |
 | "Connection failed — is the backend running on :8000?" | Backend not up, or the Vite proxy path changed — check `make dev-up` and `vite.config.ts` |
 | Two sockets open in dev tools | That's StrictMode's mount/unmount/remount — the cleanup closes the first; only real if the second one *stays open* |
+| Pre-commit frontend hooks fail with `npx: command not found` (exit 127) | Node (or nvm) is missing, or Node lives outside the prefixes the hook script probes | install nvm + Node per README Step 7a; the hooks resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`, otherwise put Node's `bin` dir on PATH |
 | Pre-commit frontend hooks fail on Windows | Missing `bash` (need Git Bash) or missing `frontend/node_modules` (run `npm ci`) |

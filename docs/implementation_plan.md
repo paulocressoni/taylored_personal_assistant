@@ -321,8 +321,8 @@ working observability, working backups, and a **tested** restore.
 
 **STEPS:**
 1. On the host: clone the repo (deploy scripts + compose files only). Confirm the session that will run `make` sees
-   the container group (`id -nG | grep -x docker` — group membership only applies to a **new** login), then
-   `docker login ghcr.io`. The images are **private**, so this needs a token with `read:packages`.
+   the container group (`id -nG | grep -x docker` — group membership only applies to a **new** login). No
+   `docker login` is needed: the published images are **public**.
 2. Create `infra/compose/.env.prod` (mode 600) from `.env.prod.example`: Langfuse secrets, `APP_DB_*`
    (**password must stay alphanumeric** — it is inlined in a URL), and `NEXTAUTH_URL` pointing at the host's
    real LAN name/IP.

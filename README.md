@@ -193,12 +193,13 @@ taylored_personal_assistant/
 
 | Tool | Minimum | Notes |
 |---|---|---|
-| Git | any recent | Git for Windows |
+| Git | any recent | Git for Windows · `git` from apt on Linux |
 | `uv` | 0.12+ | Manages Python + venv + deps |
 | Python | 3.12 | Managed by `uv` (auto-downloaded if missing) |
 | Node.js | 24 (LTS) | Runs the frontend; pinned in `frontend/.nvmrc` |
 | npm | 11 | Bundled with Node — frontend package manager |
-| Docker | any recent | For the containerized backend (M07) — assumed installed, no setup steps here |
+| GNU Make | 3.81+ (any GNU make) | Runs the workflow targets (`make dev-up`, `make test`). Linux: `sudo apt install make` · macOS: `xcode-select --install` · Windows: WSL2 or Chocolatey — see [Step 1c](#1c-install-make-one-time) |
+| Docker | any recent | For the containerized backend (M07) — [install steps below](#docker-m07--containerized-backend); Windows uses Docker Desktop |
 | VS Code | any recent | With the extensions listed in [Step 4](#step-4--set-up-vs-code) |
 
 ---
@@ -207,21 +208,68 @@ taylored_personal_assistant/
 
 ### 1a. Install `uv` (one-time)
 
+**Windows (PowerShell):**
+
 ```powershell
 winget install --id=astral-sh.uv
 ```
 
+**Linux/macOS:**
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source "$HOME/.local/bin/env"      # the installer prints this line too
+```
+
 Close and reopen your terminal so `uv` is on your PATH.
 
-> **Alternative installer** (no winget):
+> **Alternative installer** (no winget, or no curl):
+> **Windows (PowerShell):**
 > ```powershell
 > powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+> ```
+> **Linux/macOS:**
+> ```bash
+> pipx install uv      # or: wget -qO- https://astral.sh/uv/install.sh | sh
 > ```
 
 ### 1b. Verify
 
-```powershell
+```
 uv --version
+```
+
+### 1c. Install `make` (one-time)
+
+`make` runs the repo's workflow targets — `make dev-up`, `make test`, `make lint`, `make prod-up`.
+The Makefile needs **GNU make** and a POSIX shell. Without it those targets fail with
+`make: command not found`; every target also has a direct shell equivalent (see the
+[Docker cheat sheet](docs/docker-cheatsheet.md) and the [command cheat sheet](#daily-command-cheat-sheet)), so it is convenient rather than mandatory.
+
+**Windows (PowerShell)** — `make` is **not** part of Git for Windows. Either run the targets from
+WSL2 (`sudo apt install make` inside the distro), or install a native GNU make:
+
+```powershell
+choco install make        # or: use the PowerShell equivalents instead
+```
+
+**Linux/macOS:**
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install -y make
+
+# Fedora / RHEL
+sudo dnf install -y make
+
+# macOS — the Xcode Command Line Tools ship GNU make
+xcode-select --install
+```
+
+Verify:
+
+```
+make --version            # GNU Make 3.81+ (4.x on Linux distros)
 ```
 
 ---
@@ -238,8 +286,17 @@ The version is already pinned in `backend/.python-version`, so `uv` will always 
 
 ### 2b. Create the venv and install dependencies
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+uv sync
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend    # your clone location
 uv sync
 ```
 
@@ -251,17 +308,32 @@ What this does in one shot:
 
 ### 2c. Verify the editable install works
 
-```powershell
-uv run python -c "import app.core.config; print(app.core.config.__file__)"
+```bash
+uv run python -c "import app._version as v, app.language.detector as d; print(v.__version__, d.__file__)"
 ```
 
-Expected output ends with `...\backend\app\core\config.py`. If it fails, jump to [Troubleshooting](#troubleshooting).
+Expected: the version from `backend/app/_version.py` (e.g. `0.4.0`) followed by a path ending in
+`...\backend\app\language\detector.py` on Windows, `.../backend/app/language/detector.py` on
+Linux/macOS. A real path proves the editable install, and importing `detector` also proves a
+third-party dependency loads.
+
+> **Do not run `import app.core.config` yet.** That module is fail-fast by design: it raises
+> `RuntimeError: The ENV environment variable is required. Set ENV=dev or ENV=prod.` unless `ENV`
+> is exported, and once `ENV` is set it still refuses to load until `DEEPSEEK_API_KEY` and
+> `ASSISTANT_API_KEY` hold real values in `.env.{ENV}`. [Step 3c](#3c-verify-the-configuration-loads)
+> checks it at the point where that can actually succeed.
 
 > **Why not activate the venv?** You can, but you don't need to. `uv run` executes inside the project venv automatically and never touches your system Python. If you do want activation (e.g. for interactive `python` in a REPL):
+> **Windows (PowerShell):**
 > ```powershell
 > .\.venv\Scripts\Activate.ps1
 > ```
 > If PowerShell blocks it: `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`, then retry.
+> **Linux/macOS:**
+> ```bash
+> source .venv/bin/activate
+> deactivate    # leave it again
+> ```
 
 ---
 
@@ -275,9 +347,18 @@ The app loads **`.env.{ENV}`**, where `ENV` is `dev` or `prod` (set in the OS en
 before the process starts — `make dev-up` sets it for you). The committed templates are
 `.env.dev.example` / `.env.prod.example`.
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 Copy-Item .env.dev.example .env.dev
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+cp .env.dev.example .env.dev
 ```
 
 Then open `backend/.env.dev` and replace the placeholders with real keys:
@@ -316,6 +397,36 @@ from app.core.config import settings
 
 api_key = settings.deepseek_api_key   # typed, loaded from env/.env
 ```
+
+### 3c. Verify the configuration loads
+
+Once `.env.dev` holds real keys, the same import that fails early (Step 2c) must succeed — this
+is the real fail-fast check:
+
+**Windows (PowerShell):**
+
+```powershell
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
+uv run python -c "import app.core.config; print(app.core.config.__file__)"
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+ENV=dev uv run python -c "import app.core.config; print(app.core.config.__file__)"
+```
+
+Expected: a path ending in `.../backend/app/core/config.py` with no traceback. If it raises, the
+message names what is missing:
+
+| Error | Missing |
+|---|---|
+| `RuntimeError: The ENV environment variable is required` | `ENV` is not set (use `ENV=dev` / `$env:ENV="dev"`, or `make dev-up`, which sets it) |
+| `ValidationError … DEEPSEEK_API_KEY is required` | key still empty/`REPLACE_ME` in `backend/.env.dev` |
+| `ValidationError … ASSISTANT_API_KEY is required` | same, for the shared API key |
+| `ValidationError … VOICE_*_API_KEY` | `VOICE_ENABLED=true` without both voice keys — comment it out or fill both |
 
 ---
 
@@ -384,8 +495,17 @@ Pre-commit runs linting, formatting, and secret scanning on every commit. The co
 
 ### 5a. Install the git hook
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
 uv run pre-commit install --hook-type pre-commit --hook-type commit-msg
 ```
 
@@ -408,8 +528,17 @@ The first run downloads hook environments (a minute or two). It runs:
 
 The baseline is the allowlist of already-known secrets; it only trips on **new** ones. Regenerate it if you rotate a key:
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
+uvx detect-secrets scan --exclude-files '(\.venv/|\.git/|uv\.lock|backend/\.env)' > .secrets.baseline
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant
 uvx detect-secrets scan --exclude-files '(\.venv/|\.git/|uv\.lock|backend/\.env)' > .secrets.baseline
 ```
 
@@ -421,13 +550,24 @@ uvx detect-secrets scan --exclude-files '(\.venv/|\.git/|uv\.lock|backend/\.env)
 
 `app.core.llm` is a pure factory with no `__main__` — to exercise the DeepSeek API, run one of the smoke scripts in `backend/scripts/` (see [LLM provider layer](#llm-provider-layer-m02)):
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 $env:ENV="dev"
 uv run python scripts/smoke_01_chat.py
 ```
 
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+ENV=dev uv run python scripts/smoke_01_chat.py
+```
+
 Run tests:
+
+**Windows (PowerShell):**
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
@@ -437,17 +577,33 @@ uv run pytest -m integration         # live DeepSeek API smoke tests
 uv run pytest tests/test_api.py      # HTTP + WebSocket API tests (fake graph, no network)
 ```
 
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+ENV=dev uv run pytest                        # fast unit suite (smoke tests deselected)
+ENV=dev uv run pytest -m integration         # live DeepSeek API smoke tests
+ENV=dev uv run pytest tests/test_api.py      # HTTP + WebSocket API tests (fake graph, no network)
+```
+
 Run the full dev stack (backend + frontend + Langfuse + DBs — M12):
+
+**Windows (PowerShell):**
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant   # from the repo root
-make dev-up                  # full compose stack with hot reload (Linux/macOS)
-# Windows/PowerShell equivalent:
-#   docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant     # from the repo root
+make dev-up                  # full compose stack with hot reload
 # Backend only, no Docker:  make dev-local
 ```
 
-Then: `curl.exe http://localhost:8000/health` → `{"status":"ok","version":"<current version>"}`, or open
+Then: `curl http://localhost:8000/health` → `{"status":"ok","version":"<current version>"}`, or open
 the interactive docs at `http://localhost:8000/docs`. Full reference in [docs/api.md](docs/api.md).
 
 ---
@@ -459,17 +615,65 @@ on `:8000` through a **dev proxy** — the browser never needs to know the backe
 
 ### 7a. Install Node (one-time)
 
+**Windows (PowerShell):**
+
 ```powershell
 winget install OpenJS.NodeJS.LTS        # or the installer from nodejs.org
 node --version                          # v24.x — pinned in frontend/.nvmrc
 ```
 
+**Linux/macOS:**
+
+```bash
+# 1. Install nvm (Node version manager). Pinned tag — see
+#    https://github.com/nvm-sh/nvm/releases for a newer one.
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.41.0/install.sh | bash
+
+# The installer appends the loading lines to ~/.bashrc (or ~/.zshrc) but does not
+# touch the current shell, so load it now:
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+nvm --version              # 0.41.0
+
+# 2. Install the pinned Node (frontend/.nvmrc → 24.19.0) and switch to it
+nvm install 24.19.0
+nvm use 24.19.0
+node --version             # v24.19.0
+npm --version              # 11.x
+
+# no nvm? system-wide alternative:
+#   curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+#   sudo apt install -y nodejs
+```
+
+> **Prefer not to pipe a script into `bash`?** Clone the same pinned tag instead, then add the
+> three `NVM_DIR` / `nvm.sh` / `bash_completion` lines from the
+> [nvm README](https://github.com/nvm-sh/nvm#install--update-script) to `~/.bashrc` yourself:
+> ```bash
+> git clone --depth 1 --branch v0.41.0 https://github.com/nvm-sh/nvm.git "$HOME/.nvm"
+> ```
+
 **Open a new terminal** after installing — the PATH only refreshes in new sessions.
+
+> **Git hooks and Node.** `git commit` runs hooks without your shell rc, so a Node installed
+> by `nvm` is not on the hook's PATH and a bare `npx` would fail with exit 127. The repo's
+> frontend hooks therefore go through [frontend/scripts/precommit-node.sh](frontend/scripts/precommit-node.sh),
+> which resolves `.nvmrc`'s Node under `~/.nvm` (or `~/.local/bin`, `/usr/local/bin`, `/usr/bin`)
+> before running `npx`. Installed Node somewhere else? Put its `bin` directory on PATH.
 
 ### 7b. Install frontend dependencies
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\frontend
+npm install
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/frontend
 npm install
 ```
 
@@ -491,9 +695,18 @@ header, WebSocket `?api_key=`). The frontend reads it from `VITE_API_KEY`. Creat
 frontend env file from the committed template and set it to the **same value** as the
 backend's `ASSISTANT_API_KEY` (in `backend/.env.dev`):
 
+**Windows (PowerShell):**
+
 ```powershell
 cd frontend
 Copy-Item .env.example .env.local    # then open .env.local and fill it in
+```
+
+**Linux/macOS:**
+
+```bash
+cd frontend
+cp .env.example .env.local           # then open .env.local and fill it in
 ```
 
 A mismatch means the backend answers `401` on HTTP and closes WebSockets with code `1008`
@@ -523,10 +736,55 @@ The backend ships as a **multi-stage Docker image**: a `builder` stage installs 
 | `backend/.dockerignore` | Excludes `.venv`, caches, `.git`, `node_modules` from the build context |
 | `backend/app/main.py` | FastAPI entrypoint exposing `GET /health` |
 
+### Install Docker (one-time)
+
+**Windows (PowerShell)** — Docker Desktop bundles the engine, Compose v2 and Buildx:
+
+```powershell
+winget install Docker.DockerDesktop
+docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+```
+
+**Linux/macOS** — on Ubuntu use Docker's own apt repository. Ubuntu's `docker.io`
+package ships **no** Compose v2 plugin, so installing it is not a substitute:
+
+```bash
+# 1. Docker's apt repo (keyring + source list)
+sudo apt update && sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# 2. engine + Compose v2 plugin + buildx
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+# 3. run docker without sudo (takes effect in a NEW shell)
+sudo usermod -aG docker "$USER"
+newgrp docker
+
+# 4. verify
+docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
+docker compose version
+```
+
+macOS uses Docker Desktop for Mac instead (same `docker`/`docker compose` commands).
+
 ### Build the image
+
+**Windows (PowerShell):**
 
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
+docker build -t assistant-backend backend/
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant
 docker build -t assistant-backend backend/
 ```
 
@@ -544,8 +802,16 @@ docker logs assistant-backend
 
 Check the health endpoint (on Windows, `curl` is aliased — use `curl.exe`):
 
+**Windows (PowerShell):**
+
 ```powershell
 curl.exe http://localhost:8000/health     # -> {"status":"ok"}
+```
+
+**Linux/macOS:**
+
+```bash
+curl http://localhost:8000/health         # -> {"status":"ok"}
 ```
 
 ### Stop, remove, rebuild
@@ -571,8 +837,12 @@ On every tagged release, CI builds, Trivy-scans, and pushes **two images** to GH
 and proxying `/ws` + API to the backend). Each is tagged `X.Y.Z`, `sha-<sha>`, and
 `latest` (browsing only). The git tag IS the image tag — prod runs the pinned `:X.Y.Z`,
 never `:latest`. The frontend image bakes the shared API key at build time from the
-`VITE_API_KEY` repo secret (must equal the backend's `ASSISTANT_API_KEY`). Pull + run
-instructions live in the [Docker cheat sheet](docs/docker-cheatsheet.md).
+`VITE_API_KEY` repo secret (must equal the backend's `ASSISTANT_API_KEY`). Both packages are
+**public**, so `docker pull` needs no token and no `docker login` — see
+[who can pull these images](docs/docker-cheatsheet.md#who-can-pull-these-images) for the
+pull commands. Running them without being the publisher? The key is fixed per tag, so
+[recover it from the image](docs/first-prod-run.md#43-recovering-the-baked-frontend-key) and put
+that exact value in your `backend/.env.prod`.
 
 ---
 
@@ -593,17 +863,43 @@ identically — only `DEEPSEEK_API_KEY` is fail-fast. The SDK wiring lives in
 
 Quick start (full guide: [docs/observability.md](docs/observability.md)):
 
+**Windows (PowerShell):**
+
 ```powershell
-cd infra/compose
-Copy-Item .env.dev.example .env.dev    # fill in secrets (openssl rand -hex 32)
-cd ../..
-make dev-up                        # M12: full stack incl. Langfuse (observability profile)
-# backend/.env.dev: LANGFUSE_ENABLED=true + pk-lf-* / sk-lf-* keys (see .env.dev.example)
-cd backend
-ENV=dev uv run python -m scripts.smoke_07_langfuse   # verify a trace lands
-# open http://localhost:3000 -> Traces -> newest run
-# first login (dev): dev@localhost.local / dev-password-123 — see docs/observability.md
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
+Copy-Item infra/compose/.env.dev.example infra/compose/.env.dev   # fill in secrets (openssl rand -hex 32)
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait
 ```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant
+cp infra/compose/.env.dev.example infra/compose/.env.dev   # fill in secrets (openssl rand -hex 32)
+make dev-up                        # M12: full stack incl. Langfuse (observability profile)
+```
+
+Then verify a trace lands:
+
+**Windows (PowerShell):**
+
+```powershell
+cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
+uv run python -m scripts.smoke_07_langfuse
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+ENV=dev uv run python -m scripts.smoke_07_langfuse
+```
+
+Both use `backend/.env.dev` (`LANGFUSE_ENABLED=true` + the `pk-lf-*` / `sk-lf-*`
+pair from `infra/compose/.env.dev`, see [.env.dev.example](infra/compose/.env.dev.example)),
+then open `http://localhost:3000` → Traces → newest run (first login, dev:
+`dev@localhost.local` / `dev-password-123` — see [docs/observability.md](docs/observability.md)).
 
 M12 Makefile targets: `make dev-up` (full stack incl. Langfuse) · `make dev-up-light`
 (skip Langfuse) · `make dev-down`. PowerShell equivalents in
@@ -631,8 +927,10 @@ the cached chat models, and flushes Langfuse on shutdown. Routes live in `backen
 
 Quick start (full reference: [docs/api.md](docs/api.md)):
 
+**Windows (PowerShell):**
+
 ```powershell
-make dev-up                          # repo root; uvicorn --reload on :8000
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait    # repo root; uvicorn --reload on :8000
 curl.exe http://localhost:8000/health
 # Every other route requires the shared key: X-API-Key header on HTTP,
 # ?api_key= on the WebSocket (see docs/api.md). <ASSISTANT_API_KEY> = the
@@ -643,7 +941,25 @@ curl.exe -X POST http://localhost:8000/chat `
   -d '{"session_id":"s1","message":"hello"}'
 # WS streaming — from backend/ (the probe sends the shared API key
 # automatically as ?api_key=):
+$env:ENV="dev"
 uv run python scripts/ws_probe.py "tell me a short joke"
+```
+
+**Linux/macOS:**
+
+```bash
+make dev-up                          # repo root; uvicorn --reload on :8000
+curl http://localhost:8000/health
+# Every other route requires the shared key: X-API-Key header on HTTP,
+# ?api_key= on the WebSocket (see docs/api.md). <ASSISTANT_API_KEY> = the
+# value from backend/.env.dev.
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <ASSISTANT_API_KEY>" \
+  -d '{"session_id":"s1","message":"hello"}'
+# WS streaming — from backend/ (the probe sends the shared API key
+# automatically as ?api_key=):
+ENV=dev uv run python scripts/ws_probe.py "tell me a short joke"
 ```
 
 - Input/Output are validated by **Pydantic v2** at the boundary (`schemas.py`) — bad input
@@ -732,12 +1048,23 @@ All LLM access goes through the role-based factory in `backend/app/core/llm.py`.
 
 ### Running the smoke tests
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 $env:ENV="dev"
 uv run python scripts/smoke_01_chat.py            # standalone, prints usage_metadata
 uv run pytest -m integration                      # all 6 as pytest integration tests
 uv run pytest                                     # fast unit suite (smoke excluded)
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+ENV=dev uv run python scripts/smoke_01_chat.py    # standalone, prints usage_metadata
+ENV=dev uv run pytest -m integration              # all 6 as pytest integration tests
+ENV=dev uv run pytest                             # fast unit suite (smoke excluded)
 ```
 
 Each smoke script verifies one capability: basic chat (`smoke_01`), tool calling (`smoke_02`), thinking mode (`smoke_03`), tools + thinking (`smoke_04`), multilingual round-trip en/de/pt-BR (`smoke_05`), and multilingual graph routing — detect → route → reply in the right language (`smoke_06`).
@@ -771,6 +1098,8 @@ the right language.
 
 Prefer plain Python? The same setup, manually:
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
 python -m venv .venv
@@ -779,9 +1108,19 @@ python -m pip install --upgrade pip
 python -m pip install -e . pytest ruff pre-commit pydantic-settings fastapi uvicorn[standard] langgraph lingua-language-detector langchain-openai langchain-deepseek langfuse
 ```
 
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e . pytest ruff pre-commit pydantic-settings fastapi 'uvicorn[standard]' langgraph lingua-language-detector langchain-openai langchain-deepseek langfuse
+```
+
 Caveats:
 - You lose `uv.lock` reproducibility (use `pip freeze > requirements.txt` instead).
-- Bare `pip install` when the venv is **not** activated installs into your **system** Python — always activate first or use `.\.venv\Scripts\python.exe -m pip`.
+- Bare `pip install` when the venv is **not** activated installs into your **system** Python — always activate first, or use `.\.venv\Scripts\python.exe -m pip` on Windows and `.venv/bin/python -m pip` elsewhere.
 - The `-e .` editable install still makes `from app.core...` work globally.
 
 ---
@@ -789,6 +1128,11 @@ Caveats:
 ## Daily command cheat sheet
 
 Run everything from `backend/` unless noted.
+
+> **Anything that boots app code needs `ENV`.** `pytest`, `uvicorn`, and every
+> `scripts/*.py` import `app.core.config`, which fails fast without it:
+> bash `ENV=dev uv run …`, PowerShell `$env:ENV="dev"` once per session. The `make`
+> targets set it for you. `uv sync` / `uv add` / `ruff` do **not** need it.
 
 | Task | Command |
 |---|---|
@@ -800,12 +1144,12 @@ Run everything from `backend/` unless noted.
 | Bump all locked versions | `uv lock --upgrade` |
 | Lint + fix | `uv run ruff check --fix .` |
 | Format | `uv run ruff format .` |
-| Run tests | `uv run pytest` |
-| Run the full dev stack (M12) | `make dev-up` (repo root) · PowerShell: `docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait` |
+| Run tests | `make test` (repo root) · bash: `ENV=dev uv run pytest` · PowerShell: `$env:ENV="dev"; uv run pytest` |
+| Run the full dev stack (M12) | Linux/macOS: `make dev-up` (repo root) · Windows: `docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait` |
 | Run the full stack without Langfuse | `make dev-up-light` (repo root) |
 | Stop the stack / tail logs | `make dev-down` · `make dev-logs` (repo root) |
-| Run the API dev server only (no Docker) | `make dev-local` (repo root) · `uv run uvicorn app.main:app --reload` (backend/) |
-| Stream a WS chat | `uv run python scripts/ws_probe.py "<message>"` |
+| Run the API dev server only (no Docker) | `make dev-local` (repo root) · bash: `ENV=dev uv run uvicorn app.main:app --reload` (backend/) |
+| Stream a WS chat | bash: `ENV=dev uv run python scripts/ws_probe.py "<message>"` (backend/) |
 | Run the frontend dev server | `cd frontend && npm run dev` (repo root → :5173) |
 | Frontend lint | `cd frontend && npm run lint` |
 | Frontend format (write / check) | `cd frontend && npm run format` · `npm run format:check` |
@@ -826,17 +1170,28 @@ The good news: with `uv` there is **no "activate the venv" ritual** — `uv run`
 |---|---|---|
 | Fresh clone or after `git pull` | `uv sync` | Installs deps to match `uv.lock` — the #1 "it worked before, not now" fix |
 | Pre-commit not firing on commit | `uv run pre-commit install` | Re-installs the git hook (once per clone; needed again after some checkouts) |
-| Sanity-check the environment | `uv run python -c "import app.core.config; print(app.core.config.__file__)"` | Confirms venv + editable install in one line |
+| Sanity-check the environment | `uv run python -c "import app._version as v, app.language.detector as d; print(v.__version__, d.__file__)"` | Confirms venv + editable install (no `ENV`/secrets needed) |
 | Fresh clone / after `git pull` (frontend) | `cd frontend && npm ci` | Installs locked frontend deps to match `package-lock.json` |
 
 > You do **not** need to run `uv run pre-commit install` every session — only after a fresh clone or if hooks silently stop firing.
 
 ### After pulling new changes (`git pull`)
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant\backend
+$env:ENV="dev"
 uv sync                    # sync deps to the new uv.lock
 uv run pytest              # make sure everything still passes
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant/backend
+uv sync                    # sync deps to the new uv.lock
+ENV=dev uv run pytest      # make sure everything still passes
 ```
 
 ### After adding/removing dependencies
@@ -859,11 +1214,26 @@ cd frontend && npm run format:check # check frontend formatting
 
 ### Daily development loop
 
+**Windows (PowerShell):**
+
 ```powershell
 cd C:\Users\user_name\Documents\Workspace\taylored_personal_assistant
+docker compose -p taylored-assistant-dev -f infra/compose/docker-compose.base.yml -f infra/compose/docker-compose.dev.yml --env-file infra/compose/.env.dev --profile observability up --build -d --wait   # full local stack (M12)
+# ... edit code ...
+$env:ENV="dev"
+cd backend && uv run pytest            # run tests
+cd backend && uv run ruff check --fix .   # lint + autofix
+git add .
+git commit                             # pre-commit hooks fire automatically
+```
+
+**Linux/macOS:**
+
+```bash
+cd ~/Workspace/taylored_personal_assistant
 make dev-up                            # full local stack with hot reload (M12)
 # ... edit code ...
-cd backend && uv run pytest            # run tests
+cd backend && ENV=dev uv run pytest    # run tests
 cd backend && uv run ruff check --fix .   # lint + autofix
 git add .
 git commit                             # pre-commit hooks fire automatically
@@ -879,6 +1249,23 @@ git commit                             # pre-commit hooks fire automatically
 
 ---
 
+## Troubleshooting
+
+The failures this walkthrough actually hits, in the order you meet them:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `RuntimeError: The ENV environment variable is required. Set ENV=dev or ENV=prod.` | `app/core/config.py` resolves `.env.{ENV}` before pydantic runs, so `ENV` must exist first — importing it in a bare `python -c`/`pytest`/`uvicorn` has none | bash: `ENV=dev uv run …` · PowerShell: `$env:ENV="dev"` first · or use the `make` targets, which set it |
+| `ValidationError … DEEPSEEK_API_KEY is required` / `… ASSISTANT_API_KEY is required` | `.env.dev` missing, empty, or still holding `REPLACE_ME` | fill the real values ([Step 3a](#3a-create-your-local-envdev-and-envprod-for-prod)), then re-run [Step 3c](#3c-verify-the-configuration-loads) |
+| `ValidationError … VOICE_STT_API_KEY` / `VOICE_TTS_API_KEY` | `VOICE_ENABLED=true` without both voice keys — voice is opt-in but fail-fast once enabled | comment `VOICE_ENABLED` out, or set both keys |
+| `npx: command not found` (exit 127) in the `frontend eslint` / `frontend prettier` pre-commit hooks | Node (or nvm) is not installed — `git` runs hooks without your shell rc, so nvm's PATH never applies | install nvm + Node 24.19.0 ([Step 7a](#7a-install-node-one-time)); the hooks then resolve `.nvmrc`'s Node via `frontend/scripts/precommit-node.sh`. Also ensure `frontend/node_modules` exists (`cd frontend && npm ci`) |
+| `permission denied … /run/docker.sock` although `id` lists the `docker` group | the session predates `usermod -aG docker` | log out and back in, or `newgrp docker` |
+| `make: command not found` | GNU make is not installed (it is not part of Git for Windows, and minimal Ubuntu images lack it) | [Step 1c](#1c-install-make-one-time) — or use the direct shell equivalent of the target |
+| Compose: `required variable … is missing a value` / `APP_VERSION …` | the matching `--env-file` was not passed, or `APP_VERSION` is unset | use the `make` targets, or pass `--env-file infra/compose/.env.dev` (prod: `.env.prod`) |
+| Backend healthy but the UI says *"Authentication failed — check VITE_API_KEY"* | frontend `VITE_API_KEY` ≠ backend `ASSISTANT_API_KEY` | make them equal ([Step 7d](#7d-set-the-shared-api-key)); in prod the key is baked into the image |
+
+---
+
 ## Voice pipeline (M29)
 
 Talking to the assistant uses a second, **long-lived** WebSocket (`WS /ws/voice`): 16 kHz
@@ -890,12 +1277,27 @@ conversation as typed ones.
 
 It is **off by default**. To try it:
 
+**Windows (PowerShell):**
+
 ```powershell
 # 1. backend/.env.dev: VOICE_ENABLED=true, VOICE_STT_API_KEY (Groq), VOICE_TTS_API_KEY (OpenAI)
 # 2. regenerate the spoken fixtures once, then run the pipeline with no socket involved
 cd backend
+$env:ENV="dev"
 uv run python scripts/make_voice_fixtures.py
 uv run python scripts/smoke_08_voice_pipeline.py --lang en
+
+# 3. or in the browser: backend + frontend running, then press "Speak" in the composer
+```
+
+**Linux/macOS:**
+
+```bash
+# 1. backend/.env.dev: VOICE_ENABLED=true, VOICE_STT_API_KEY (Groq), VOICE_TTS_API_KEY (OpenAI)
+# 2. regenerate the spoken fixtures once, then run the pipeline with no socket involved
+cd backend
+ENV=dev uv run python scripts/make_voice_fixtures.py
+ENV=dev uv run python scripts/smoke_08_voice_pipeline.py --lang en
 
 # 3. or in the browser: backend + frontend running, then press "Speak" in the composer
 ```
