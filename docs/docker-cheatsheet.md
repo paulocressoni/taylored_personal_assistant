@@ -177,7 +177,9 @@ Each image is tagged `X.Y.Z` (from the git tag), `sha-<sha>`, and `latest`.
 > injects `VITE_API_KEY` as a build ARG from the **`VITE_API_KEY` GitHub repository secret**
 > (Settings → Secrets and variables → Actions), which must hold the same value as the
 > backend's `ASSISTANT_API_KEY`. Key changed? Update the secret **before** cutting the next
-> release tag, then re-pull the new `frontend:X.Y.Z`.
+> release tag, then re-pull the new `frontend:X.Y.Z`. That is the **publisher's** path — a
+> consumer of someone else's images cannot change the key and recovers the baked value instead
+> ([first-prod-run §4.3](first-prod-run.md#43-recovering-the-baked-frontend-key)).
 
 > **Docker group membership needs a new session.** `usermod -aG docker <user>` only writes
 > `/etc/group`; shells started before it keep their old group set and still get
@@ -192,14 +194,16 @@ workflow's own `GITHUB_TOKEN`).
 
 | Situation | What to do |
 |---|---|
-| **Using these images** | Just pull (see below). The command is identical in PowerShell and bash. |
+| **Using these images** | Just pull (see below). Then copy the key baked into the frontend tag into `backend/.env.prod` → `ASSISTANT_API_KEY` — [first-prod-run §4.3](first-prod-run.md#43-recovering-the-baked-frontend-key) has the command and explains why a self-generated key fails. The pull command is identical in PowerShell and bash. |
 | **Your own fork publishes to GHCR** | New container packages are **private by default**. Either flip each one once (profile → **Packages** → package → **Package settings** → *Danger zone* → **Change visibility** → Public; new tags inherit it), or keep it private and have each consumer log in as **themselves** with a PAT carrying `read:packages` — `docker login ghcr.io -u THEIR_USERNAME`. `-u` is never the package owner's name: the token is the credential. |
 | **Someone who should not see these images at all** | Fork the repo and publish their own: the frontend key is baked per build, so their `VITE_API_KEY` / `ASSISTANT_API_KEY` should be their own values anyway. |
 
 > **The frontend image contains `VITE_API_KEY`.** The key is inlined into the JS bundle, so
-> anyone who pulls the image can read it. It is a perimeter gate, not user identity, and the
-> prod stack publishes only nginx on `:8080` — keep the host LAN-only (or behind a VPN).
-> If it leaks: rotate the secret, cut a new release, re-pull.
+> anyone who pulls the image can read it — and every deployment of that tag shares it. It is a
+> perimeter gate, not user identity, and the prod stack publishes only nginx on `:8080` — keep
+> the host LAN-only (or behind a VPN). Only the publisher can rotate it: a new value ships in a
+> new image tag (update the secret → cut a release → re-pull); a consumer who wants a key nobody
+> else has must build and publish their own frontend image.
 
 Pull a release (identical in PowerShell and bash):
 

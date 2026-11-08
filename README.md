@@ -840,7 +840,9 @@ never `:latest`. The frontend image bakes the shared API key at build time from 
 `VITE_API_KEY` repo secret (must equal the backend's `ASSISTANT_API_KEY`). Both packages are
 **public**, so `docker pull` needs no token and no `docker login` — see
 [who can pull these images](docs/docker-cheatsheet.md#who-can-pull-these-images) for the
-pull commands.
+pull commands. Running them without being the publisher? The key is fixed per tag, so
+[recover it from the image](docs/first-prod-run.md#43-recovering-the-baked-frontend-key) and put
+that exact value in your `backend/.env.prod`.
 
 ---
 

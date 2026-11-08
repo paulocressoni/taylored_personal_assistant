@@ -20,10 +20,18 @@ password manager.
 
 | Value | Where it must match | What happens if it doesn't |
 |---|---|---|
-| **API key** | `backend/.env.prod` → `ASSISTANT_API_KEY` **and** the GitHub repository secret `VITE_API_KEY` (baked into the frontend image at build) | The UI loads, then every request fails with *"Authentication failed — check VITE_API_KEY"* (WS close 1008 / HTTP 401) |
+| **API key** | `backend/.env.prod` → `ASSISTANT_API_KEY` **and** the value baked into the frontend image (publishers: the `VITE_API_KEY` repository secret they build with) | The UI loads, then every request fails with *"Authentication failed — check VITE_API_KEY"* (WS close 1008 / HTTP 401) |
 | **Langfuse project keys** | `infra/compose/.env.prod` → `LANGFUSE_INIT_PROJECT_PUBLIC_KEY` / `_SECRET_KEY` **and** `backend/.env.prod` → `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | No crash and no log error: the project is created with one pair, the SDK sends the other, and **every trace is silently rejected** |
 
-Generate the API key once:
+**Who chooses the key depends on who builds the frontend image** — the SPA can only send the key
+that was compiled into it at build time:
+
+| You are… | The key | How |
+|---|---|---|
+| running **these published images** | fixed by the image tag; identical for every deployment of that tag | recover it and use it verbatim ([§4.3](#43-recovering-the-baked-frontend-key)). Generating your own does **not** work: the backend would reject the SPA it is serving |
+| publishing your **own** images (owner or fork) | yours to choose | generate one below, set it as the `VITE_API_KEY` repository secret **before** tagging, and put the same value in `backend/.env.prod` |
+
+Generate a key only in the second case:
 
 ```bash
 python3 -c "import secrets; print(secrets.token_urlsafe(32))"
@@ -32,9 +40,9 @@ python3 -c "import secrets; print(secrets.token_urlsafe(32))"
 Use URL-safe characters only — the key travels as a WebSocket query parameter
 (`?api_key=…`) on the fallback transport.
 
-> **If you are not the repo owner**, you cannot read the existing `VITE_API_KEY` secret. Either
-> fork, set your own secret and publish your own images (see the publish workflow), or recover the
-> baked value from a published frontend image with the command in §4.2.
+> `VITE_API_KEY` is a **write-only repository secret**, so a consumer of the published images
+> cannot look it up in GitHub. §4.3 extracts it from the image instead — possible only because the
+> value ships inside a public artifact.
 
 ---
 
@@ -212,7 +220,7 @@ All seven random secrets must be **distinct** — do not reuse one value in seve
 |---|---|---|
 | `ENV` | `prod` | the app requires `dev` or `prod` |
 | `DEEPSEEK_API_KEY` | from DeepSeek | fail-fast: the app will not boot without it |
-| `ASSISTANT_API_KEY` | **the same value as the `VITE_API_KEY` GitHub secret** | see §0; 32+ URL-safe chars |
+| `ASSISTANT_API_KEY` | **exactly what your frontend image sends**: for the published images, the `VITE_API_KEY` baked into that tag (§4.3); if you built the image, the value you passed at build time | see §0; 32+ URL-safe chars |
 | `DEFAULT_TIMEZONE` | e.g. `Europe/Berlin` | IANA name |
 | `SUPPORTED_LANGUAGES` | `["en","de","pt-BR"]` | JSON list |
 | `VOICE_ENABLED` | `true` to turn voice on | boot fails if a key or a voice is missing |
@@ -228,10 +236,22 @@ Do **not** set `CHECKPOINT_DB_PATH` in prod — `docker-compose.prod.yml` inject
 
 ### 4.3 Recovering the baked frontend key
 
-If you inherited a deployment and nobody remembers `VITE_API_KEY`, read it out of the published
-image instead of guessing:
+**Anyone deploying a published frontend image needs this step**, not only someone who inherited a
+deployment. `vite build` ran in CI with the publisher's `VITE_API_KEY`, so the bundle carries that
+key forever. Your `backend/.env.prod` is the only side you can set, and it must hold the exact same
+value.
+
+Why you should not skip it or invent your own value: the UI loads normally and every request then
+fails with HTTP `401` / WS close `1008` (*"Authentication failed — check VITE_API_KEY"*). `/health`
+still answers `200`, because it needs no key — so the stack looks healthy while chat is dead, and
+the symptom reads as a backend bug.
+
+Read the value out of the image you are about to deploy (the packages are public, so this needs no
+login):
 
 ```bash
+OWNER=paulocressoni        # the account that published the image
+TAG=0.4.0                  # the release you deploy — NOT latest
 docker run --rm --entrypoint sh \
   "ghcr.io/$OWNER/taylored-personal-assistant-frontend:$TAG" \
   -c 'grep -rhoE ".{0,120}X-API-Key.{0,10}" /usr/share/nginx/html/assets/*.js' \
@@ -239,8 +259,30 @@ docker run --rm --entrypoint sh \
 ```
 
 That prints the key the SPA sends (one 40+ character URL-safe literal per matching bundle; a
-single-chunk build yields exactly one line). Then either copy it into `ASSISTANT_API_KEY`, or treat
-it as compromised, set a new `VITE_API_KEY` secret and cut a new release.
+single-chunk build yields exactly one line). Put it into `backend/.env.prod`, then start the stack:
+
+```
+ASSISTANT_API_KEY=<the value it printed>
+```
+
+Check the pair together once the stack is up — `200` means the two values agree, `401` means they
+do not (`/health` cannot tell you this):
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+  -H "X-API-Key: $(grep '^ASSISTANT_API_KEY=' backend/.env.prod | cut -d= -f2-)" \
+  "http://<host>:8080/sessions/smoke/history"
+```
+
+Two consequences to know before relying on this key:
+
+- **It is not private.** It is inlined in a publicly pullable image, and every deployment of the
+  same tag shares it. It gates the API surface, not individual users — keep the host on the LAN or
+  behind a VPN (only nginx `:8080` is published).
+- **You cannot rotate it on your own.** A new value only ships inside a new image tag, which only
+  the publisher can build. Want a key nobody else has? Fork the repo, set your own `VITE_API_KEY`
+  secret and publish (or build) your own frontend image — then the backend value is yours to
+  choose (§0).
 
 ---
 

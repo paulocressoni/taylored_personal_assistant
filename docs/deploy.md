@@ -164,7 +164,9 @@ keeps `.env*` out of the build context. The publish workflow injects it from the
 GitHub repository secret**, which must equal the backend's `ASSISTANT_API_KEY`. So **changing the
 shared key requires all three**: update the secret, cut a new release, re-pull the frontend image.
 Changing only the backend's value leaves the SPA unable to authenticate, with a 401 that looks like
-a backend problem.
+a backend problem. Deploying someone else's published image? You cannot change the key — recover
+the baked value ([first-prod-run.md §4.3](first-prod-run.md#43-recovering-the-baked-frontend-key))
+and use it in `backend/.env.prod`.
 
 **The satellite has the server address and key compiled into its firmware.** If the box's address
 changes — a DHCP lease moving, for instance — the satellite stops working *silently*, and the
