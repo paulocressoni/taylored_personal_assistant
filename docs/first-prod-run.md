@@ -31,6 +31,13 @@ that was compiled into it at build time:
 | running **these published images** | fixed by the image tag; identical for every deployment of that tag | recover it and use it verbatim ([§4.3](#43-recovering-the-baked-frontend-key)). Generating your own does **not** work: the backend would reject the SPA it is serving |
 | publishing your **own** images (owner or fork) | yours to choose | generate one below, set it as the `VITE_API_KEY` repository secret **before** tagging, and put the same value in `backend/.env.prod` |
 
+This key gates **every** client, not only the browser: a satellite sends the same value as
+`?api_key=` on `/ws/voice`, and it cannot connect at all with an empty one. That copy is compiled
+into the firmware (`CONFIG_SATELLITE_API_KEY`, see the
+[firmware README](../firmware/README.md)), so a headless deployment still needs the key — only the
+*frontend image* is browser-specific. Point a device at `:8080` with the prod key or at `:8000`
+with the dev key; the two are not interchangeable.
+
 Generate a key only in the second case:
 
 ```bash
