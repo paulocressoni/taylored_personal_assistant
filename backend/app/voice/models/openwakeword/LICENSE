@@ -1,0 +1,28 @@
+The three graph files in this directory — melspectrogram.onnx,
+embedding_model.onnx and hey_jarvis_v0.1.onnx — are pre-trained models from
+openWakeWord (https://github.com/dscripka/openWakeWord), Copyright 2022
+David Scripka, and are redistributed here unmodified under the
+
+    Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+    (CC BY-NC-SA 4.0)
+
+licence: https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode
+
+The openWakeWord source code, by contrast, is licensed under Apache 2.0; see the
+project's README, section "License". These models are NOT Apache-2.0.
+
+Consequences of CC BY-NC-SA 4.0 that apply to this repository:
+
+  * Attribution: this file and README.md in this directory are the attribution
+    and must travel with the binaries.
+  * NonCommercial: the models may not be used for commercial purposes. A
+    self-hosted home assistant is fine; selling the appliance, or operating a
+    paid service on top of it, is not.
+  * ShareAlike: adaptations of the models must be shared under the same licence.
+    The files here are unmodified copies of the upstream release assets.
+
+The ONNX copies are the v0.5.1 release assets, pinned by size and SHA256 in
+README.md and verified by backend/scripts/download_wake_word_models.py.
+
+The embedding graph re-implements Google's speech_embedding module, which is
+licensed under Apache 2.0.
