@@ -16,10 +16,12 @@ from typing import Any
 
 import pytest
 from conftest import (
+    BrokenWake,
     FakeChatModel,
     FakeSynthesizer,
     FakeTranscriber,
     ScriptedVad,
+    ScriptedWake,
     transcript,
 )
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -35,6 +37,7 @@ from app.voice.session import INTERRUPTED_MARKER, VoiceSession
 from app.voice.stt import Transcript
 from app.voice.tts import PCM_SAMPLE_RATE
 from app.voice.vad import WINDOW_BYTES
+from app.voice.wake import WakeWordUnavailable
 
 # Four 32 ms windows: two loud enough to open a segment, two quiet enough to
 # close it. The contents are irrelevant — the scripted VAD ignores the audio.
@@ -205,6 +208,8 @@ def _session(
     synthesizer: Any | None = None,
     vad_script: tuple[float, ...] = VAD_SCRIPT,
     output_sample_rate: int = PCM_SAMPLE_RATE,
+    wake: Any | None = None,
+    wake_phrase: str = "hey jarvis",
 ) -> tuple[VoiceSession, Recorder]:
     """Build a session wired to fakes, and the recorder collecting its frames."""
     recorder = Recorder()
@@ -216,6 +221,8 @@ def _session(
         send=recorder,
         session_id="voice-1",
         output_sample_rate=output_sample_rate,
+        wake=wake,
+        wake_phrase=wake_phrase,
     )
     return session, recorder
 
@@ -727,3 +734,172 @@ async def test_a_voice_turn_draws_one_stt_span_and_a_tts_span_per_sentence(
     assert [values["metadata"]["bytes"] for values in tts_written] == [
         str(len(b"\x01\x00"))
     ] * 2
+
+
+# --- the wake gate ----------------------------------------------------------
+
+
+async def test_a_gated_session_ignores_an_utterance_without_the_phrase() -> None:
+    graph = _graph()
+    session, recorder = _session(graph, wake=ScriptedWake(0.0))
+
+    await _drive(session, UTTERANCE_PCM)
+
+    # Nothing was forwarded: no onset for the client to flush on, no turn, no
+    # transcription. This is the TV case, and it is the whole point of the gate.
+    assert recorder.types == ["ready"]
+    assert graph.initial == []
+
+
+async def test_a_gated_session_answers_a_one_breath_command() -> None:
+    graph = _graph()
+    session, recorder = _session(
+        graph,
+        transcriber=FakeTranscriber(
+            transcript("Hey Jarvis, what is the capital of France?")
+        ),
+        wake=ScriptedWake(0.9),
+    )
+
+    await _drive(session, UTTERANCE_PCM, until=recorder.until("audio_end"))
+
+    assert recorder.types == [
+        "ready",
+        "speech_start",
+        "transcript",
+        "token",
+        "audio_end",
+    ]
+    # The phrase is stripped before the client and the graph see the transcript.
+    assert recorder.control[2]["text"] == "what is the capital of France?"
+    assert graph.initial[0]["messages"][0].content == "what is the capital of France?"
+
+
+async def test_a_bare_wake_word_runs_no_turn() -> None:
+    graph = _graph()
+    session, recorder = _session(
+        graph,
+        transcriber=FakeTranscriber(transcript("Hey, Jarvis.")),
+        wake=ScriptedWake(0.9),
+    )
+
+    await _drive(session, UTTERANCE_PCM)
+
+    assert recorder.types == ["ready", "speech_start"]
+    assert graph.initial == []
+    # A wake-only turn is not a turn: it must not be averaged into latency.
+    assert session.turn_timings == []
+
+
+async def test_a_cancel_phrase_does_not_reach_the_graph() -> None:
+    graph = _graph()
+    session, recorder = _session(
+        graph,
+        transcriber=FakeTranscriber(transcript("Hey Jarvis, stop")),
+        wake=ScriptedWake(0.9),
+    )
+
+    await _drive(session, UTTERANCE_PCM)
+
+    assert "transcript" not in recorder.types
+    assert graph.initial == []
+    assert session.turn_timings == []
+
+
+async def test_the_phrase_is_stripped_from_a_multi_word_command() -> None:
+    graph = _graph()
+    session, recorder = _session(
+        graph,
+        transcriber=FakeTranscriber(transcript("Hey Jarvis,   turn on the light")),
+        wake=ScriptedWake(0.9),
+    )
+
+    await _drive(session, UTTERANCE_PCM, until=recorder.until("audio_end"))
+
+    assert recorder.control[2]["text"] == "turn on the light"
+
+
+async def test_an_ungated_session_still_answers_without_any_detection() -> None:
+    graph = _graph()
+    session, recorder = _session(graph)
+
+    await _drive(session, UTTERANCE_PCM, until=recorder.until("audio_end"))
+
+    assert recorder.control[0]["wake_word"] is False
+    assert "transcript" in recorder.types
+    assert len(graph.initial) == 1
+
+
+class SlowGraph(FakeGraph):
+    """A graph that starts a turn and then waits, so a turn stays in flight."""
+
+    def __init__(self) -> None:
+        super().__init__(_lang_event("en"), _token_event(REPLY), _end_event({}))
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def astream_events(
+        self,
+        initial: dict[str, Any],
+        config: dict[str, Any] | None = None,
+        version: str | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Record the input, announce the turn, then wait to be released."""
+        self.initial.append(initial)
+        self.entered.set()
+        await self.release.wait()
+        for event in self._events:
+            yield event
+
+
+async def test_noise_during_an_answer_sends_no_frame_and_cancels_nothing() -> None:
+    graph = SlowGraph()
+    # One detection arms the permit, which the command then consumes.
+    session, recorder = _session(graph, wake=ScriptedWake(0.9, 0.0))
+
+    async def stream() -> AsyncIterator[bytes | dict[str, Any]]:
+        yield UTTERANCE_PCM
+        await asyncio.wait_for(graph.entered.wait(), timeout=2)
+        # Room noise mid-answer: an onset while no permit is open.
+        yield bytes(WINDOW_BYTES)
+        await asyncio.sleep(0.01)
+        graph.release.set()
+        await recorder.until("audio_end")
+        yield {"type": "stop"}
+
+    await asyncio.wait_for(session.run(stream()), timeout=2)
+
+    # Exactly one onset — the phrase's own — and the answer finished.
+    assert recorder.types.count("speech_start") == 1
+    assert recorder.types[-1] == "audio_end"
+
+
+async def test_the_wake_word_interrupts_an_answer() -> None:
+    graph = SlowGraph()
+    session, recorder = _session(graph, wake=ScriptedWake(0.9, 0.9))
+
+    async def stream() -> AsyncIterator[bytes | dict[str, Any]]:
+        yield UTTERANCE_PCM
+        await asyncio.wait_for(graph.entered.wait(), timeout=2)
+        # "Hey Jarvis, stop" while the answer is playing.
+        yield bytes(WINDOW_BYTES * 2)
+        await asyncio.sleep(0.05)
+        yield {"type": "stop"}
+
+    await asyncio.wait_for(session.run(stream()), timeout=2)
+
+    assert recorder.types.count("speech_start") == 2
+    # The turn was cancelled before it could finish: no audio_end was sent.
+    assert "audio_end" not in recorder.types
+
+
+async def test_a_detector_failure_sends_one_error_frame_and_raises() -> None:
+    graph = _graph()
+    session, recorder = _session(graph, wake=BrokenWake())
+
+    with pytest.raises(WakeWordUnavailable):
+        await _drive(session, UTTERANCE_PCM)
+
+    errors = [frame for frame in recorder.control if frame["type"] == "error"]
+    assert [frame["detail"] for frame in errors] == ["wake word unavailable"]
+    assert graph.initial == []

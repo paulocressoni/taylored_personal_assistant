@@ -228,3 +228,26 @@ def test_silero_vad_reset_matches_a_fresh_instance(silero: SileroVad) -> None:
 def test_endpoint_detector_stays_silent_on_real_silence() -> None:
     detector = _detector(SileroVad())
     assert detector.push(bytes(WINDOW_BYTES * 40)) == []
+
+
+def test_an_utterance_records_when_its_first_speech_window_started() -> None:
+    clock = [5.0]
+    detector = EndpointDetector(
+        ScriptedVad(0.9, 0.9, 0.1, 0.1),
+        threshold=0.5,
+        neg_threshold=0.35,
+        min_speech_ms=32.0,
+        min_silence_ms=32.0,
+        speech_pad_ms=30.0,
+        max_utterance_s=30.0,
+        now=lambda: clock[0],
+    )
+
+    events = detector.push(_window(1))
+    clock[0] = 9.0  # the segment ends eight seconds after it began
+    events.extend(detector.push(_window(1) + _window(0) * 2))
+
+    utterance = next(event for event in events if isinstance(event, Utterance))
+    # The gate admits on the START of speech, so this must be the onset's clock
+    # reading, not the endpoint's.
+    assert utterance.started_at == 5.0
