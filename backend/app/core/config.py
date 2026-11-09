@@ -222,7 +222,8 @@ class Settings(BaseSettings):
     voice_wake_word_enabled: bool = False
     # Bare filename inside app/voice/models/openwakeword/. The ACOUSTIC phrase is
     # whatever this graph detects; the phrase below only decides what is stripped
-    # from the transcript, so the two cannot silently disagree.
+    # from the transcript, so `resolve_wake_phrase` refuses to start when the two
+    # disagree instead of silently stripping nothing.
     voice_wake_word_model: str = "hey_jarvis_v0.1.onnx"
     voice_wake_word_phrase: str = Field(
         default="",

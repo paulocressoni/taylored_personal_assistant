@@ -27,10 +27,10 @@ from app.voice.tts import OpenAISynthesizer, Synthesizer
 from app.voice.vad import SileroVad, Vad
 from app.voice.wake import (
     ANALYSIS_BYTES,
-    PHRASES,
     OpenWakeWordDetector,
     OpenWakeWordModels,
     WakeWord,
+    resolve_wake_phrase,
 )
 
 logger = logging.getLogger(__name__)
@@ -158,17 +158,12 @@ def build_voice_providers() -> VoiceProviders | None:
 
         # The phrase is resolved here rather than in Settings so that
         # `import app.core.config` stays free of numpy/onnxruntime. An empty
-        # phrase with an unknown model would strip nothing and look like a broken
-        # feature, so it is a startup failure instead.
-        wake_phrase = settings.voice_wake_word_phrase.strip() or PHRASES.get(
-            settings.voice_wake_word_model, ""
+        # phrase with an unknown model, or one that contradicts the model, would
+        # strip nothing and look like a broken feature, so both are startup
+        # failures instead.
+        wake_phrase = resolve_wake_phrase(
+            settings.voice_wake_word_model, settings.voice_wake_word_phrase
         )
-        if not wake_phrase:
-            raise RuntimeError(
-                f"VOICE_WAKE_WORD_PHRASE is empty and "
-                f"{settings.voice_wake_word_model} has no built-in phrase; set "
-                "the phrase explicitly."
-            )
 
         logger.info(
             "voice wake detector ready (realtime=%.1fx, threshold=%.2f, phrase=%r)",

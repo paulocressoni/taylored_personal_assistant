@@ -7,6 +7,7 @@ the production default of 500 ms implies.
 """
 
 import asyncio
+import logging
 import threading
 from collections.abc import AsyncIterator, Awaitable, Iterator
 from contextlib import contextmanager
@@ -773,6 +774,34 @@ async def test_a_gated_session_answers_a_one_breath_command() -> None:
     # The phrase is stripped before the client and the graph see the transcript.
     assert recorder.control[2]["text"] == "what is the capital of France?"
     assert graph.initial[0]["messages"][0].content == "what is the capital of France?"
+
+
+async def test_a_gated_session_logs_an_accepted_turn_with_its_wake_lead(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`docs/voice.md` counts the gate from this line and the rejection line."""
+    session, recorder = _session(
+        _graph(),
+        transcriber=FakeTranscriber(transcript("Hey Jarvis, what time is it?")),
+        wake=ScriptedWake(0.9),
+    )
+
+    with caplog.at_level(logging.INFO, logger="app.voice.session"):
+        await _drive(session, UTTERANCE_PCM, until=recorder.until("audio_end"))
+
+    assert "voice turn accepted (wake_lead=" in caplog.text
+
+
+async def test_a_gated_session_logs_a_rejection_with_since_arm(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session, recorder = _session(_graph(), wake=ScriptedWake(0.0))
+
+    with caplog.at_level(logging.INFO, logger="app.voice.session"):
+        await _drive(session, UTTERANCE_PCM)
+
+    assert recorder.types == ["ready"]
+    assert "voice turn ignored: no wake word (speech=" in caplog.text
 
 
 async def test_a_bare_wake_word_runs_no_turn() -> None:

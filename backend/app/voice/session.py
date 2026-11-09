@@ -511,6 +511,14 @@ class VoiceSession:
             utterance: The completed speech segment to act on.
         """
         marks = StageMarks(speech_end=monotonic_now())
+        # The counters an operator reads: this line pairs with the rejection line
+        # in `_reject`, so `detected` / `accepted` / `ignored` can be counted from
+        # the log alone. `wake_lead` is the pause between phrase and command —
+        # negative when both were said in one breath.
+        if self._wake is not None:
+            lead = self._wake_lead_ms(utterance)
+            if lead is not None:
+                logger.info("voice turn accepted (wake_lead=%.2fs)", lead / 1000.0)
         # None until `_answer` decides. None means the turn never got as far as a
         # decision (failed transcription, timeout, cancellation), which keeps
         # today's timing behaviour for those cases.

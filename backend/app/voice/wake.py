@@ -194,6 +194,49 @@ def _normalise(text: str) -> str:
     return " ".join(_NON_WORD.sub(" ", text).casefold().split())
 
 
+def resolve_wake_phrase(model: str, configured: str) -> str:
+    """Decide which phrase to strip, and refuse configurations that cannot work.
+
+    The acoustic model decides what is *heard*; this phrase only decides what is
+    removed from the transcript afterwards. Two configurations would make the
+    feature look broken rather than misconfigured, so they fail at startup:
+
+    - no phrase at all, because the model is not in `PHRASES` and the setting is
+      empty — nothing would be stripped and the graph would answer "Hey Jarvis,
+      turn on the light" as if the phrase were part of the question;
+    - an explicit phrase that disagrees with the model's built-in one, which
+      strips nothing for the same reason. A custom model has no built-in phrase,
+      so any value is accepted there.
+
+    Args:
+        model: The bare model filename, e.g. `hey_jarvis_v0.1.onnx`.
+        configured: The `VOICE_WAKE_WORD_PHRASE` setting, possibly empty.
+
+    Returns:
+        The phrase to strip, with the configured spelling preserved.
+
+    Raises:
+        RuntimeError: when no phrase can be resolved, or when the configured
+            phrase contradicts the model's built-in one.
+    """
+    explicit = configured.strip()
+    builtin = PHRASES.get(model, "")
+    if not explicit:
+        if not builtin:
+            raise RuntimeError(
+                f"VOICE_WAKE_WORD_PHRASE is empty and {model} has no built-in "
+                "phrase; set the phrase explicitly."
+            )
+        return builtin
+    if builtin and _normalise(explicit) != _normalise(builtin):
+        raise RuntimeError(
+            f"VOICE_WAKE_WORD_PHRASE is {explicit!r} but {model} detects "
+            f"{builtin!r}; the phrase must match the model, or it will not be "
+            "stripped from transcripts."
+        )
+    return explicit
+
+
 def strip_wake_phrase(text: str, phrase: str) -> str:
     """Remove a leading wake phrase from a transcript.
 

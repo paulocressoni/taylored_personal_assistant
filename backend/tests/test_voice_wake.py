@@ -17,6 +17,7 @@ from app.voice.wake import (
     OpenWakeWordDetector,
     WakeGate,
     is_cancel_phrase,
+    resolve_wake_phrase,
     strip_wake_phrase,
 )
 
@@ -318,3 +319,28 @@ def test_is_cancel_phrase_matches_exact_normalised_phrases(
     text: str, expected: bool
 ) -> None:
     assert is_cancel_phrase(text) is expected
+
+
+def test_resolve_wake_phrase_derives_the_builtin_phrase() -> None:
+    assert resolve_wake_phrase("hey_jarvis_v0.1.onnx", "") == "hey jarvis"
+
+
+@pytest.mark.parametrize("configured", ["hey jarvis", "Hey Jarvis!", "  hey, jarvis  "])
+def test_resolve_wake_phrase_accepts_the_same_phrase_spelled_differently(
+    configured: str,
+) -> None:
+    assert resolve_wake_phrase("hey_jarvis_v0.1.onnx", configured) == configured.strip()
+
+
+def test_resolve_wake_phrase_allows_any_phrase_for_a_custom_model() -> None:
+    assert resolve_wake_phrase("my_house_v0.1.onnx", "okay house") == "okay house"
+
+
+def test_resolve_wake_phrase_rejects_an_empty_phrase_for_a_custom_model() -> None:
+    with pytest.raises(RuntimeError, match="has no built-in phrase"):
+        resolve_wake_phrase("my_house_v0.1.onnx", "   ")
+
+
+def test_resolve_wake_phrase_rejects_a_phrase_the_model_cannot_hear() -> None:
+    with pytest.raises(RuntimeError, match="the phrase must match the model"):
+        resolve_wake_phrase("hey_jarvis_v0.1.onnx", "ok google")
