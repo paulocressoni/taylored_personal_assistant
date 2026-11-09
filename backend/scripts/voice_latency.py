@@ -188,16 +188,26 @@ async def measure(args: argparse.Namespace) -> None:
     Raises:
         SystemExit: if the fixture or the voice configuration is missing.
     """
-    fixture = FIXTURE_DIR / f"voice_{args.lang}.wav"
+    # The wake fixture is English; asking for another language would silently look
+    # for wake_de.wav, which does not exist.
+    if args.wake and args.lang != "en":
+        raise SystemExit("--wake uses the English fixture; drop --lang or use en")
+    fixture = FIXTURE_DIR / f"{'wake' if args.wake else 'voice'}_{args.lang}.wav"
     if not fixture.exists():
         raise SystemExit(
             f"missing {fixture} — generate it first: "
             "uv run python scripts/make_voice_fixtures.py"
         )
+
     providers = build_voice_providers()
     if providers is None:
         raise SystemExit(
             "voice is not configured: set VOICE_ENABLED=true and both keys"
+        )
+    if args.wake and providers.wake_word_factory is None:
+        raise SystemExit(
+            "--wake needs VOICE_WAKE_WORD_ENABLED=true: the detector is built by "
+            "build_voice_providers(), and it is absent when the feature is off"
         )
 
     pcm, rate, channels = read_wav(fixture)
@@ -233,6 +243,10 @@ async def measure(args: argparse.Namespace) -> None:
                 # 16 kHz out: the hardware contract, and it keeps this comparable
                 # with what the reSpeaker will actually hear.
                 output_sample_rate=rate,
+                # A NEW detector per run, for the same reason as the VAD: history
+                # and debounce must not leak from one measurement into the next.
+                wake=providers.wake_word_factory() if args.wake else None,
+                wake_phrase=providers.wake_phrase,
             )
             await session.run(_frames(pcm, rate, recorder))
 
@@ -281,6 +295,14 @@ def main() -> None:
     """Parse the CLI arguments and run the measurement."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lang", default="en", choices=["en", "de", "pt"])
+    parser.add_argument(
+        "--wake",
+        action="store_true",
+        help=(
+            "measure a GATED turn with the wake fixture, so a wake-word run can be "
+            "compared with an un-gated one instead of assuming they match"
+        ),
+    )
     parser.add_argument("--runs", type=int, default=5, help="measured runs")
     parser.add_argument(
         "--warmup",
