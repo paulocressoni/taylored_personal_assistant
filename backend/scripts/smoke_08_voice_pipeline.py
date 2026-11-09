@@ -141,6 +141,9 @@ async def run(lang: str, out: Path) -> None:
         # the fixture's own rate and the resampler runs exactly as it will on the
         # hardware path.
         output_sample_rate=rate,
+        # This tool drives the pipeline directly, with no wake gate: it exists to
+        # measure STT -> graph -> TTS, not the admission policy.
+        wake=None,
     )
 
     print(f"fixture       : {fixture.name} ({duration_s(pcm, rate):.2f}s @ {rate} Hz)")
