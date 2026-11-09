@@ -349,6 +349,34 @@ screen -L -Logfile ~/soak.log -S soak idf.py -p /dev/ttyACM0 monitor
 The device is not affected by any of this: closing the monitor closes the serial port, and the
 satellite keeps running and reconnecting on its own. You only lose visibility.
 
+### `Path '/dev/ttyACM0' is not readable`
+
+The port is there, but your user may not open it:
+
+```text
+Error: Invalid value for '-p' / '--port': Path '/dev/ttyACM0' is not readable.
+```
+
+Check the two halves — the owning group, and whether you are in it:
+
+```bash
+ls -l /dev/ttyACM0     # crw-rw---- 1 root dialout 166, 0 ...
+id -nG                 # dialout must appear in this list
+```
+
+Serial devices belong to the `dialout` group on Debian/Ubuntu, and a fresh account is usually not
+a member. Add yourself once, then get a shell that carries the new group:
+
+```bash
+sudo usermod -aG dialout "$USER"
+newgrp dialout         # this terminal only; the next login session has it automatically
+id -nG                 # must now list dialout
+```
+
+`newgrp` opens a subshell, so re-load the toolchain inside it (`source firmware/env.sh`) before
+running `idf.py` again. No reboot and no udev rule are needed, and nothing is loosened for other
+users. If you skip `newgrp` and log out instead, the group is active from the next login.
+
 ### `Writing to serial is timing out`
 
 This warning comes from `idf_monitor` on the **host**, not from the firmware:
@@ -547,7 +575,7 @@ is the sequence used here, and every step is reversible.
    free.
 3. **Flash and console** — `idf.py -p /dev/ttyACM0 flash monitor` shows a boot banner on the
    **XIAO** port. No banner means the wrong port, a missing cable, or no permission on the device
-   node.
+   node (fix: the `dialout` group, see "`Path '/dev/ttyACM0' is not readable`" above).
 4. **Command the chip** — I2C init logs the XVF3800 version and build string. Getting nothing here
    means wiring or address, not firmware logic.
 5. **Witness the LED** — `LED_STATE_IDLE` should be a steady blue ring. This proves the write path
