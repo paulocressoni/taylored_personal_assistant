@@ -319,15 +319,24 @@ class VoiceSession:
         Args:
             pcm: Mono PCM at `voice_input_sample_rate`, of any length.
         """
+        # A detection has already announced "the user is talking" by the time the
+        # endpointer reports the same moment, so the matching onset must not send
+        # a second `speech_start`: the client would flush twice and the device
+        # would restart its LED animation for no reason.
+        announced = False
         if self._wake is not None:
-            await self._detect_wake(self._wake, pcm)
+            announced = await self._detect_wake(self._wake, pcm)
 
         for event in self._detector.push(pcm):
             if isinstance(event, SpeechStart):
                 # A gated session forwards an onset only while a permit is open.
                 # Otherwise room noise would flush the client's playout and cancel
                 # the answer — the exact behaviour the gate exists to stop.
-                if self._wake is None or self._gate.is_open():
+                if self._wake is None:
+                    await self._barge_in()
+                elif announced:
+                    announced = False
+                elif self._gate.is_open():
                     await self._barge_in()
             elif isinstance(event, Utterance):
                 if self._wake is not None and not self._gate.admit(event.started_at):
@@ -340,7 +349,7 @@ class VoiceSession:
             elif isinstance(event, Ignored):
                 logger.debug("voice blip ignored (%.2fs)", event.duration_s)
 
-    async def _detect_wake(self, wake: WakeWord, pcm: bytes) -> None:
+    async def _detect_wake(self, wake: WakeWord, pcm: bytes) -> bool:
         """Score one chunk for the wake phrase and act on what it hears.
 
         A detection is three things at once: it opens the permit, it is the
@@ -352,6 +361,11 @@ class VoiceSession:
                 so the `None` check above is the only place that decides whether
                 the session is gated.
             pcm: Mono PCM at `voice_input_sample_rate`, of any length.
+
+        Returns:
+            True when at least one detection announced an onset in this chunk, so
+            the caller can skip the duplicate `speech_start` the endpointer would
+            otherwise send for the phrase's own segment.
 
         Raises:
             WakeWordUnavailable: if the detector raises. Fail closed: running
@@ -378,6 +392,8 @@ class VoiceSession:
             # device's LED to LISTENING at the right moment.
             await self._barge_in()
             await self._recover_rejected()
+
+        return bool(detections)
 
     def _reject(self, utterance: Utterance) -> None:
         """Keep a segment that arrived without a permit, and log why.
@@ -647,7 +663,10 @@ class VoiceSession:
 
         initial: dict[str, Any] = {
             **build_initial_state(
-                user_input=transcript.text,
+                # `spoken_text`, not the raw transcript: on a gated session the
+                # phrase is instruction to the assistant ("listen"), not part of
+                # the question, and the model must not see it.
+                user_input=spoken_text,
                 session_id=self._session_id,
                 channel="voice",
                 device_id=self._device_id,
