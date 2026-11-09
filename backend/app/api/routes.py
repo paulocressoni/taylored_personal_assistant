@@ -554,7 +554,10 @@ async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
         # socket. Closing is also the only thing the satellite reacts to — it
         # reconnects with backoff and gets a fresh detector.
         logger.error("voice session closed: wake word detector unavailable")
-        await _close_with_error(websocket, "wake word unavailable", 1011)
+        # The session already sent the one error frame that explains this; a second
+        # one would arrive after the client has been told the turn failed. Close
+        # with 1011 directly so the reason is the close code the satellite acts on.
+        await websocket.close(code=1011)
         return
     except Exception:
         # Same policy as the text socket: log it, tell the client best-effort,
