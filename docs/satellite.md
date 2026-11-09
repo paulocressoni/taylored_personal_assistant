@@ -178,37 +178,63 @@ Read the path: `idf5.4_py3.14_env`. The installer built its virtualenv with **Py
 directory name from the *current* `python3`. It therefore looks for a directory named after 3.14,
 which was never created. The install is not broken; the lookup key changed.
 
-Two ways out:
+The fix is a `python3` shim that reports **3.12**, placed **first on `PATH`** — one symlink, and it
+survives upgrades of the system Python. The symlink alone is not enough: `install.sh` resolves
+`python3` through `PATH`, so if the shim's directory is not on `PATH` the installer still finds
+`/usr/bin/python3` and reproduces the failure above.
 
-1. Re-run `./install.sh` with `python3` pointing at 3.12, creating a second venv.
-2. **Put a shim first on `PATH`** whose `python3` is 3.12, so `export.sh` computes the name it
-   originally computed. This is what we did: one symlink, and it survives upgrades of the system
-   Python.
+Run exactly this, in order:
 
 ```bash
+# 1. drop the broken venv, so it cannot be reused by name
+rm -rf ~/.espressif/python_env/idf5.4_py3.14_env
+
+# 2. create the shim (any 3.12 interpreter works; this one came from uv)
 mkdir -p ~/.local/share/esp-idf-python
 ln -sf "$(uv python find 3.12)" ~/.local/share/esp-idf-python/python3
+
+# 3. put it FIRST on PATH — this is the step that is easy to miss
+export PATH="$HOME/.local/share/esp-idf-python:$PATH"
+
+# 4. prove the shell now resolves 3.12 (must print Python 3.12.x)
+which python3 && python3 --version
+
+# 5. install: the venv it creates is now named idf5.4_py3.12_env
+cd ~/esp/esp-idf && ./install.sh esp32s3
 ```
 
-Any 3.12 interpreter works — here it is one that `uv` had already downloaded. What matters is the
-**minor version**, because that is what `export.sh` puts in the directory name. Confirm with
-`~/.local/share/esp-idf-python/python3 --version` before going further.
+What the last command must print, near the end:
+
+```text
+Creating a new Python environment in /home/<you>/.espressif/python_env/idf5.4_py3.12_env
+```
+
+`3.12` in that directory name **is** the success criterion — it is exactly the key `export.sh`
+computes. `export PATH=...` only affects the current shell, which is all `install.sh` needs;
+`firmware/env.sh` (Step 4) prepends the same directory itself, so later terminals need nothing.
 
 The general lesson: *when a tool builds a path out of an interpreter version, that version is part
 of the contract.* Never "fix" this class of problem with `sudo` or by editing the venv by hand.
 
 ### Step 3 — CMake and Ninja without root
 
-ESP-IDF needs `cmake` and `ninja`, and installing them system-wide wants `sudo`. We avoided that by
-putting them in a self-contained directory and prepending it to `PATH`:
+ESP-IDF needs `cmake` and `ninja`, and installing them system-wide wants `sudo`. `install.sh` does
+**not** install them on Linux: both are marked `"install": "on_request"` in ESP-IDF's own
+`tools/tools.json` (only Windows gets them automatically), so a fresh `install.sh esp32s3` finishes
+"successfully" and the build then fails with `cmake: command not found`.
+
+Install them into a self-contained directory instead and prepend it to `PATH`:
 
 ```bash
 uv venv ~/.local/share/idf-build-tools
 uv pip install --python ~/.local/share/idf-build-tools/bin/python cmake ninja
+~/.local/share/idf-build-tools/bin/cmake --version | head -1   # must print a version
 ```
 
 Both packages ship their binaries in `.../bin`, so one `PATH` entry covers both. Nothing outside
-your home directory changes, and deleting the directory removes the toolchain.
+your home directory changes, and deleting the directory removes the toolchain. `firmware/env.sh`
+fails with an explicit message if this directory is missing, rather than letting the first `cmake`
+call inside the build produce a confusing error.
 
 ### Step 4 — the `esp-idf` shell function
 
@@ -219,11 +245,13 @@ your terminal, which looks like a broken install.
 Two ways to make it stick:
 
 ```bash
-# option A — once per terminal
+# option A — once per terminal, from the repo root
 source firmware/env.sh
 
-# option B — once per machine, in ~/.bashrc
-esp-idf() { . "$HOME/Documents/workspace/taylored_personal_assistant/firmware/env.sh"; }
+# option B — once per machine: write the absolute path of THIS clone into ~/.bashrc
+# (run from the repo root; the path is resolved for you, so it is correct on any machine)
+echo "esp-idf() { . \"$PWD/firmware/env.sh\"; }" >> ~/.bashrc
+exec bash
 ```
 
 Then a new terminal is simply:

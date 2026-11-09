@@ -10,9 +10,10 @@
 # A script runs in a child process, so every export below dies with it and
 # `idf.py` is "not found" afterwards. Sourcing runs it in your shell.
 #
-# To avoid typing that in every terminal, add this to ~/.bashrc:
+# To avoid typing that in every terminal, run this ONCE from the repo root — it writes the absolute
+# path of this clone into ~/.bashrc, so it is correct wherever the repo lives:
 #
-#     esp-idf() { . "$HOME/Documents/workspace/taylored_personal_assistant/firmware/env.sh"; }
+#     echo "esp-idf() { . \"$PWD/firmware/env.sh\"; }" >> ~/.bashrc && exec bash
 #
 # then just run `esp-idf`.
 #
