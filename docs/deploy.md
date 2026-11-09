@@ -68,6 +68,9 @@ This page is the *flow*; the mechanics live next door and are not duplicated her
      ⚠️ `ASSISTANT_API_KEY` **must equal** the `VITE_API_KEY` repository secret — the SPA bakes it in at
      build time, so a mismatch returns 401 on every request (see §5).
 3. **Turn voice on.** Uncomment `VOICE_ENABLED=true` plus `VOICE_STT_API_KEY` and `VOICE_TTS_API_KEY`.
+   To gate turns behind the wake word, also set `VOICE_WAKE_WORD_ENABLED=true` (the models ship in
+   the image; `VOICE_WAKE_WORD_PHRASE` and `VOICE_WAKE_WORD_ALLOW_OPT_OUT` are the other two an
+   operator is likely to touch — everything else is in [docs/voice.md](voice.md)).
    The app **fails fast at startup** if the switch is on and a key is missing, or if any supported
    language has no TTS voice — a missing voice is a boot failure, not a silent degradation.
 4. **Deploy:** `APP_VERSION=<tag> make prod-pull` then `make prod-up`. `prod-up` pulls first and

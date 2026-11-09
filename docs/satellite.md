@@ -48,12 +48,29 @@ is a server change that needs no reflash. The firmware is the dumbest possible e
 purpose; see the *why this shape* note under D1.3 in
 [`implementation_plan.md`](implementation_plan.md).
 
-### What "no wake word" means today
+### The wake word lives on the server
 
-In the current build the satellite streams continuously once connected, so anything said in the
-room can become a turn. During the 19.7-hour soak this produced transcripts like *"and then
-they'll just kiss you"* and *"in the night"* from ambient conversation. That is expected: the wake
-word is a separate delivery item, and the firmware is designed not to need changes when it lands.
+Through the 19.7-hour soak the satellite streamed continuously, so anything said in the room
+became a turn — transcripts like *"and then they'll just kiss you"* and *"in the night"* came from
+ambient conversation, and any noise could also cut an answer short by flushing the playout.
+
+A server-side gate now sits in front of that, and **this firmware did not change to get it**:
+it still sends only `session_id`, `device_id` and `output_sample_rate`, which the server resolves
+to `wake_word: "auto"`. The practical differences on the device:
+
+- room audio is scored and discarded, so it no longer opens a turn, flushes playback, or moves the
+  LED out of SPEAKING;
+- saying **"Hey Jarvis"** is what starts a turn, and saying it over an answer is what interrupts
+  one;
+- a bare "Hey Jarvis" lights LISTENING and waits for the command — but only for
+  `VOICE_WAKE_WORD_WINDOW_SECONDS` (6 s by default);
+- the `ready` frame now carries `wake_word: true`, so a device could show whether it is gated
+  without any firmware change to *send* anything.
+
+The phrase is a server setting (`VOICE_WAKE_WORD_PHRASE`), which is the point of putting it
+there: changing it, or disabling the gate entirely, is a config change and a restart, not a
+reflash. Phrase and model details, and the honest state of the measurements, are in
+[`docs/voice.md`](voice.md#wake-word-server-side-openwakeword).
 
 ---
 
@@ -621,7 +638,7 @@ that looks like firmware logic turns out to be one layer lower or higher.
 | `playout ran dry after 160 of 320` | the tail half-frame at the end of an answer |
 | `Writing to serial is timing out` | the firmware never reads its console; the host is pushing keystrokes (§4) |
 | English speech transcribed in Portuguese | turn one sends no language hint, so the provider auto-detects; a cognate like *"Brasil"* swings it. See [`voice.md`](voice.md) known limitations |
-| ambient conversation becomes a turn | no wake word yet, by design |
+| ambient conversation becomes a turn | fixed: the server-side gate ignores audio without "Hey Jarvis" |
 
 ---
 

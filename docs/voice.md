@@ -52,7 +52,7 @@ Binary frames only ever carry audio: **mono, little-endian signed 16-bit PCM**.
 
 | Frame | Content | Notes |
 |---|---|---|
-| start | `{"session_id": "...", "device_id": "...", "output_sample_rate": 16000 \| 24000}` | **Must be the first message.** Validated by `VoiceStartRequest`; a bad one is refused with `1003`. `device_id` and `output_sample_rate` are optional (`24000` default) |
+| start | `{"session_id": "...", "device_id": "...", "output_sample_rate": 16000 \| 24000, "wake_word": "auto"}` | **Must be the first message.** Validated by `VoiceStartRequest`; a bad one is refused with `1003`. Everything but `session_id` is optional (`24000` and `"auto"` defaults) |
 | audio | binary PCM at `voice_input_sample_rate` (16 kHz) | Any frame size; the endpointer re-frames into 512-sample windows |
 | stop | `{"type": "stop"}` | Ends the session; any turn in flight is cancelled. Any other `type` is logged and ignored |
 
@@ -60,9 +60,9 @@ Binary frames only ever carry audio: **mono, little-endian signed 16-bit PCM**.
 
 | Frame | Content | Notes |
 |---|---|---|
-| `ready` | `{"input_sample_rate", "output_sample_rate", "format"}` | Once, after the start frame. **Audio sent before this is read as the start frame** and the socket is refused |
-| `speech_start` | `{"type": "speech_start"}` | Every onset, including blips that never become a turn. Doubles as **"stop playing what you have buffered"** — this is the barge-in signal |
-| `transcript` | `{"type": "transcript", "text": "..."}` | After STT. Not sent when the transcript is empty |
+| `ready` | `{"input_sample_rate", "output_sample_rate", "format", "wake_word"}` | Once, after the start frame. `wake_word` echoes whether **this** session is gated. **Audio sent before this is read as the start frame** and the socket is refused |
+| `speech_start` | `{"type": "speech_start"}` | Every onset on an un-gated session; on a gated one, the wake detection and any onset that happens inside the permit. Doubles as **"stop playing what you have buffered"** — this is the barge-in signal |
+| `transcript` | `{"type": "transcript", "text": "..."}` | After STT, with the wake phrase already stripped. Not sent for a bare wake word or a cancel phrase |
 | `token` | `{"type": "token", "content": "..."}` | The responder's reply as text, token by token (the audio is the primary output) |
 | audio | binary PCM at the negotiated output rate | The spoken answer, streamed as it is synthesised |
 | `audio_end` | `{"type": "audio_end"}` | The turn's audio is complete |
@@ -441,6 +441,86 @@ What the board requires:
 - The device declares its own rates in the start frame (`output_sample_rate: 16000`) and
   its serial number as `device_id`.
 
+## Wake word (server-side, openWakeWord)
+
+The satellite streams continuously, so without a gate every sound in the room becomes a paid
+transcription and a graph run. The gate lives on the **server** — one implementation for browser,
+simulator and device, tunable without a reflash, and the firmware stays as dumb as the rest of
+this document insists it is.
+
+**"Hey Jarvis", English only, one model.** The three ONNX graphs are vendored under
+`backend/app/voice/models/openwakeword/` (provenance, licence and caller obligations in the README
+there) and driven by the `onnxruntime` this service already depends on. Measured on the reference
+host: **1.9 ms per 80 ms hop, ~40× realtime, ~2.5 % of one core per session** (single-threaded).
+
+### What a turn needs
+
+```
+audio → wake detector (every 80 ms hop) ── detection ──▶ arm a permit
+      ↘ Silero VAD + endpointer ── onset ──▶ forwarded only while a permit is open
+                                 └─ segment ──▶ admitted only if it STARTED inside the permit
+                                                 └─▶ STT → strip the phrase → graph → TTS
+```
+
+- The permit is **one-shot**: accepting a segment closes it, a bare "Hey Jarvis" re-arms it, and a
+  completed answer does not. That is what keeps a television from cutting an answer off at second
+  three, and it is why a follow-up "and tomorrow?" needs the phrase again.
+- The **phrase is the barge-in signal**. While asleep, an onset sends nothing and cancels nothing;
+  a detection sends `speech_start` and cancels the turn in flight, so "Hey Jarvis, stop" cuts an
+  answer while room noise cannot.
+- A **bare wake word** and a **cancel phrase** (`stop`, `quiet`, `cancel`, `hör auf`, `pare`, …)
+  end the turn without touching the graph, and are excluded from `turn_timings`.
+- A detector that raises **fails closed**: one `error` frame, then the socket closes with `1011`
+  and the satellite reconnects with a fresh detector.
+
+### Configuration
+
+| Setting | Default | What it does |
+|---|---|---|
+| `VOICE_WAKE_WORD_ENABLED` | `false` | off = the old always-listening behaviour |
+| `VOICE_WAKE_WORD_MODEL` | `hey_jarvis_v0.1.onnx` | bare filename in `models/openwakeword/` |
+| `VOICE_WAKE_WORD_PHRASE` | `""` | what to strip from transcripts; empty derives it from the model |
+| `VOICE_WAKE_WORD_THRESHOLD` | `0.5` | classifier probability that counts as "heard" |
+| `VOICE_WAKE_WORD_DEBOUNCE_SECONDS` | `2.0` | one phrase = one detection |
+| `VOICE_WAKE_WORD_WINDOW_SECONDS` | `6.0` | how long after the phrase its command may **start** |
+| `VOICE_WAKE_WORD_ALLOW_OPT_OUT` | `true` | whether a client may send `wake_word: "off"` |
+
+The client chooses with `wake_word`: `"auto"` (the satellite, by sending nothing), `"on"`,
+`"off"` (refused by a strict server) or `"manual"` (the browser: a click is not ambient audio).
+
+### What was measured, and what was not
+
+Two tools produce the numbers, and they answer different questions.
+
+**`scripts/wake_word_eval.py`** scores WAV files. Over the six committed fixtures at threshold
+0.50: **0 false rejects, 0 false accepts**, 55× realtime. That is a plumbing check — the fixtures
+are TTS, not a room.
+
+**`scripts/make_wake_word_corpus.py`** builds a microphone-free corpus: six TTS voices, three
+chatter clips, the question fixtures, each degraded offline (white noise at 40…5 dB SNR, low-pass
+plus −12 dB for distance, synthetic reverb, resampling for pitch/tempo). Across all eight
+conditions at threshold 0.50: **29/48 false rejects (60 %), 0/48 false accepts (0 %)**. Lowering
+the threshold to 0.1 still leaves **31 %** false rejects while false accepts stay at 2 %.
+
+That second result is not a tuning problem, and it is worth being blunt about why: **synthetic
+speech is out of distribution for a model trained on human recordings.** If the operating point
+were the cause, 0.1 would have rescued most of those clips; it did not. So:
+
+- the **negative** side is validated — chatter, questions and noise never fired, at any threshold
+  down to 0.2;
+- the **positive** side is **UNVERIFIED**. Real recall needs either ten utterances recorded on the
+  device, or ordinary daily use with the detections counted in the log. Do not quote the 60 %
+  above as real-room recall; it is a statement about TTS.
+
+### Reading the log
+
+| Line | What it answers |
+|---|---|
+| `wake word detected (score=…, in_turn=…)` | how often the phrase is heard, and how close to the threshold |
+| `voice turn ignored: no wake word (speech=…, since_arm=…)` | your own pause exceeded the permit (`since_arm` sits just above the window on the pause path), or the permit was already consumed |
+| `voice turn accepted (wake_lead=-0.42s)` | negative = one breath; positive = exactly how long you paused |
+| `voice wake detector ready (realtime=…)` | CPU headroom; below ~5× is a warning |
+
 ## Known limitations
 
 - **The voice socket never reports the detected language**, so a spoken turn does not update
@@ -454,9 +534,13 @@ What the board requires:
   and is far cheaper. The text channel has the same exposure through the `POST /chat`
   timeout — it abandons the run the same way, leaving the same unanswered `HumanMessage` —
   and has no repair yet.
-- **No wake word, no diarization, no barge-in tuning per room**, and `gpt-4o-mini-tts`'s
-  voices are optimised for English — German and Portuguese are intelligible, not equal in
-  quality.
+- **The wake phrase is English only.** `de` and `pt-BR` conversations start with "Hey Jarvis";
+  openWakeWord ships no German or Portuguese model. A custom model, or the on-device WakeNet10
+  `wn10_de_halloesp` / `wn10_pt_olaesp` route, is the follow-up.
+- **Wake-word recall on real human speech is UNVERIFIED** — see the measurement note above.
+  While it stays unverified, treat the gate as "shipped but unproven" rather than done.
+- **No diarization and no per-room barge-in tuning**, and `gpt-4o-mini-tts`'s voices are optimised
+  for English — German and Portuguese are intelligible, not equal in quality.
 - **TLS is deferred**: the browser is tested on localhost and the device uses plain `ws://`
   on the LAN. As a direct consequence, **the browser microphone does not work on a LAN
   address over HTTP** (secure-context rule, see "Browser microphone" above); typing still

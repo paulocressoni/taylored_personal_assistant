@@ -456,6 +456,31 @@ actual room — which is the only data that matters for a keyword spotter.
 - The phrase can be changed for all three languages by editing config and restarting — no reflash.
 - Measured on your own recordings: false-accept and false-reject rates are known numbers, not guesses, at 1 m and 4 m.
 
+**STATUS: implemented; recall unverified.** openWakeWord `hey_jarvis_v0.1` behind a
+server-side gate (`backend/app/voice/wake.py`, `session.py`), English only, firmware unchanged.
+
+Deviations from the steps above, recorded rather than silently dropped:
+
+- **Step 1's engine spike was not run.** The engine was chosen as directed, so no
+  Porcupine/Vosk comparison exists; if the licence or the recall below becomes a problem, that
+  spike is still the right first move.
+- **One language only.** `de` and `pt-BR` conversations start with an English phrase.
+- **No follow-up window by design.** A completed answer does not leave the session listening, so
+  every turn starts with "Hey Jarvis"; the phrase is also the barge-in signal.
+
+What was measured: 1.9 ms per 80 ms hop (~40× realtime, ~2.5 % of a core per session); 0 false
+accepts over chat, questions and synthetic noise down to 2 dB SNR; **a 60 % false-reject rate on
+synthetic positives that barely improves at threshold 0.1**, which is a property of TTS speech
+being out of distribution for a model trained on human recordings — not of the operating point.
+**Real-room recall is therefore still open**, and it is the one criterion in DONE WHEN above that
+this delivery does not satisfy. The cheap close-out is ten utterances recorded on the device and
+scored with `scripts/wake_word_eval.py`, or a month of daily use with the detection log counted.
+
+Licence: the three pre-trained graphs are **CC BY-NC-SA 4.0**, not Apache-2.0 (only the code is).
+Attribution and the licence text ship with the binaries in the wheel; commercial use of the
+appliance is not permitted under those terms. That is a real constraint on this feature, not a
+footnote.
+
 **NOTES:** this deliberately spends CPU on the host for every idle second. Measure it — if the wake gate is
 expensive, the *later* milestone is to move it to the XIAO (WakeNet10 now has released `wn10_de_halloesp` /
 `wn10_pt_olaesp` models, and microWakeWord lives under the Open Home Foundation), keeping this server-side

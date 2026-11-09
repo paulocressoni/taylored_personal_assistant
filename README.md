@@ -1336,5 +1336,5 @@ the values that have to match in more than one place.
 | Conversation memory | LangGraph checkpointing — SQLite in dev, Postgres in prod (M11) | ✅ done |
 | Chat UI | Vite/React UI with WS token streaming and a multi-session sidebar (M10) | ✅ done |
 | Voice pipeline | Multilingual speech in/out: server-side VAD, Groq STT, sentence-streamed TTS, barge-in, per-stage timings (M29) | ✅ done |
-| Satellite appliance | reSpeaker XVF3800 + XIAO ESP32-S3 streaming to `WS /ws/voice`, with a server-side wake word | Firmware and wireless audio done ([docs/satellite.md](docs/satellite.md)); wake word next |
+| Satellite appliance | reSpeaker XVF3800 + XIAO ESP32-S3 streaming to `WS /ws/voice`, with a server-side wake word | Firmware, wireless audio and the "Hey Jarvis" gate done ([docs/satellite.md](docs/satellite.md), [docs/voice.md](docs/voice.md#wake-word-server-side-openwakeword)); real-room recall still unverified |
 | Skills, identity & memory | Settings (M13), time/weather (M14), device push (M15), permissions (M16), alarms (M17), calendar (M18), Spotify (M19), long-term memory (M20), evals (M21), speaker ID (M30) | not started |

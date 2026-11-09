@@ -274,6 +274,20 @@ validate the session before any audio is accepted:
 | `session_id` | `str` | required, min 1 char — the conversation (shared with typed turns) |
 | `device_id` | `str \| null` | optional — which device this socket belongs to |
 | `output_sample_rate` | `16000 \| 24000` | optional, default `24000`; the rate the server speaks at |
+| `wake_word` | `"auto" \| "on" \| "off" \| "manual"` | optional, default `"auto"`; see below |
+
+**`wake_word` decides whether the session is gated.** `"auto"` follows
+`VOICE_WAKE_WORD_ENABLED` (and is what the satellite sends by sending nothing); `"on"` asks for
+the gate and is refused with `1008` when the server does not have a detector; `"off"` declares
+ambient audio and is refused with `1008` when the operator forbids opting out; `"manual"` is
+audio the user started with a gesture, so it is never gated and never refused — that is what the
+browser sends. The `ready` frame echoes the result as `"wake_word": true|false`.
+
+On a gated session, `speech_start` is not sent for every onset: it is sent when the wake word is
+detected, or while the six-second permit is open. A session can therefore send `speech_start` and
+then **nothing at all** (the user said only the phrase), and "Hey Jarvis, stop" cancels an answer
+without sending `transcript` or `audio_end`. Never block waiting for `audio_end` after every
+onset.
 
 After that the socket carries **raw mono s16le PCM** (16 kHz) plus an occasional
 `{"type": "stop"}`. The full frame table, the audio-contract rationale and the latency
