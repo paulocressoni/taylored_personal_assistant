@@ -18,11 +18,20 @@ app.state instead of monkeypatching two vendors.
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 
 from app.core.config import settings
+from app.core.timing import monotonic_now
 from app.voice.stt import OpenAICompatibleTranscriber, Transcriber
 from app.voice.tts import OpenAISynthesizer, Synthesizer
 from app.voice.vad import SileroVad, Vad
+from app.voice.wake import (
+    ANALYSIS_BYTES,
+    PHRASES,
+    OpenWakeWordDetector,
+    OpenWakeWordModels,
+    WakeWord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,11 +45,19 @@ class VoiceProviders:
         synthesizer: Shared text-to-speech client.
         vad_factory: Builds a NEW VAD for each socket, because a VAD owns
             per-stream state.
+        wake_word_factory: Builds a NEW wake detector for each socket, because the
+            detector owns per-stream history. None when the feature is off, which
+            is what makes an explicit `wake_word: "on"` refusable.
+        wake_phrase: The spoken phrase the detector listens for, used to strip it
+            from the transcript. Resolved once, here, from the setting or the
+            model's built-in phrase.
     """
 
     transcriber: Transcriber
     synthesizer: Synthesizer
     vad_factory: Callable[[], Vad]
+    wake_word_factory: Callable[[], WakeWord] | None = None
+    wake_phrase: str = ""
 
 
 class SessionSlots:
@@ -92,6 +109,34 @@ def build_vad() -> Vad:
     return SileroVad()
 
 
+def _measure_wake_realtime(models: OpenWakeWordModels) -> float:
+    """Return how many seconds of audio the detector scores per second of CPU.
+
+    Measured once at startup rather than per session: it is a property of the
+    host, and the number belongs in the log where a deployment can see its
+    headroom. Three seconds of silence is enough for a stable ratio and costs
+    about 80 ms.
+
+    Args:
+        models: The loaded graphs to score with.
+
+    Returns:
+        The realtime factor (audio seconds per wall second), or 0.0 when the
+        clock produced no measurable interval.
+    """
+    detector = OpenWakeWordDetector(
+        models,
+        threshold=1.0,
+        debounce_s=0.0,
+        seed=models.silence_embedding,
+    )
+    audio = bytes(ANALYSIS_BYTES + 3 * 16000 * 2)
+    started = monotonic_now()
+    detector.push_scores(audio)
+    elapsed = monotonic_now() - started
+    return (3.0 / elapsed) if elapsed > 0 else 0.0
+
+
 def build_voice_providers() -> VoiceProviders | None:
     """Build the process-wide voice clients.
 
@@ -103,6 +148,42 @@ def build_voice_providers() -> VoiceProviders | None:
     """
     if not settings.voice_ready:
         return None
+
+    wake_word_factory: Callable[[], WakeWord] | None = None
+    wake_phrase = ""
+    if settings.voice_wake_word_enabled:
+        # Loaded ONCE for the process: the graphs are stateless, and re-loading
+        # them per socket would add ~10 ms and a second copy of each graph.
+        models = OpenWakeWordModels(settings.voice_wake_word_model)
+
+        # The phrase is resolved here rather than in Settings so that
+        # `import app.core.config` stays free of numpy/onnxruntime. An empty
+        # phrase with an unknown model would strip nothing and look like a broken
+        # feature, so it is a startup failure instead.
+        wake_phrase = settings.voice_wake_word_phrase.strip() or PHRASES.get(
+            settings.voice_wake_word_model, ""
+        )
+        if not wake_phrase:
+            raise RuntimeError(
+                f"VOICE_WAKE_WORD_PHRASE is empty and "
+                f"{settings.voice_wake_word_model} has no built-in phrase; set "
+                "the phrase explicitly."
+            )
+
+        logger.info(
+            "voice wake detector ready (realtime=%.1fx, threshold=%.2f, phrase=%r)",
+            _measure_wake_realtime(models),
+            settings.voice_wake_word_threshold,
+            wake_phrase,
+        )
+        wake_word_factory = partial(
+            OpenWakeWordDetector,
+            models,
+            threshold=settings.voice_wake_word_threshold,
+            debounce_s=settings.voice_wake_word_debounce_seconds,
+            seed=models.silence_embedding,
+        )
+
     return VoiceProviders(
         transcriber=OpenAICompatibleTranscriber(
             provider=settings.voice_stt_provider,
@@ -120,4 +201,6 @@ def build_voice_providers() -> VoiceProviders | None:
             timeout_seconds=settings.voice_tts_timeout_seconds,
         ),
         vad_factory=build_vad,
+        wake_word_factory=wake_word_factory,
+        wake_phrase=wake_phrase,
     )
