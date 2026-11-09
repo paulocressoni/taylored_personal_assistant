@@ -283,6 +283,7 @@ async def test_the_session_announces_the_negotiated_rates() -> None:
         "input_sample_rate": settings.voice_input_sample_rate,
         "output_sample_rate": PCM_SAMPLE_RATE,
         "format": "pcm_s16le",
+        "wake_word": False,
     }
 
 

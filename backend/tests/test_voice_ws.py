@@ -150,6 +150,7 @@ def test_the_ready_frame_announces_the_negotiated_rate(client: TestClient) -> No
             "input_sample_rate": settings.voice_input_sample_rate,
             "output_sample_rate": 24000,
             "format": "pcm_s16le",
+            "wake_word": False,
         }
 
 

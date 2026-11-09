@@ -628,6 +628,30 @@ def stamp_voice_timing(deltas_ms: dict[str, float]) -> None:
         pass
 
 
+def stamp_voice_outcome(outcome: str, wake_lead_ms: float | None) -> None:
+    """Write a voice turn's outcome onto the current observation.
+
+    Same contract as `stamp_voice_timing`: call it while the app-root span is
+    current, never from inside `_answer` (whose `stt`/`tts` child spans are
+    current while it runs). No-op when observability is switched off.
+
+    Args:
+        outcome: One of `"answer"`, `"wake_only"`, `"cancel"`.
+        wake_lead_ms: Segment start minus the last wake detection, in
+            milliseconds. Negative means the phrase was recognised after the user
+            had already started speaking — the one-breath path. None when no
+            detection preceded the turn.
+    """
+    if not settings.langfuse_ready:
+        return
+    metadata = {"voice_outcome": outcome}
+    if wake_lead_ms is not None:
+        metadata["wake_lead_ms"] = f"{wake_lead_ms:.1f}"
+    # Empty body is intentional: ENTERING the context is what writes the values.
+    with propagate_attributes(metadata=metadata):
+        pass
+
+
 def trace_url(handler: CallbackHandler) -> str | None:
     """Human URL for the last trace this handler created (v4 property)."""
     if handler.last_trace_id is None:

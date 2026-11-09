@@ -8,6 +8,7 @@ a browser tab and for the reSpeaker device.
 """
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -15,6 +16,7 @@ from typing import Protocol
 import numpy as np
 import onnxruntime as ort
 
+from app.core.timing import monotonic_now
 from app.voice.audio import SAMPLE_WIDTH_BYTES, to_float32
 
 SAMPLE_RATE = 16000
@@ -45,11 +47,15 @@ class Utterance:
             ended the segment. Less than `pcm` implies, because the trailing
             silence is trimmed off before transcription.
         peak_probability: Highest speech probability seen in the segment.
+        started_at: Monotonic time of the segment's FIRST speech window. The wake
+            gate judges admission on this, not on the endpoint, so a long question
+            that begins inside the window is still accepted when it ends outside.
     """
 
     pcm: bytes
     detected_s: float
     peak_probability: float
+    started_at: float
 
 
 @dataclass(frozen=True)
@@ -168,6 +174,7 @@ class EndpointDetector:
         min_silence_ms: float,
         speech_pad_ms: float,
         max_utterance_s: float,
+        now: Callable[[], float] = monotonic_now,
     ) -> None:
         """Configure the state machine.
 
@@ -179,6 +186,8 @@ class EndpointDetector:
             min_silence_ms: Silence needed after speech before the turn ends.
             speech_pad_ms: Audio kept around the segment so phonemes survive.
             max_utterance_s: Hard cap that force-ends a segment.
+            now: Clock used to timestamp segment onsets. Injected so a test can
+                prove "start of segment" without sleeping.
         """
         self._vad = vad
         self._threshold = threshold
@@ -196,6 +205,8 @@ class EndpointDetector:
         self._silence_windows = 0
         self._active_end = 0
         self._peak = 0.0
+        self._now = now
+        self._started_at = 0.0
 
     def push(self, pcm: bytes) -> list[Event]:
         """Feed captured audio and collect the events it produced.
@@ -238,6 +249,7 @@ class EndpointDetector:
             events: list[Event] = [SpeechStart()]
             self._clear_segment()
             self._in_speech = True
+            self._started_at = self._now()
         else:
             events = []
 
@@ -289,6 +301,7 @@ class EndpointDetector:
                 pcm=self._pre_roll + bytes(self._segment[:end]),
                 detected_s=detected_s,
                 peak_probability=self._peak,
+                started_at=self._started_at,
             )
 
         self._pre_roll = b""
@@ -303,3 +316,4 @@ class EndpointDetector:
         self._silence_windows = 0
         self._active_end = 0
         self._peak = 0.0
+        self._started_at = 0.0

@@ -29,7 +29,7 @@ same way. `speech_start` doubles as "stop playing what you have buffered".
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -42,6 +42,7 @@ from app.core.observability import (
     enrich_trace,
     mark_turn_cancelled,
     mark_turn_failed,
+    stamp_voice_outcome,
     stamp_voice_timing,
     stt_attributes,
     tts_attributes,
@@ -53,6 +54,14 @@ from app.voice.audio import StreamingResampler, duration_s
 from app.voice.stt import Transcriber
 from app.voice.tts import PCM_SAMPLE_RATE, SentenceSplitter, Synthesizer
 from app.voice.vad import EndpointDetector, Ignored, SpeechStart, Utterance, Vad
+from app.voice.wake import (
+    WAKE_GRACE_SECONDS,
+    WakeGate,
+    WakeWord,
+    WakeWordUnavailable,
+    is_cancel_phrase,
+    strip_wake_phrase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +82,11 @@ OUTPUT_SAMPLE_RATES = frozenset({16000, PCM_SAMPLE_RATE})
 # and plainly not spoken: it restores the question/answer alternation a model
 # expects without inventing an answer the assistant never gave.
 INTERRUPTED_MARKER = "[interrupted]"
+
+# What a turn produced. `answer` is a normal turn; the other two are gated-session
+# outcomes that never reach the graph, so they must not be averaged into turn
+# latency (`_run_turn` skips `turn_timings` for them).
+TurnOutcome = Literal["answer", "wake_only", "cancel"]
 
 
 def _content_to_str(content: Any) -> str:
@@ -180,6 +194,8 @@ class VoiceSession:
         session_id: str,
         device_id: str | None = None,
         output_sample_rate: int = settings.voice_output_sample_rate,
+        wake: WakeWord | None = None,
+        wake_phrase: str = "",
     ) -> None:
         """Wire one session.
 
@@ -196,6 +212,11 @@ class VoiceSession:
             session_id: Conversation id, shared with the text channel.
             device_id: Which device this socket belongs to, if any.
             output_sample_rate: Rate to send audio at.
+            wake: Wake-word detector for this stream, or None for an un-gated
+                session. None is the whole of today's behaviour: every onset is
+                forwarded and every segment becomes a turn.
+            wake_phrase: Spoken phrase to strip from the transcript. Only used
+                when `wake` is set.
 
         Raises:
             ValueError: if `output_sample_rate` is not supported.
@@ -221,6 +242,17 @@ class VoiceSession:
             speech_pad_ms=settings.voice_vad_speech_pad_ms,
             max_utterance_s=settings.voice_vad_max_utterance_s,
         )
+        # Wake-word state. The gate is always constructed — it is two floats —
+        # but only consulted when `_wake` is set, which keeps every branch below
+        # a plain `is not None` check.
+        self._wake = wake
+        self._wake_phrase = wake_phrase
+        self._gate = WakeGate(settings.voice_wake_word_window_seconds)
+        # When the most recent detection arrived. `wake_lead` is measured from
+        # this, so it must be stamped by the session, not by the detector.
+        self._last_detection_at: float | None = None
+        # One slot for a segment rejected just before its own detection arrived.
+        self._rejected: tuple[Utterance, float] | None = None
         # The language the LAST turn resolved to. It biases this turn's
         # transcription and picks this turn's voice before the graph has
         # answered, so it is remembered here rather than read back from the
@@ -258,6 +290,7 @@ class VoiceSession:
                 "input_sample_rate": settings.voice_input_sample_rate,
                 "output_sample_rate": self._output_rate,
                 "format": "pcm_s16le",
+                "wake_word": self._wake is not None,
             }
         )
 
@@ -276,20 +309,116 @@ class VoiceSession:
             logger.info("voice session closed")
 
     async def _handle_audio(self, pcm: bytes) -> None:
-        """Feed captured audio to the endpointer and act on what it reports.
+        """Score wake-word audio, then feed the endpointer and act on it.
+
+        The wake detector runs FIRST so a detection contained in this same chunk
+        is already visible when the endpointer's events are processed: detection
+        steps every 80 ms, endpointing every 32 ms, and the order is what keeps a
+        very short phrase from being judged before it was heard.
 
         Args:
             pcm: Mono PCM at `voice_input_sample_rate`, of any length.
         """
+        if self._wake is not None:
+            await self._detect_wake(self._wake, pcm)
+
         for event in self._detector.push(pcm):
             if isinstance(event, SpeechStart):
-                await self._barge_in()
+                # A gated session forwards an onset only while a permit is open.
+                # Otherwise room noise would flush the client's playout and cancel
+                # the answer — the exact behaviour the gate exists to stop.
+                if self._wake is None or self._gate.is_open():
+                    await self._barge_in()
             elif isinstance(event, Utterance):
+                if self._wake is not None and not self._gate.admit(event.started_at):
+                    self._reject(event)
+                    continue
+                self._rejected = None
                 # Deliberately not awaited: the reader has to stay available for
                 # the audio that would interrupt this turn.
                 self._turn = asyncio.create_task(self._run_turn(event))
             elif isinstance(event, Ignored):
                 logger.debug("voice blip ignored (%.2fs)", event.duration_s)
+
+    async def _detect_wake(self, wake: WakeWord, pcm: bytes) -> None:
+        """Score one chunk for the wake phrase and act on what it hears.
+
+        A detection is three things at once: it opens the permit, it is the
+        barge-in signal (the phrase IS how a user interrupts an answer), and it
+        may rescue a segment the endpointer closed a moment too early.
+
+        Args:
+            wake: This session's detector. Passed in rather than read from `self`
+                so the `None` check above is the only place that decides whether
+                the session is gated.
+            pcm: Mono PCM at `voice_input_sample_rate`, of any length.
+
+        Raises:
+            WakeWordUnavailable: if the detector raises. Fail closed: running
+                un-gated would send ambient audio to a paid STT, so the session
+                sends one error frame and lets the route close the socket.
+        """
+        try:
+            detections = wake.push(pcm)
+        except Exception as exc:
+            logger.exception("wake word detector failed")
+            await self._send({"type": "error", "detail": "wake word unavailable"})
+            raise WakeWordUnavailable(str(exc)) from exc
+
+        for detection in detections:
+            self._last_detection_at = monotonic_now()
+            self._gate.arm()
+            logger.info(
+                "wake word detected (score=%.2f, in_turn=%s)",
+                detection.score,
+                self._turn is not None and not self._turn.done(),
+            )
+            # The phrase flushes the client and cancels an answer in flight. When
+            # nothing is playing it is a harmless empty flush that still moves the
+            # device's LED to LISTENING at the right moment.
+            await self._barge_in()
+            await self._recover_rejected()
+
+    def _reject(self, utterance: Utterance) -> None:
+        """Keep a segment that arrived without a permit, and log why.
+
+        The log line is the metric the tuning runbook reads: `since_arm` is
+        measured from the deadline the decision actually used, so a cluster just
+        above `VOICE_WAKE_WORD_WINDOW_SECONDS` means the window is too short for
+        this household, while a value well below it is the one-shot rule working.
+
+        Args:
+            utterance: The segment the gate refused.
+        """
+        since = (
+            "never"
+            if self._gate.last_arm_at is None
+            else f"{utterance.started_at - self._gate.last_arm_at:.1f}s"
+        )
+        logger.info(
+            "voice turn ignored: no wake word (speech=%.1fs, since_arm=%s)",
+            utterance.detected_s,
+            since,
+        )
+        self._rejected = (utterance, monotonic_now())
+
+    async def _recover_rejected(self) -> None:
+        """Run a segment whose own detection arrived just after its endpoint.
+
+        One slot and half a second: the detector steps on 80 ms hops while the
+        endpointer closes on 32 ms windows, so a very short "Hey Jarvis, ..." can
+        be finalised first. A queue would only make false accepts likelier.
+        """
+        if self._rejected is None:
+            return
+        utterance, rejected_at = self._rejected
+        self._rejected = None
+        if monotonic_now() - rejected_at > WAKE_GRACE_SECONDS:
+            return
+        if not self._gate.admit(utterance.started_at):
+            return
+        logger.info("wake word recovered a segment finalised before the detection")
+        self._turn = asyncio.create_task(self._run_turn(utterance))
 
     async def _barge_in(self) -> None:
         """Cut off the answer that is playing and tell the client to as well.
@@ -366,6 +495,10 @@ class VoiceSession:
             utterance: The completed speech segment to act on.
         """
         marks = StageMarks(speech_end=monotonic_now())
+        # None until `_answer` decides. None means the turn never got as far as a
+        # decision (failed transcription, timeout, cancellation), which keeps
+        # today's timing behaviour for those cases.
+        outcome: TurnOutcome | None = None
         try:
             # turn_span() owns the app-root span: without it there is nothing for
             # enrich_trace and stamp_voice_timing to write onto.
@@ -380,7 +513,7 @@ class VoiceSession:
                 # and the stage timings onto itself, leaving a crashed turn
                 # looking healthy.
                 try:
-                    await self._answer(utterance, marks)
+                    outcome = await self._answer(utterance, marks)
                 except asyncio.CancelledError:
                     # Barge-in unwinds the turn by cancelling this task. CancelledError
                     # derives from BaseException, so the broad handler below never
@@ -405,25 +538,54 @@ class VoiceSession:
                     await self._send({"type": "error", "detail": "I could not answer"})
                 finally:
                     # Stamped while the span is still open: the SDK writes the
-                    # attributes onto the span that is current when the context is
+                    # metadata onto the span that is current when the context is
                     # entered, so a later call would go nowhere.
                     stamp_voice_timing(marks.deltas_ms())
+                    if outcome is not None:
+                        stamp_voice_outcome(outcome, self._wake_lead_ms(utterance))
         finally:
             # `done` is the last audio byte leaving; on a failed turn it is when
             # the turn gave up.
             marks.done = marks.done or monotonic_now()
-            self.turn_timings.append(marks.deltas_ms())
+            if outcome not in {"wake_only", "cancel"}:
+                # A bare wake word and a cancel phrase do real work (STT) but are
+                # not turns; averaging them into turn latency would make the
+                # numbers describe a pipeline that did not run.
+                self.turn_timings.append(marks.deltas_ms())
             log_stage_marks(logger, marks)
             # A turn that never reached the graph's END left its question in the
             # checkpointer; close it so the thread stays question-answer balanced.
             await self._close_interrupted_turn()
 
-    async def _answer(self, utterance: Utterance, marks: StageMarks) -> None:
+    def _wake_lead_ms(self, utterance: Utterance) -> float | None:
+        """How long after the last detection the segment started, in ms.
+
+        Negative is the one-breath path: the phrase was recognised after the user
+        had already begun speaking. None means no detection has been recorded.
+
+        Args:
+            utterance: The segment that became this turn.
+
+        Returns:
+            Milliseconds, or None when no detection has been recorded.
+        """
+        if self._last_detection_at is None:
+            return None
+        return (utterance.started_at - self._last_detection_at) * 1000.0
+
+    async def _answer(
+        self, utterance: Utterance, marks: StageMarks
+    ) -> TurnOutcome | None:
         """Transcribe the utterance, stream the reply and speak it as it forms.
 
         Args:
             utterance: The completed speech segment to transcribe.
             marks: Stage marks to fill in as the turn progresses.
+
+        Returns:
+            The turn's outcome, or None when it stopped before a decision (failed
+            or empty transcription). `wake_only` and `cancel` never reach the
+            graph and never send a transcript frame.
         """
         bias = self._stt_bias()
         # `Utterance` carries the speech it detected (`detected_s`), not the audio
@@ -460,12 +622,28 @@ class VoiceSession:
         if not transcript.ok:
             logger.warning("voice transcription failed (%s)", transcript.error)
             await self._send({"type": "error", "detail": "I did not catch that"})
-            return
+            return None
         if transcript.is_empty:
             # Silence, noise, or an invented phrase the adapter already dropped:
             # answering nothing is better than answering a hallucination.
-            return
-        await self._send({"type": "transcript", "text": transcript.text})
+            return None
+
+        spoken_text = transcript.text
+        if self._wake is not None:
+            spoken_text = strip_wake_phrase(spoken_text, self._wake_phrase)
+            if not spoken_text:
+                # The bare wake word. Re-arm so the command can follow, and send
+                # no transcript: there is nothing to show and no turn to run.
+                logger.info("wake word heard without a command; window re-armed")
+                self._gate.arm()
+                return "wake_only"
+            if is_cancel_phrase(spoken_text):
+                # "Hey Jarvis, stop": the detection already cancelled the answer,
+                # and a graph turn here would answer "stop" as if it were a
+                # question. Close without touching the thread.
+                logger.info("cancel phrase heard (%r); no turn", spoken_text)
+                return "cancel"
+        await self._send({"type": "transcript", "text": spoken_text})
 
         initial: dict[str, Any] = {
             **build_initial_state(
@@ -525,6 +703,7 @@ class VoiceSession:
 
         marks.done = monotonic_now()
         await self._send({"type": "audio_end"})
+        return "answer"
 
     async def _speak(
         self,
