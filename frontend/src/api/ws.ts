@@ -34,6 +34,11 @@ export type VoiceStartFrame = {
   session_id: string
   device_id?: string | null
   output_sample_rate: 16000 | 24000
+  // Why the client is streaming, so the server can decide whether the wake word
+  // applies: 'auto' follows the server setting, 'on' forces the gate, 'off'
+  // declares ambient audio (refused by a strict server), 'manual' is audio the
+  // user started with a gesture — never gated, never refused.
+  wake_word?: 'auto' | 'on' | 'off' | 'manual'
 }
 export type VoiceStopFrame = { type: 'stop' }
 export type VoiceClientFrame = VoiceStartFrame | VoiceStopFrame
@@ -42,11 +47,18 @@ export type VoiceClientFrame = VoiceStartFrame | VoiceStopFrame
 // socket, then `speech_start` / `transcript` / `token`+ / `audio_end` per turn.
 // `error` can replace any of them, and a refused socket (1008 not configured or
 // unauthenticated, 1013 busy) sends the same error frame before closing.
+//
+// A GATED session can also send `speech_start` and then NOTHING at all: the user
+// said only the wake word. And "Hey Jarvis, stop" cancels an answer without
+// sending `transcript` or `audio_end`. Never block waiting for `audio_end` after
+// every onset.
 export type VoiceReadyFrame = {
   type: 'ready'
   input_sample_rate: number
   output_sample_rate: number
   format: string
+  // Optional: a new bundle can talk to an old server that does not send it.
+  wake_word?: boolean
 }
 export type VoiceSpeechStartFrame = { type: 'speech_start' }
 export type VoiceTranscriptFrame = { type: 'transcript'; text: string }
