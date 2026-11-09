@@ -375,7 +375,15 @@ id -nG                 # must now list dialout
 
 `newgrp` opens a subshell, so re-load the toolchain inside it (`source firmware/env.sh`) before
 running `idf.py` again. No reboot and no udev rule are needed, and nothing is loosened for other
-users. If you skip `newgrp` and log out instead, the group is active from the next login.
+users.
+
+**A newly opened terminal does not help.** Groups are attached to a process when it starts and can
+never be added later, so every terminal spawned by a long-running parent — an IDE's integrated
+terminal, a terminal multiplexer, a remote session — inherits the old, group-less credentials no
+matter how new it is. Only `newgrp dialout` in that terminal, a full restart of the editor (not a
+window reload), or a fresh login gets you the group. Verify with the two checks above rather than
+assuming, and note that `screen -L` **appends** to its logfile, so a capture that failed once will
+keep its error output at the top of the soak file — start a fresh filename.
 
 ### `Writing to serial is timing out`
 
