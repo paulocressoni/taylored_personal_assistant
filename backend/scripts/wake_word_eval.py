@@ -40,6 +40,44 @@ from app.voice.wake import OpenWakeWordDetector, OpenWakeWordModels
 POSITIVE_PREFIX = "wake_"
 
 
+def _resolve(paths: list[Path]) -> list[Path]:
+    """Turn the CLI arguments into a list of WAV files, or explain why not.
+
+    A shell only expands a glob when it matches something, so a mistyped or not
+    yet created directory arrives here as the literal string `*.wav`. Reporting
+    that as "unreadable" hides the real cause, so it is named explicitly. A
+    directory argument is expanded here, which is what makes
+    `wake_word_eval.py recordings/1m` work without a glob at all.
+
+    Args:
+        paths: The arguments as the shell passed them.
+
+    Returns:
+        The files to score, in the order given, with directories expanded.
+
+    Raises:
+        SystemExit: when nothing matched, so a typo cannot look like a pass.
+    """
+    resolved: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            found = sorted(path.glob("*.wav"))
+            if not found:
+                raise SystemExit(f"{path} contains no .wav files")
+            resolved.extend(found)
+        elif path.is_file():
+            resolved.append(path)
+        elif any(character in str(path) for character in "*?["):
+            raise SystemExit(
+                f"no files matched {path} — the shell only expands a glob when at "
+                "least one file exists, so this argument reached the script "
+                "literally. Record some clips first, or pass a directory."
+            )
+        else:
+            raise SystemExit(f"{path} does not exist")
+    return resolved
+
+
 def _label(path: Path) -> bool:
     """Return True when the file is a positive sample.
 
@@ -81,7 +119,12 @@ def main() -> int:
         0 when every requested file was scored, 1 when one could not be read.
     """
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("files", nargs="+", type=Path, help="WAV files to score")
+    parser.add_argument(
+        "files",
+        nargs="+",
+        type=Path,
+        help="WAV files or directories of WAV files to score",
+    )
     parser.add_argument(
         "--threshold",
         type=float,
@@ -114,7 +157,7 @@ def main() -> int:
     total_wall = 0.0
     failures = 0
 
-    for path in args.files:
+    for path in _resolve(args.files):
         try:
             pcm, rate, channels = read_wav(path)
         except (OSError, ValueError) as exc:
