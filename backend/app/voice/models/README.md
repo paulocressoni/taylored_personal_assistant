@@ -1,3 +1,12 @@
+# Vendored models
+
+Two model sets live here, each with its own provenance and I/O contract:
+
+- `silero_vad.onnx` — the voice-activity graph documented below.
+- [`openwakeword/`](openwakeword/README.md) — the three wake-word graphs (mel, embedding, `hey_jarvis`), their licence and caller obligations.
+
+---
+
 # Vendored VAD model — Silero VAD (`silero_vad.onnx`)
 
 Model weights are committed on purpose. The runtime image is a two-stage
