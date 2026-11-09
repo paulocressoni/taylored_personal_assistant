@@ -31,8 +31,10 @@ import argparse
 import sys
 from pathlib import Path
 
+import numpy as np
+
 from app.core.timing import monotonic_now
-from app.voice.audio import duration_s, read_wav
+from app.voice.audio import duration_s, int16_view, read_wav, resample_pcm
 from app.voice.wake import OpenWakeWordDetector, OpenWakeWordModels
 
 # A file is a positive when its name starts with this, which keeps "the audio
@@ -88,6 +90,33 @@ def _label(path: Path) -> bool:
         True for a `wake_*` file, False for every other name.
     """
     return path.name.startswith(POSITIVE_PREFIX)
+
+
+def _to_mono_16k(pcm: bytes, sample_rate: int, channels: int) -> tuple[bytes, str]:
+    """Convert a recording to the detector's contract: mono, 16 kHz, s16le.
+
+    A phone records 48 kHz, often in stereo, and refusing those would make this
+    tool useless for the recordings it exists to score. No external decoder is
+    involved: both conversions are ones the voice pipeline already performs.
+
+    Args:
+        pcm: Raw little-endian signed 16-bit samples, interleaved if stereo.
+        sample_rate: The recording's rate.
+        channels: 1 or 2.
+
+    Returns:
+        The converted PCM and a short note describing what was done.
+    """
+    note = ""
+    if channels > 1:
+        samples = int16_view(pcm).reshape(-1, channels)
+        mixed = np.clip(np.rint(samples.mean(axis=1)), -32768, 32767)
+        pcm = mixed.astype("<i2").tobytes()
+        note = f"{channels}ch->mono"
+    if sample_rate != 16000:
+        pcm = resample_pcm(pcm, sample_rate, 16000)
+        note = f"{note} {sample_rate}->16k".strip()
+    return pcm, note
 
 
 def _score(models: OpenWakeWordModels, pcm: bytes, sample_rate: int) -> list[float]:
@@ -164,12 +193,10 @@ def main() -> int:
             print(f"{path.name:<34}unreadable ({exc})")
             failures += 1
             continue
-        if channels != 1 or rate != 16000:
-            print(
-                f"{path.name:<34}skipped: {channels} ch at {rate} Hz (need mono 16 kHz)"
-            )
-            failures += 1
-            continue
+        # Phone recordings are 48 kHz and frequently stereo; convert rather than
+        # skip, because these are exactly the files this tool exists to measure.
+        pcm, conversion = _to_mono_16k(pcm, rate, channels)
+        rate, channels = 16000, 1
 
         started = monotonic_now()
         scores = _score(models, pcm, rate)
@@ -197,6 +224,8 @@ def main() -> int:
 
         label = "wake" if positive else "no-wake"
         verdict = "ok" if accepted == positive else "MISS"
+        if conversion:
+            verdict = f"{verdict} ({conversion})"
         print(
             f"{path.name:<34}{label:<10}{peak:>7.3f}{peak_at:>7.2f}s"
             f"  {seconds:>5.2f}s  {verdict}"
