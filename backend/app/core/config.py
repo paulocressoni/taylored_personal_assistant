@@ -216,6 +216,52 @@ class Settings(BaseSettings):
     voice_vad_min_silence_ms: int = 500
     voice_vad_max_utterance_s: float = 30.0
 
+    # --- Server-side wake word (openWakeWord) ---
+    # Off by default: with it off, every sound in the room is still a turn, which
+    # is what every existing deployment and every existing test expects.
+    voice_wake_word_enabled: bool = False
+    # Bare filename inside app/voice/models/openwakeword/. The ACOUSTIC phrase is
+    # whatever this graph detects; the phrase below only decides what is stripped
+    # from the transcript, so the two cannot silently disagree.
+    voice_wake_word_model: str = "hey_jarvis_v0.1.onnx"
+    voice_wake_word_phrase: str = Field(
+        default="",
+        description=(
+            "Spoken form of the wake word, used to strip it from the transcript. "
+            "Empty derives it from the model filename; the registry refuses to "
+            "start when neither is available."
+        ),
+    )
+    voice_wake_word_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Classifier probability at or above which the phrase is heard.",
+    )
+    voice_wake_word_debounce_seconds: float = Field(
+        default=2.0,
+        ge=0.0,
+        description=(
+            "How long one detection suppresses the next. A suppressed repeat is "
+            "harmless: the permit it would arm is already open."
+        ),
+    )
+    voice_wake_word_window_seconds: float = Field(
+        default=6.0,
+        gt=0.0,
+        description=(
+            "How long after the phrase a speech segment may START and still be "
+            "accepted. The permit covers exactly one segment."
+        ),
+    )
+    voice_wake_word_allow_opt_out: bool = Field(
+        default=True,
+        description=(
+            "Whether a client may send wake_word='off'. Independent of 'manual', "
+            "which is never refused."
+        ),
+    )
+
     # One long-lived socket per device or browser tab. A client that sends
     # neither audio nor keepalives for this long is dropped, so a vanished
     # client cannot hold a slot (and a cloud quota) forever. Hardware pings
@@ -338,6 +384,36 @@ class Settings(BaseSettings):
                     "VOICE_TTS_FIRST_CHUNK_MIN_CHARS, otherwise the eager first "
                     "chunk has no valid split window."
                 )
+
+            # The phrase decides what is stripped from the transcript, and the
+            # acoustic phrase is whatever the graph detects. An unknown model
+            # with no configured phrase would silently strip nothing, so the file
+            # name is validated here and the phrase itself in the registry (the
+            # only place that can import the phrase map without dragging
+            # onnxruntime into every `import app.core.config`).
+            model_name = self.voice_wake_word_model
+            if (
+                "/" in model_name
+                or "\\" in model_name
+                or not model_name.endswith(".onnx")
+            ):
+                # `Path(name).name == name` alone is not enough: a backslash is a
+                # legal filename character on Linux, and this rule must mean the
+                # same thing on every host that reads the setting.
+                raise ValueError(
+                    "VOICE_WAKE_WORD_MODEL must be a bare .onnx filename inside "
+                    "app/voice/models/openwakeword/, with no path separators."
+                )
+
+        # Refusing every un-gated session AND having no way to gate one is not a
+        # policy, it is a brick: a contradiction between two settings, so it is
+        # checked outside the voice block.
+        if not self.voice_wake_word_enabled and not self.voice_wake_word_allow_opt_out:
+            raise ValueError(
+                "VOICE_WAKE_WORD_ALLOW_OPT_OUT=false requires "
+                "VOICE_WAKE_WORD_ENABLED=true: otherwise every session resolves "
+                "to un-gated and is then refused, so voice cannot start at all."
+            )
 
         return self
 
