@@ -134,6 +134,9 @@ soak-meta:
 	@echo "META written to $(SOAK_DIR)/META"
 
 soak-report:
+	@test -n "$(UNTIL)" || \
+	  { echo "soak-report: set UNTIL=<ISO-8601 UTC>, e.g. make soak-report UNTIL=2026-11-11T17:45:00Z"; \
+	    exit 1; }
 	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_DIR) --until "$(UNTIL)"
 
 # ============================ PROD ============================
