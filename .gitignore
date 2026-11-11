@@ -20,6 +20,10 @@ htmlcov/
 
 # Logs
 *.log
+# ...except the soak-report fixtures, which are trimmed, hand-written captures
+# the tests assert against. Without this the suite passes locally (the files
+# exist on disk) and fails in CI (they were never committed).
+!backend/tests/fixtures/soak/*.log
 
 # Local conversation checkpoint database (M11)
 checkpoints.db*
