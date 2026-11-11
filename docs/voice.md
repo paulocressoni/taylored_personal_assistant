@@ -512,6 +512,33 @@ were the cause, 0.1 would have rescued most of those clips; it did not. So:
   device, or ordinary daily use with the detections counted in the log. Do not quote the 60 %
   above as real-room recall; it is a statement about TTS.
 
+**A 47-hour soak on the satellite** is the third source, and the only one that describes a room.
+`scripts/soak_report.py` turns the three capture logs into one report (window, denominators and the
+device-clock anchor included — see [`soak.md`](soak.md)). At threshold 0.50, over
+`2026-11-09T18:59:45Z … 2026-11-11T17:45:00Z`:
+
+| What | Value | Out of |
+|---|---|---|
+| wake word detections | 124 · score p50 **0.81**, p90 0.96 · 19 below 0.60 | 124 detections |
+| turns accepted | 109 · **103 said in one breath** (`wake_lead` p50 −0.72 s) | 109 turns |
+| segments rejected by the gate | **3 335** | 3 335 rejections |
+| — never armed / >60 s / 10-60 s / 0.5-6 s / 6-10 s / ≤0.5 s | 2 352 / 792 / 141 / 31 / 15 / 4 | sums to 3 335 |
+| room audio never transcribed | **2.3 h** (≈31 rejections per accepted turn) | 109 turns |
+| turn failures, timeouts, detector failures | 0 / 0 / 0 | 109 turns |
+| first audio heard | p50 **3.39 s**, p90 5.72 s | 102 turns with audio |
+
+Read it this way:
+
+- **The gate is working.** 3 335 segments never reached STT or the graph. That is 2.3 hours of
+  speech not paid for, and it is the feature's whole point — it belongs next to the latencies, not
+  next to the defects.
+- **Ambient noise, not the permit, is what gets rejected.** Only 31 rejections sit in the
+  `0.5-6 s` window that a "my second sentence was refused" report would produce, and ~1 % of all
+  rejections land within 5 s of an accepted turn.
+- **Precision and recall are still not measurable.** 124 detections is a reviewable set, but recall
+  needs *near misses*, and nothing below 0.50 is logged. That is the next instrumentation step; until
+  then the honest statement is "the gate rejects the room and accepts the phrase", not a percentage.
+
 ### Reading the log
 
 | Line | What it answers |
@@ -520,6 +547,7 @@ were the cause, 0.1 would have rescued most of those clips; it did not. So:
 | `voice turn ignored: no wake word (speech=…, since_arm=…)` | your own pause exceeded the permit (`since_arm` sits just above the window on the pause path), or the permit was already consumed |
 | `voice turn accepted (wake_lead=-0.42s)` | negative = one breath; positive = exactly how long you paused |
 | `voice wake detector ready (realtime=…)` | CPU headroom; below ~5× is a warning |
+| `voice session closed: <reason>` | exactly one per socket: `client gone`, `idle timeout`, or the exception class |
 
 ## Known limitations
 

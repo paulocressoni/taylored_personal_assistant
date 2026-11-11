@@ -137,7 +137,16 @@ def _voice_settings(**overrides):
 
 
 def test_wake_word_defaults_keep_the_feature_off() -> None:
-    settings = Settings()
+    # `_env_file=None` keeps this an assertion about the FIELD default. Without
+    # it the test reads the developer's own .env.dev, and enabling the gate there
+    # — which a soak requires — turns a green suite red for the wrong reason. The
+    # two keys are only here to satisfy the fail-fast startup validation; no
+    # wake-word field is passed, so its defaults are what is being measured.
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+    )
 
     assert settings.voice_wake_word_enabled is False
     assert settings.voice_wake_word_model == "hey_jarvis_v0.1.onnx"

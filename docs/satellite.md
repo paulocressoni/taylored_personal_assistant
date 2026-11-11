@@ -513,6 +513,26 @@ brightness 48 is effectively invisible across a room; that cost an hour of debug
 The rule that came out of it: **an indicator you cannot see from where you stand is not an
 indicator.** Prefer a steady colour at full brightness over a tasteful animation.
 
+| State | Colour | When |
+|---|---|---|
+| `LED_STATE_OFF` | none | boot, before the ring is configured |
+| `LED_STATE_IDLE` | blue `0x0000FF` | not in a session, or the socket dropped |
+| `LED_STATE_LISTENING` | green `0x00FF00` | session ready, and again when the server reports speech |
+| `LED_STATE_THINKING` | orange `0xFF8000` | a transcript arrived, the answer is being produced |
+| `LED_STATE_SPEAKING` | cyan `0x00FFFF` | answer audio is playing |
+| `LED_STATE_MUTED` | red `0xFF0000` | the microphone is muted |
+
+Two things to keep in mind when reading a log: **blue is not a wake-up**, it is the absence of a
+session — a soak counted 490 IDLE transitions in 47 hours, one per reconnect; and the mute state is
+per-call-site, so a handler that forgets `s_muted` paints green over a muted device.
+
+## Measuring a soak
+
+A single session proves the contract; a 47-hour one proves the product. The capture procedure, the
+device-clock anchor (the serial log has no wall clock) and the metric dictionary are in
+[`soak.md`](soak.md); `backend/scripts/soak_report.py` turns the three logs into one comparable
+report.
+
 ### Reconnecting
 
 `satellite.c` owns the socket, so one place decides the retry policy:
