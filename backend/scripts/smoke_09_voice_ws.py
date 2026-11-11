@@ -14,6 +14,9 @@ instead; the server accepts both, and both draw on the same budget).
 Usage (from backend/, with the server running and the voice keys in .env.dev):
     uv run python scripts/smoke_09_voice_ws.py --lang de
     uv run python scripts/smoke_09_voice_ws.py --lang pt --output-rate 24000
+
+    # a device that dies mid-turn: no `stop`, no CLOSE frame
+    uv run python scripts/smoke_09_voice_ws.py --drop
 """
 
 import argparse
@@ -131,7 +134,12 @@ async def _receive(socket: Any, recorder: _Recorder) -> None:
 
 
 async def run(
-    lang: str, output_rate: int, url: str, out: Path | None, wake: str = "off"
+    lang: str,
+    output_rate: int,
+    url: str,
+    out: Path | None,
+    wake: str = "off",
+    drop: bool = False,
 ) -> None:
     """Stream one fixture over the socket and report what came back.
 
@@ -142,6 +150,10 @@ async def run(
         out: Where to write the reply WAV, or None to keep only the numbers.
         wake: `wake_word` value for the start frame; "off" keeps the script
             un-gated, which is what its ordinary question needs.
+        drop: Tear the TCP connection down mid-turn instead of closing the
+            socket, which is what a device losing power or Wi-Fi does. The
+            server then has a connected socket whose peer is gone — the path
+            that must end as one INFO line and no ASGI traceback.
 
     Raises:
         SystemExit: if the fixture is missing or nothing came back.
@@ -178,6 +190,18 @@ async def run(
         )
         receiver = asyncio.create_task(_receive(socket, recorder))
         await _stream(socket, pcm, rate, recorder)
+        if drop:
+            # RST, no CLOSE frame: `application_state` on the server stays
+            # CONNECTED while the transport is dead, which is exactly what used
+            # to raise WebSocketDisconnect(1006) out of the route's `finally`.
+            transport = getattr(socket, "transport", None)
+            if transport is None:  # pragma: no cover - depends on the client
+                raise SystemExit("this websockets build exposes no transport")
+            transport.abort()
+            receiver.cancel()
+            await asyncio.gather(receiver, return_exceptions=True)
+            print("dropped  : TCP aborted mid-turn, no close frame")
+            return
         try:
             await asyncio.wait_for(recorder.turn_done.wait(), timeout=TURN_TIMEOUT_S)
         except TimeoutError:
@@ -230,11 +254,18 @@ def main() -> None:
         default=None,
         help="also write the reply WAV here",
     )
+    parser.add_argument(
+        "--drop",
+        action="store_true",
+        help="abort the TCP connection mid-turn instead of closing the socket",
+    )
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
-    asyncio.run(run(args.lang, args.output_rate, args.url, args.out, args.wake))
+    asyncio.run(
+        run(args.lang, args.output_rate, args.url, args.out, args.wake, args.drop)
+    )
 
 
 async def test_smoke_09_voice_ws() -> None:

@@ -3,6 +3,10 @@
 Error-handling policy:
   - WebSocketDisconnect is the only exception we catch in the streaming loop.
     It means "the client left"; there is nothing useful to do.
+  - Delivering a CLOSE frame to a client that already vanished is the same
+    situation: `application_state` tracks what WE sent, not whether the peer is
+    still there, so `close()` can fail after the loop has already ended
+    normally. `_close_quietly` treats that as a normal end.
   - Any other exception is unexpected / a bug. We deliberately let it
     propagate so Starlette closes the socket with code 1011 and the server
     logs the real traceback. We never use `except Exception` to convert
@@ -13,6 +17,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, MutableMapping
+from contextlib import suppress
 from typing import Any
 
 from fastapi import (
@@ -50,6 +55,21 @@ from app.voice.session import Inbound, Outbound, Send, VoiceSession
 from app.voice.wake import WakeWordUnavailable
 
 logger = logging.getLogger(__name__)
+
+
+class _CloseReason:
+    """How a voice session ended, read once when the socket is closed.
+
+    The receive loop is an async generator, so it cannot return a value to the
+    handler that drives it. A single-cell holder carries the reason out without
+    turning ordinary endings into exceptions.
+    """
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
 
 router = APIRouter()
 
@@ -424,7 +444,7 @@ async def chat_ws(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass  # client left before receiving the terminal event
     finally:
-        await websocket.close()
+        await _close_quietly(websocket)
 
 
 @router.websocket("/ws/voice")
@@ -543,25 +563,29 @@ async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
         wake_phrase=providers.wake_phrase,
     )
     logger.info("voice session starting (output_rate=%d)", start.output_sample_rate)
+    reason = _CloseReason("client gone")
 
     try:
-        await session.run(_inbound_frames(websocket))
+        await session.run(_inbound_frames(websocket, reason))
     except WebSocketDisconnect:
+        reason.value = "client gone"
         return
     except WakeWordUnavailable:
         # Fail closed by closing: the session has already sent its one error
         # frame, and a detector that raised is not recoverable inside a live
         # socket. Closing is also the only thing the satellite reacts to — it
         # reconnects with backoff and gets a fresh detector.
-        logger.error("voice session closed: wake word detector unavailable")
+        reason.value = "wake word unavailable"
+        logger.error("voice wake detector failed; closing with 1011")
         # The session already sent the one error frame that explains this; a second
         # one would arrive after the client has been told the turn failed. Close
         # with 1011 directly so the reason is the close code the satellite acts on.
         await websocket.close(code=1011)
         return
-    except Exception:
+    except Exception as exc:
         # Same policy as the text socket: log it, tell the client best-effort,
         # then re-raise so Starlette closes with 1011.
+        reason.value = f"failed ({type(exc).__name__})"
         logger.exception("voice session failed")
         try:
             await websocket.send_json({"type": "error", "detail": "voice failed"})
@@ -569,10 +593,11 @@ async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
             pass
         raise
     finally:
-        # A handler above may have closed with a specific code already; closing
-        # twice raises inside Starlette, and it would overwrite the reason.
-        if websocket.application_state is WebSocketState.CONNECTED:
-            await websocket.close()
+        # ONE line, whatever ended the session: a vanished client used to be
+        # visible only as an ASGI traceback, and transport investigations need
+        # exactly this field to be greppable.
+        logger.info("voice session closed: %s", reason.value)
+        await _close_quietly(websocket)
 
 
 async def _next_message(websocket: WebSocket) -> MutableMapping[str, Any] | None:
@@ -598,7 +623,9 @@ async def _next_message(websocket: WebSocket) -> MutableMapping[str, Any] | None
         return None
 
 
-async def _inbound_frames(websocket: WebSocket) -> AsyncIterator[Inbound]:
+async def _inbound_frames(
+    websocket: WebSocket, reason: _CloseReason
+) -> AsyncIterator[Inbound]:
     """Yield the client's frames: raw audio, or a control dict.
 
     Read through `receive()` rather than `receive_bytes()`/`receive_json()`
@@ -607,6 +634,7 @@ async def _inbound_frames(websocket: WebSocket) -> AsyncIterator[Inbound]:
 
     Args:
         websocket: An accepted socket.
+        reason: Holder that records why the loop ended, for the close log.
 
     Yields:
         Binary audio frames and parsed control frames. A malformed text frame is
@@ -615,9 +643,10 @@ async def _inbound_frames(websocket: WebSocket) -> AsyncIterator[Inbound]:
     while True:
         message = await _next_message(websocket)
         if message is None:
-            logger.info("voice socket idle; closing")
+            reason.value = "idle timeout"
             return
         if message["type"] == "websocket.disconnect":
+            reason.value = "client gone"
             return
         audio = message.get("bytes")
         if audio is not None:
@@ -653,6 +682,30 @@ def _ws_send(websocket: WebSocket) -> Send:
             await websocket.send_json(frame)
 
     return send
+
+
+async def _close_quietly(websocket: WebSocket) -> None:
+    """Close a socket, treating an already-vanished peer as a normal end.
+
+    `application_state` records what this server has SENT, not whether the peer
+    is still reachable. A client that dropped without a CLOSE frame therefore
+    leaves the state at CONNECTED, so an unconditional `close()` in a `finally`
+    tries to write to a dead transport and Starlette re-raises that as
+    `WebSocketDisconnect(1006)` — outside every `except` that could have handled
+    it, which is what turned each ordinary disconnect into an
+    "Exception in ASGI application" traceback. `OSError` is kept in the tuple for
+    stacks that surface uvicorn's `ClientDisconnected` directly instead of
+    converting it in `WebSocket.send()`.
+
+    Args:
+        websocket: The socket this handler owns.
+    """
+    if websocket.application_state != WebSocketState.CONNECTED:
+        # A handler above already closed it. Closing twice raises inside
+        # Starlette and would overwrite the code that was chosen deliberately.
+        return
+    with suppress(WebSocketDisconnect, OSError):
+        await websocket.close()
 
 
 async def _close_with_error(websocket: WebSocket, detail: str, code: int) -> None:

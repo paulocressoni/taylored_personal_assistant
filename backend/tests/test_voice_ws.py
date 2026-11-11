@@ -6,8 +6,11 @@ the graph and the voice providers are swapped for fakes — so what is under tes
 is the route's own policy plus the real session behind it.
 """
 
+import asyncio
 import json
+import logging
 import time
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,8 +25,10 @@ from conftest import (
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk
+from starlette.websockets import WebSocketState
 
 from app.api.ratelimit import SlidingWindowLimiter
+from app.api.routes import _close_quietly, _serve_voice
 from app.api.schemas import VoiceStartRequest
 from app.core.config import settings
 from app.main import app
@@ -408,3 +413,105 @@ def test_a_broken_detector_closes_the_socket_with_1011(client: TestClient) -> No
 
         assert socket.receive_json()["detail"] == "wake word unavailable"
         assert socket.receive()["code"] == 1011
+
+
+class VanishedPeer:
+    """A socket whose peer dropped without sending a CLOSE frame.
+
+    Models exactly what uvicorn does on the wire: `receive()` reports the
+    disconnect, `application_state` stays CONNECTED because *we* never sent a
+    close, and `close()` then fails — Starlette converts uvicorn's
+    `ClientDisconnected` into `WebSocketDisconnect(1006)` inside `send()`.
+    """
+
+    def __init__(self, app_state: Any, messages: list[dict[str, Any]]) -> None:
+        self.app = SimpleNamespace(state=app_state)
+        self.application_state = WebSocketState.CONNECTED
+        self._messages = messages
+        self.closed: list[int | None] = []
+        self.sent: list[dict[str, Any]] = []
+
+    async def receive(self) -> dict[str, Any]:
+        if self._messages:
+            return self._messages.pop(0)
+        await asyncio.sleep(30)
+        raise AssertionError("receive() was called after the script ran out")
+
+    async def send_json(self, frame: dict[str, Any]) -> None:
+        self.sent.append(frame)
+
+    async def send_bytes(self, frame: bytes) -> None:
+        self.sent.append({"type": "binary", "size": len(frame)})
+
+    async def close(self, code: int | None = None) -> None:
+        self.closed.append(code)
+        self.application_state = WebSocketState.DISCONNECTED
+        raise WebSocketDisconnect(code=1006)
+
+
+def _vanished_peer(session_messages: list[dict[str, Any]]) -> VanishedPeer:
+    state = SimpleNamespace(graph=FakeGraph(), voice_providers=None, voice_slots=None)
+    return VanishedPeer(
+        state,
+        [{"type": "websocket.receive", "text": json.dumps(START)}, *session_messages],
+    )
+
+
+async def test_a_vanished_client_ends_the_session_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The soak produced one "Exception in ASGI application" per closed session
+    # because the close in the `finally` ran after the peer had gone. This is
+    # that exact ordering: the loop ends normally, then close() fails.
+    socket = _vanished_peer([{"type": "websocket.disconnect"}])
+
+    with caplog.at_level(logging.INFO, logger="app.api.routes"):
+        await _serve_voice(socket, _providers(0.9))
+
+    reasons = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "app.api.routes" and "voice session closed:" in r.getMessage()
+    ]
+    assert reasons == ["voice session closed: client gone"]
+    assert socket.closed == [None]
+
+
+async def test_close_quietly_still_raises_an_unexpected_error() -> None:
+    # The suppression is scoped to "the peer is gone": any other failure while
+    # closing must surface, or a real bug would look like a normal hang-up.
+    class Broken(VanishedPeer):
+        async def close(self, code: int | None = None) -> None:
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await _close_quietly(Broken(SimpleNamespace(), []))  # type: ignore[arg-type]
+
+
+async def test_an_idle_socket_names_the_idle_timeout(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "voice_idle_timeout_seconds", 0.05)
+    socket = _vanished_peer([])
+
+    with caplog.at_level(logging.INFO, logger="app.api.routes"):
+        await _serve_voice(socket, _providers(0.9))
+
+    reasons = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "app.api.routes" and "voice session closed:" in r.getMessage()
+    ]
+    assert reasons == ["voice session closed: idle timeout"]
+
+
+async def test_closing_an_already_closed_socket_is_not_an_error() -> None:
+    # `main` raised RuntimeError('Cannot call "send" once a close message has
+    # been sent.') after every graceful disconnect; the state guard covers it.
+    socket = _vanished_peer([])
+    socket.application_state = WebSocketState.DISCONNECTED
+
+    await _close_quietly(socket)  # type: ignore[arg-type]
+
+    assert socket.closed == []
