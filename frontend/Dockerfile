@@ -85,8 +85,12 @@ FROM nginx:1.30.6-alpine AS prod
 # cached layer keeps serving the older tiff even after the fix is published.
 # The expat and libx11 floors follow the same rule for CVE-2026-77214 and
 # CVE-2026-88806: both arrive with the alpine base, not from nginx itself.
+# libxslt gets one for CVE-2026-87636 and CVE-2026-9947: it is pulled in by
+# nginx-module-xslt, which we never enable, but Trivy scans what is installed
+# rather than what is loaded — so the sitemap of fixes has to include it.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache 'pcre2>=10.49' 'tiff>=4.7.2' 'expat>=2.9.0' 'libx11>=1.8.14'
+    && apk add --no-cache 'pcre2>=10.49' 'tiff>=4.7.2' 'expat>=2.9.0' 'libx11>=1.8.14' \
+       'libxslt>=1.1.43-r4'
 
 # Replace the stock server block with ours (serves dist/ + proxies /ws,
 # /sessions, /health, /openapi.json to the backend service).
