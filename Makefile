@@ -17,7 +17,7 @@ MSG ?=
 APP_VERSION := $(shell sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 export APP_VERSION
 
-.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps
+.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-stop soak-status soak-meta soak-report
 
 config:
 	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
@@ -80,6 +80,61 @@ dev-logs:
 
 dev-ps:
 	$(COMPOSE_DEV) --profile observability ps
+
+# ============================ SOAK ============================
+# A soak runs THIS WORKING TREE's backend behind the prod URL, because the
+# flashed satellite's URI is compile-time and reflashing it would end the
+# baseline the soak exists to compare against. See docs/soak.md and
+# infra/compose/docker-compose.soak.yml.
+#
+# The frontend stays the released image: it owns :8080 and already proxies
+# /ws. Only the backend is rebuilt.
+#
+# WARNING: soak-up RECREATES the backend container, so it also ends any capture
+# already following it. That is fine as the first step of a soak and wrong in
+# the middle of one — check `make soak-status` before you run it.
+SOAK_DIR ?= $(HOME)/wake-soak
+SOAK_IMAGE := taylored-assistant-backend:soak-local
+SOAK_BACKEND := taylored-assistant-prod-backend-1
+COMPOSE_SOAK := docker compose -p taylored-assistant-prod \
+  -f $(COMPOSE_DIR)/docker-compose.base.yml \
+  -f $(COMPOSE_DIR)/docker-compose.prod.yml \
+  -f $(COMPOSE_DIR)/docker-compose.soak.yml \
+  --env-file $(COMPOSE_DIR)/.env.prod
+# The access logs print the shared key on every /ws/voice URL (the satellite
+# uses the ?api_key= fallback), so every capture is filtered on the way in.
+SOAK_REDACT := s/\\(api_key=\\)[^ &"]*/\\1REDACTED/g
+
+soak-up:
+	@if docker ps --format '{{.Names}}' | grep -q '^taylored-assistant-dev-'; then \
+	  echo "soak-up: the dev stack is running — 'make dev-down' first."; \
+	  echo "         Both stacks publish langfuse-web on :3000."; exit 1; fi
+	@test -f $(COMPOSE_DIR)/.env.prod || \
+	  { echo "soak-up: missing $(COMPOSE_DIR)/.env.prod (copy .env.prod.example)"; exit 1; }
+	@mkdir -p $(SOAK_DIR)
+	$(COMPOSE_SOAK) build backend
+	$(COMPOSE_SOAK) --profile observability up -d --no-build --wait
+	@$(MAKE) --no-print-directory soak-meta
+	@bash $(BACKEND)/scripts/soak_collectors.sh start
+
+soak-stop:
+	@bash $(BACKEND)/scripts/soak_collectors.sh stop
+
+soak-status:
+	@echo "repo     : $(shell git rev-parse --short HEAD)$(shell git diff --quiet || echo ' (dirty)')"
+	@echo "soak dir : $(SOAK_DIR)"
+	@echo "backend  : $(shell docker inspect -f '{{.Id}}' $(SOAK_BACKEND) 2>/dev/null | cut -c1-12 || echo 'not running')"
+	@echo "image    : $(shell docker inspect -f '{{.Image}}' $(SOAK_BACKEND) 2>/dev/null | cut -c8-19 || echo '-')"
+	@test -f $(SOAK_DIR)/META && sed 's/^/meta     : /' $(SOAK_DIR)/META || echo "meta     : none (run make soak-up)"
+	@bash $(BACKEND)/scripts/soak_collectors.sh status
+
+soak-meta:
+	@mkdir -p $(SOAK_DIR)
+	@bash $(BACKEND)/scripts/soak_collectors.sh meta > $(SOAK_DIR)/META
+	@echo "META written to $(SOAK_DIR)/META"
+
+soak-report:
+	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_DIR) --until "$(UNTIL)"
 
 # ============================ PROD ============================
 # Runs the CI-published GHCR images pinned to :$(APP_VERSION) — nothing is

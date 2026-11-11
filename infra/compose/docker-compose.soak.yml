@@ -1,0 +1,34 @@
+# infra/compose/docker-compose.soak.yml
+# ------------------------------------------------------------------
+# SOAK overlay ON TOP OF base.yml + prod.yml.
+#
+# Why it exists: the flashed satellite's server URI is a COMPILE-TIME constant
+# (SATELLITE_SERVER_URI in its Kconfig), so it can only ever talk to the prod
+# URL on this host. Testing a branch therefore has two options — reflash the
+# device, which destroys the baseline a soak is comparing against, or bring the
+# branch's backend to the prod URL. This overlay does the second:
+#
+#   released frontend image   → nginx keeps :8080 and proxies /ws unchanged
+#   locally built backend     → the branch's code, same env, same database
+#
+# Usage (from the repo root):
+#   APP_VERSION=0.4.0 make soak-up     # builds, starts, starts the capture
+#   make soak-status
+#   make soak-stop                     # stops the capture, leaves the stack up
+#
+# WHAT THIS IS NOT: a production deployment. The image is built from the
+# working tree, so it is neither CI-tested nor Trivy-scanned, and it writes to
+# the PROD volumes and the prod Postgres. That is acceptable for a soak — the
+# conversation data is the same data the release would write — but it must not
+# be left running as "the" deployment. Run `APP_VERSION=<release> make prod-up`
+# afterwards to get back onto a published image.
+#
+# MERGE SEMANTICS relied on here (see base.yml): scalar values override, so
+# `image:` replaces prod.yml's GHCR reference. `pull_policy: never` is what
+# stops compose from trying to pull a tag that only exists locally.
+# ------------------------------------------------------------------
+
+services:
+  backend:
+    image: taylored-assistant-backend:soak-local
+    pull_policy: never

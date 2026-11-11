@@ -19,7 +19,9 @@ Three files in one directory (default `~/wake-soak/`):
 | `backend.log` | `docker logs -t -f <backend container>`, with `api_key=` redacted |
 | `frontend.log` | the same for the nginx container |
 
-The backend and frontend collectors need two properties that a naive `nohup … &` does not give them:
+The backend and frontend collectors need two properties that a naive `nohup … &` does not give them.
+`make soak-up` (next section) starts them through `backend/scripts/soak_collectors.sh`; to do it by
+hand, the shape is:
 
 ```bash
 R='s/\(api_key=\)[^ &"]*/\1REDACTED/g'
@@ -43,7 +45,53 @@ Two rules while a soak runs:
   (`docker-compose.dev.yml`, `docker-compose.prod.yml`); the frontends use `5173` and `8080` and do
   not collide.
 
-## 2. Freeze the window
+## 2. Serving a pre-release backend on the prod URL
+
+The flashed satellite's server URI is a **compile-time constant**
+(`SATELLITE_SERVER_URI` in its Kconfig; on this deployment
+`ws://192.168.2.132:8080/ws/voice`). It cannot be pointed at a dev stack, so a soak of a branch has
+exactly two options:
+
+| Option | Cost |
+|---|---|
+| reflash the device with a new URI | ends the baseline the soak is comparing against, and adds a variable |
+| bring the branch's backend to the prod URL | one container is rebuilt; the device never notices |
+
+The second is what `docker-compose.soak.yml` does, and it is what the first 47-hour soak did by hand.
+From the repo root:
+
+```bash
+APP_VERSION=0.4.0 make soak-up     # build this tree's backend, start on :8080, begin capture
+make soak-status                   # git sha, image, container, META, collector state
+make soak-stop                     # stop the capture (leaves the stack running)
+```
+
+`make soak-up` **recreates the backend container**, so it also ends any capture already following
+it. That is the right first step and the wrong mid-soak step — check `make soak-status` first.
+
+What `make soak-up` does, in order:
+
+1. **Refuses if the dev stack is up.** Both stacks publish `langfuse-web` on `:3000`; the frontends
+   use `5173` and `8080` and do not collide.
+2. **Builds only the backend** from the working tree, tagged `taylored-assistant-backend:soak-local`.
+   The frontend stays the released GHCR image — it is nginx, it owns `:8080`, and `/ws` is already
+   proxied.
+3. **Starts the prod stack** with the soak overlay (`--no-build`, so nothing else is compiled).
+4. **Writes `META`**: git sha and dirty flag, app version, image and container ids, and the
+   **effective** `VOICE_*` settings read out of the running container rather than from a file.
+5. **Starts the collectors** through `backend/scripts/soak_collectors.sh`, which records a process
+   *group* — not `$!` — so `make soak-stop` can actually end the `docker logs -f | sed` pipeline, and
+   which refuses to lose a capture silently when a container is recreated.
+
+`make soak-status` reports `collecting UNMANAGED` when the capture was started by hand; that is the
+honest state, because `soak-stop` cannot kill a group it did not create.
+
+**What this is not.** The image is built from the working tree: not CI-tested, not Trivy-scanned, and
+it writes to the **prod volumes and the prod Postgres**. That is acceptable for a soak — the data is
+what the release would write anyway — but it must not be left running as *the* deployment. Finish with
+`APP_VERSION=<release> make prod-up` to return to a published image.
+
+## 3. Freeze the window
 
 `soak_report.py` requires `--until`, an **exclusive** UTC bound, and applies it to every section.
 That is not pedantry: a running soak is a moving target, and a report whose sections were measured at
@@ -55,7 +103,7 @@ Recording the end of the window is therefore part of the procedure:
 date -u +%Y-%m-%dT%H:%M:%SZ | tee -a ~/wake-soak/META
 ```
 
-## 3. The device clock
+## 4. The device clock
 
 The serial log has no wall clock, only `I (uptime_ms)`, so every line is placed with
 `boot_epoch + uptime`. The tool derives `boot_epoch` from **matched events**: a satellite
@@ -67,7 +115,7 @@ Do **not** derive it from the `START` file. On the first soak `START` was writte
 minutes early, and every satellite metric with it. The tool refuses an anchor whose pairs disagree by
 more than **2 s**, because placing hours of events on a guess is worse than refusing to report.
 
-## 4. Produce the report
+## 5. Produce the report
 
 ```bash
 cd backend
@@ -82,7 +130,7 @@ Exit code is **1** when any section found no source lines or the anchor is unusa
 cannot pass a check. `report.json` carries its own `meta` — schema version, window, anchor spread,
 git sha, app version and every non-secret `voice_*` setting — which is what makes `--compare` honest.
 
-## 5. Metric dictionary
+## 6. Metric dictionary
 
 Units, the line each metric comes from, its denominator, and the mistake it exists to catch.
 Percentiles are **linear interpolation on the (n−1) basis** everywhere; nearest-rank would report a
@@ -110,7 +158,7 @@ different p50 on the same data.
 | Device | `transcript frames` | `heard:` | — | what the device actually received |
 | Server errors | `ASGI exceptions` | `Exception in ASGI application` | closed sessions | must be one per vanished client at most, never more |
 
-## 6. Comparing two soaks
+## 7. Comparing two soaks
 
 1. One variable per soak. Two changes at once and the delta is uninterpretable.
 2. Keep `META` with the logs, and keep `report.json` with the capture it describes.
@@ -118,7 +166,7 @@ different p50 on the same data.
    the window or the wake-word threshold/window differ — a "delta" across different settings is not a
    delta.
 
-## 7. Soak #2 wants labelled utterances
+## 8. Soak #2 wants labelled utterances
 
 Scores are not labels. A score distribution says how confident the detector was; only a recording with
 a known answer says whether it was right. Before the next soak, record on the device:
