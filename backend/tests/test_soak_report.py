@@ -9,6 +9,9 @@ quotes; a silent change to the aggregation must break a test, not a runbook.
 """
 
 import json
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -250,3 +253,59 @@ def test_gate_rejections_ignore_lines_outside_the_window() -> None:
 
     assert data["rejected"] == 0
     assert _rows(section)["rejections"] == "n/a (0 matching lines)"
+
+
+def _installed_german_locale() -> str:
+    """Return the German locale this libc actually has, or skip.
+
+    `de_DE.UTF-8` and `de_DE.utf8` are both in the wild, and glibc silently
+    falls back to C for a name it does not know — which would make the
+    comparison below vacuous instead of informative.
+    """
+    listing = subprocess.run(
+        ["locale", "-a"], capture_output=True, text=True, check=False
+    ).stdout
+    available = {line.strip().replace("-", "").lower() for line in listing.splitlines()}
+    for candidate in ("de_DE.UTF-8", "de_DE.utf8"):
+        if candidate.replace("-", "").lower() in available:
+            return candidate
+    pytest.skip("no German locale installed, so there is nothing to compare against")
+
+
+def test_the_report_is_identical_under_a_german_locale(tmp_path: Path) -> None:
+    # The shell one-liners this tool replaced printed zeros in `de_DE`, because
+    # `sort -n` wants a decimal comma there. Python's parsing and formatting are
+    # locale-independent, so this run must not move a single digit; the test
+    # exists to catch a future refactor that shells out or uses `locale.atof`.
+    german = _installed_german_locale()
+    script = Path(__file__).resolve().parents[1] / "scripts" / "soak_report.py"
+    out = tmp_path / "report.json"
+
+    def run_as(locale: str) -> str:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--dir",
+                str(FIXTURE_DIR),
+                "--until",
+                "2026-01-02T00:00:00Z",
+                "--out",
+                str(out),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env={
+                **os.environ,
+                "LC_ALL": locale,
+                "LC_NUMERIC": locale,
+                "LANG": locale,
+                "PYTHONPATH": str(script.parents[1]),
+            },
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    assert run_as("C") == run_as(german)
