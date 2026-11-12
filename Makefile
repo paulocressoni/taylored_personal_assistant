@@ -17,7 +17,7 @@ MSG ?=
 APP_VERSION := $(shell sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 export APP_VERSION
 
-.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-stop soak-status soak-meta soak-report
+.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-preflight soak-stop soak-status soak-meta soak-report
 
 config:
 	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
@@ -93,7 +93,13 @@ dev-ps:
 # WARNING: soak-up RECREATES the backend container, so it also ends any capture
 # already following it. That is fine as the first step of a soak and wrong in
 # the middle of one — check `make soak-status` before you run it.
-SOAK_DIR ?= $(HOME)/wake-soak
+# Every soak knob is exported, because a variable defined in a makefile does
+# NOT reach a recipe's environment — only `export` or a command-line assignment
+# does. `make soak-up SOAK_SATELLITE=0` therefore works with no extra plumbing.
+export SOAK_DIR ?= $(HOME)/wake-soak
+export SOAK_SATELLITE ?= 1
+export SOAK_SATELLITE_PORT ?=
+export SOAK_APPEND ?= 0
 SOAK_IMAGE := taylored-assistant-backend:soak-local
 SOAK_BACKEND := taylored-assistant-prod-backend-1
 COMPOSE_SOAK := docker compose -p taylored-assistant-prod \
@@ -105,13 +111,13 @@ COMPOSE_SOAK := docker compose -p taylored-assistant-prod \
 # uses the ?api_key= fallback), so every capture is filtered on the way in.
 SOAK_REDACT := s/\\(api_key=\\)[^ &"]*/\\1REDACTED/g
 
-soak-up:
-	@if docker ps --format '{{.Names}}' | grep -q '^taylored-assistant-dev-'; then \
-	  echo "soak-up: the dev stack is running — 'make dev-down' first."; \
-	  echo "         Both stacks publish langfuse-web on :3000."; exit 1; fi
-	@test -f $(COMPOSE_DIR)/.env.prod || \
-	  { echo "soak-up: missing $(COMPOSE_DIR)/.env.prod (copy .env.prod.example)"; exit 1; }
-	@mkdir -p $(SOAK_DIR)
+# Checks only — nothing is built and no toolchain is loaded, so a detached
+# board or an existing capture costs a second instead of a full image build.
+# Runs as a prerequisite, i.e. BEFORE the build.
+soak-preflight:
+	@bash $(BACKEND)/scripts/soak_collectors.sh preflight
+
+soak-up: soak-preflight
 	$(COMPOSE_SOAK) build backend
 	$(COMPOSE_SOAK) --profile observability up -d --no-build --wait
 	@$(MAKE) --no-print-directory soak-meta
@@ -128,16 +134,21 @@ soak-status:
 	@test -f $(SOAK_DIR)/META && sed 's/^/meta     : /' $(SOAK_DIR)/META || echo "meta     : none (run make soak-up)"
 	@bash $(BACKEND)/scripts/soak_collectors.sh status
 
+# The script owns META: it refuses to truncate while a capture is running, so
+# the facts `start` appended cannot be lost by re-running this target.
 soak-meta:
-	@mkdir -p $(SOAK_DIR)
-	@bash $(BACKEND)/scripts/soak_collectors.sh meta > $(SOAK_DIR)/META
+	@bash $(BACKEND)/scripts/soak_collectors.sh meta
 	@echo "META written to $(SOAK_DIR)/META"
 
+# SINCE is only needed for a server-only capture that has no META; the tool
+# otherwise reads capture_started_utc from META rather than trusting a retyped
+# timestamp.
 soak-report:
 	@test -n "$(UNTIL)" || \
 	  { echo "soak-report: set UNTIL=<ISO-8601 UTC>, e.g. make soak-report UNTIL=2026-11-11T17:45:00Z"; \
 	    exit 1; }
-	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_DIR) --until "$(UNTIL)"
+	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_DIR) --until "$(UNTIL)" \
+	  $(if $(SINCE),--since "$(SINCE)",)
 
 # ============================ PROD ============================
 # Runs the CI-published GHCR images pinned to :$(APP_VERSION) — nothing is
