@@ -50,7 +50,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # How far the implied boot times may disagree before the anchor is rejected.
 # Real pairs land within a second; anything larger means the two logs are not
@@ -72,9 +72,20 @@ _TIMING = re.compile(r"(\w+)=([\d.]+)ms")
 _REPLY_BYTES = re.compile(r"reply audio: (\d+) bytes")
 _LED = re.compile(r"leds: state -> (\d+)")
 _ACCEPTED = re.compile(r"WebSocket /ws/voice[^\"]*\"? \[accepted\]")
+# The boot banner. `app_init` prints it once per start, so the count is the
+# number of boots in the capture — and a second boot resets the uptime clock,
+# which is why it has to gate the anchor rather than merely be reported.
+_BOOT_BANNER = re.compile(r"app_init: Project name:")
+_FIRMWARE = re.compile(r"app_init: App version:\s+(\S+)")
+_IDF_VERSION = re.compile(r"app_init: ESP-IDF:\s+(\S+)")
 
 # The device's own byte rate, used to turn reply sizes into seconds.
 PLAYOUT_BYTES_PER_S = 32000
+
+# The two reasons a row can read `n/a`. They are different facts and the report
+# says which one it means: nothing matched a log that exists, or there was no
+# device in this capture at all.
+NO_SATELLITE = "no satellite log"
 
 
 class LogError(RuntimeError):
@@ -203,6 +214,74 @@ def median_time(values: list[datetime]) -> datetime:
     return ordered[len(ordered) // 2]
 
 
+def count_boots(satellite: Sequence[str]) -> int:
+    """Count the boots in a serial capture.
+
+    Args:
+        satellite: The serial log's lines.
+
+    Returns:
+        How many times the application started. Zero when the capture never
+        caught a boot banner, which is not an error — only more than one is.
+    """
+    return sum(1 for line in satellite if _BOOT_BANNER.search(line))
+
+
+def firmware_version(satellite: Sequence[str]) -> str | None:
+    """Read the application version out of the last boot banner.
+
+    Args:
+        satellite: The serial log's lines.
+
+    Returns:
+        The version string, or None when the banner was not captured.
+    """
+    for line in reversed(satellite):
+        match = _FIRMWARE.search(line)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def idf_version(satellite: Sequence[str]) -> str | None:
+    """Read the ESP-IDF version out of the last boot banner.
+
+    Args:
+        satellite: The serial log's lines.
+
+    Returns:
+        The version string, or None when the banner was not captured.
+    """
+    for line in reversed(satellite):
+        match = _IDF_VERSION.search(line)
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def final_boot_segment(satellite: Sequence[str]) -> tuple[list[str], int]:
+    """Cut a capture at its last boot, keeping only what came after it.
+
+    A boot resets the uptime clock, so lines from an earlier boot cannot be
+    placed on the timeline by adding them to the last boot's epoch: they would
+    land hours early and be counted anyway. Dropping them keeps every device
+    metric describing one epoch.
+
+    Args:
+        satellite: The serial log's lines.
+
+    Returns:
+        The lines after the last boot banner, and how many were dropped.
+    """
+    last = -1
+    for index, line in enumerate(satellite):
+        if _BOOT_BANNER.search(line):
+            last = index
+    if last < 0:
+        return list(satellite), 0
+    return list(satellite[last:]), last + 1
+
+
 class Section:
     """Accumulates one report section's numbers and its denominators."""
 
@@ -226,6 +305,20 @@ class Section:
             text = str(value)
         self.rows.append((label, text, denominator))
 
+    def absent(self, label: str, reason: str, denominator: str = "") -> None:
+        """Record a line that cannot exist in this capture, by design.
+
+        Deliberately does **not** set `empty`: a server-only soak has no device
+        rows because the operator chose that, and blaming it on missing data
+        would make the exit code lie.
+
+        Args:
+            label: What is being reported.
+            reason: Why it is absent, in the operator's words.
+            denominator: What the number would have been out of.
+        """
+        self.rows.append((label, f"n/a ({reason})", denominator))
+
     def note(self, text: str) -> None:
         """Record a line that is not a number (context, or a warning)."""
         self.rows.append(("", text, ""))
@@ -244,14 +337,27 @@ class Section:
 
 
 def build_sessions(
-    satellite: list[str], backend: list[str], boot: datetime, until: datetime
+    satellite: list[str] | None,
+    backend: list[str],
+    boot: datetime,
+    until: datetime,
 ) -> tuple[Section, dict[str, Any]]:
-    """Session lifetime, reconnect rate and the signature of each loss."""
+    """Session lifetime, reconnect rate and the signature of each loss.
+
+    Args:
+        satellite: The serial log's lines, or None when the capture had no device.
+        backend: The container log's lines.
+        boot: Start of the reporting window.
+        until: Exclusive end of the reporting window.
+
+    Returns:
+        The rendered section and the numbers behind it.
+    """
     section = Section("Sessions")
     durations: list[int] = []
     poll_write = failed_frames = close_frames = 0
     losses: list[datetime] = []
-    for line in satellite:
+    for line in satellite or []:
         match = _UPTIME.search(line)
         if match is None:
             continue
@@ -280,26 +386,35 @@ def build_sessions(
         if '"voice session closed' in line and _in_window(line, until, boot)
     )
 
-    section.add("device sessions ended", len(durations) or None)
+    if satellite is None:
+        section.absent("device sessions ended", NO_SATELLITE)
+    else:
+        section.add("device sessions ended", len(durations) or None)
     section.add("server sessions opened", opens or None, "same window")
     section.add("server sessions closed", closes or None, "same window")
-    section.add(
-        "loss signature",
-        f"{poll_write} transport_poll_write",
-        f"{len(durations)} losses",
-    )
-    section.add("no close frame received", close_frames, "device losses")
-    section.add("uplink frames failed", failed_frames, "device losses")
-    section.add(
-        "mean",
-        f"{statistics.mean(durations):.0f} s" if durations else None,
-        f"n={len(durations)}",
-    )
-    section.add("p50", _fmt_s(percentile(durations, 0.5)), f"n={len(durations)}")
-    section.add("p90", _fmt_s(percentile(durations, 0.9)), f"n={len(durations)}")
-    section.add(
-        "max", f"{max(durations)} s" if durations else None, f"n={len(durations)}"
-    )
+    if satellite is None:
+        for label in ("loss signature", "mean", "p50", "p90", "max"):
+            section.absent(label, NO_SATELLITE)
+        section.absent("no close frame received", NO_SATELLITE, "device losses")
+        section.absent("uplink frames failed", NO_SATELLITE, "device losses")
+    else:
+        section.add(
+            "loss signature",
+            f"{poll_write} transport_poll_write",
+            f"{len(durations)} losses",
+        )
+        section.add("no close frame received", close_frames, "device losses")
+        section.add("uplink frames failed", failed_frames, "device losses")
+        section.add(
+            "mean",
+            f"{statistics.mean(durations):.0f} s" if durations else None,
+            f"n={len(durations)}",
+        )
+        section.add("p50", _fmt_s(percentile(durations, 0.5)), f"n={len(durations)}")
+        section.add("p90", _fmt_s(percentile(durations, 0.9)), f"n={len(durations)}")
+        section.add(
+            "max", f"{max(durations)} s" if durations else None, f"n={len(durations)}"
+        )
     if durations:
         buckets = Counter(_duration_bucket(value) for value in durations)
         section.add(
@@ -504,9 +619,31 @@ def build_latency(backend: list[str], boot: datetime, until: datetime) -> Sectio
     return section
 
 
-def build_playback(satellite: list[str], boot: datetime, until: datetime) -> Section:
-    """Reply size and the two ways playout loses audio."""
+def build_playback(
+    satellite: list[str] | None, boot: datetime, until: datetime
+) -> Section:
+    """Reply size and the two ways playout loses audio.
+
+    Args:
+        satellite: The serial log's lines, or None when the capture had no device.
+        boot: Start of the reporting window.
+        until: Exclusive end of the reporting window.
+
+    Returns:
+        The rendered section.
+    """
     section = Section("Playback")
+    if satellite is None:
+        for label in (
+            "replies with audio",
+            "size p50",
+            "size p90",
+            "size max",
+            "ring full (truncated)",
+            "underruns",
+        ):
+            section.absent(label, NO_SATELLITE)
+        return section
     sizes: list[int] = []
     ring_full = underruns = 0
     for line in satellite:
@@ -551,9 +688,29 @@ def build_playback(satellite: list[str], boot: datetime, until: datetime) -> Sec
     return section
 
 
-def build_device(satellite: list[str], boot: datetime, until: datetime) -> Section:
-    """LED transitions and the transcript frames the device actually received."""
+def build_device(
+    satellite: list[str] | None,
+    boot: datetime,
+    until: datetime,
+    boots: int,
+) -> Section:
+    """LED transitions, transcript frames and how often the device restarted.
+
+    Args:
+        satellite: The serial log's lines, or None when the capture had no device.
+        boot: Start of the reporting window.
+        until: Exclusive end of the reporting window.
+        boots: How many boot banners the capture contained.
+
+    Returns:
+        The rendered section.
+    """
     section = Section("Device")
+    if satellite is None:
+        section.absent("LED transitions", NO_SATELLITE)
+        section.absent("transcript frames", NO_SATELLITE)
+        section.absent("boots", NO_SATELLITE)
+        return section
     leds: Counter[str] = Counter()
     heard = 0
     for line in satellite:
@@ -573,6 +730,7 @@ def build_device(satellite: list[str], boot: datetime, until: datetime) -> Secti
         or None,
     )
     section.add("transcript frames", heard or None)
+    section.add("boots", boots)
     return section
 
 
@@ -624,6 +782,30 @@ def _jsonable(value: Any) -> Any:
 
 
 _SECRET_HINTS = ("key", "secret", "token", "password")
+
+
+def _since_from_meta(directory: Path) -> datetime | None:
+    """Read the capture start the collector recorded, so nobody retypes it.
+
+    Args:
+        directory: Where `META` lives.
+
+    Returns:
+        The `capture_started_utc` value, or None when META or the key is absent.
+    """
+    path = directory / "META"
+    if not path.exists():
+        return None
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        name, _, value = line.partition("=")
+        if name.strip() != "capture_started_utc" or not value.strip():
+            continue
+        try:
+            stamp = datetime.fromisoformat(value.strip())
+        except ValueError:
+            return None
+        return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+    return None
 
 
 def collect_meta(until: datetime) -> dict[str, Any]:
@@ -690,22 +872,58 @@ def _fmt_meta(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def report(directory: Path, until: datetime) -> tuple[str, dict[str, Any]]:
+def report(
+    directory: Path,
+    until: datetime,
+    since: datetime | None = None,
+    allow_reboot: bool = False,
+) -> tuple[str, dict[str, Any]]:
     """Build the whole report for one directory of logs.
 
     Args:
-        directory: Where `satellite-soak.log`, `backend.log` and `frontend.log` live.
+        directory: Where `satellite-soak.log`, `backend.log` and `frontend.log`
+            live. The serial log is optional; the other two are not.
         until: Exclusive end of the window.
+        since: Start of the window when there is no serial log to anchor to.
+            Ignored when one is present, and required when it is not.
+        allow_reboot: Report only the segment after the last boot when the
+            capture contains more than one. Without it, a reboot is refused.
 
     Returns:
         The rendered text and the JSON-serialisable report.
 
     Raises:
-        LogError: if a log is missing or the clock anchor cannot be derived.
+        LogError: if a required log is missing, if a server-only capture was
+            requested without `since`, or if the device clock cannot be anchored
+            — which includes a capture that contains more than one boot.
     """
-    satellite = _read_lines(directory / "satellite-soak.log")
+    satellite_path = directory / "satellite-soak.log"
+    satellite = _read_lines(satellite_path) if satellite_path.exists() else None
     backend = _read_lines(directory / "backend.log")
-    boot, spread = derive_anchor(satellite, backend)
+
+    boots = count_boots(satellite or [])
+    dropped = 0
+    if satellite is not None and boots > 1:
+        if not allow_reboot:
+            raise LogError(
+                f"device rebooted mid-soak ({boots} boots) — the uptime clock "
+                "restarts at each boot, so one window cannot describe the whole "
+                "capture. Re-run the soak, or pass --allow-reboot to report the "
+                "final segment only"
+            )
+        satellite, dropped = final_boot_segment(satellite)
+
+    if satellite is None:
+        if since is None:
+            raise LogError(
+                "no satellite-soak.log, so the window cannot be anchored from "
+                "connect/accept pairs. Pass --since <ISO-8601 UTC>, or write "
+                "capture_started_utc into META with the collector"
+            )
+        boot, spread, anchor_source = since, None, "since"
+    else:
+        boot, spread = derive_anchor(satellite, backend)
+        anchor_source = "pairs"
 
     meta = collect_meta(until)
     threshold = float(
@@ -718,29 +936,46 @@ def report(directory: Path, until: datetime) -> tuple[str, dict[str, Any]]:
         gate,
         build_latency(backend, boot, until),
         build_playback(satellite, boot, until),
-        build_device(satellite, boot, until),
+        build_device(satellite, boot, until, boots),
         build_errors(backend, boot, until),
     ]
 
     meta.update(
         {
             "window_start": boot.isoformat(),
-            "anchor_spread_s": round(spread, 3),
+            "anchor_spread_s": round(spread, 3) if spread is not None else None,
+            "anchor_source": anchor_source,
+            "satellite_log": satellite is not None,
+            "boots": boots,
+            "firmware_version": firmware_version(satellite or []),
+            "idf_version": idf_version(satellite or []),
             "percentile_rule": "linear, (n-1) basis",
         }
     )
+    if anchor_source == "since":
+        anchor_line = "anchor: none — no serial log, window starts at the --since bound"
+    else:
+        anchor_line = (
+            f"anchor: device boot {boot.isoformat()} (spread {spread:.2f} s over "
+            "connect/accept pairs)"
+        )
     header = (
-        f"Soak report — window [boot, {until.isoformat()}) = "
+        f"Soak report — window [window_start, {until.isoformat()}) = "
         f"[{boot.isoformat()}, {until.isoformat()})  ·  schema v{SCHEMA_VERSION}\n"
-        f"anchor: device boot {boot.isoformat()} (spread {spread:.2f} s over "
-        f"connect/accept pairs)"
+        f"{anchor_line}"
     )
     text = "\n\n".join(
         [header, _fmt_meta(meta)] + [section.render() for section in sections]
     )
+    if dropped:
+        text = (
+            f"NOTE: device rebooted {boots} times; reporting the final boot "
+            f"segment only ({dropped} lines before the last boot ignored)\n\n" + text
+        )
     payload = {
         "meta": meta,
         "sections": {section.name: section.rows for section in sections},
+        "empty_sections": [section.name for section in sections if section.empty],
         "numbers": {
             "sessions": {
                 key: value for key, value in session_data.items() if key != "durations"
@@ -751,12 +986,19 @@ def report(directory: Path, until: datetime) -> tuple[str, dict[str, Any]]:
     return text, payload
 
 
-def compare(current: dict[str, Any], previous: dict[str, Any]) -> tuple[int, str]:
+def compare(
+    current: dict[str, Any],
+    previous: dict[str, Any],
+    allow_firmware_change: bool = False,
+) -> tuple[int, str]:
     """Diff two reports, refusing to compare incomparable ones.
 
     Args:
         current: The report just built.
         previous: A `report.json` from an earlier soak.
+        allow_firmware_change: Compare anyway when the two captures ran
+            different firmware. Off by default: a firmware bump is a bigger
+            variable than any setting, and a delta across it is not a delta.
 
     Returns:
         An exit code (0 comparable, 1 refused) and the text to print.
@@ -764,9 +1006,17 @@ def compare(current: dict[str, Any], previous: dict[str, Any]) -> tuple[int, str
     cur_meta = current.get("meta", {})
     prev_meta = previous.get("meta", {})
     problems = []
-    for key in ("schema_version", "until", "window_start"):
+    for key in ("schema_version", "until", "window_start", "anchor_source"):
         if cur_meta.get(key) != prev_meta.get(key):
             problems.append(f"{key}: {prev_meta.get(key)!r} -> {cur_meta.get(key)!r}")
+    if not allow_firmware_change:
+        cur_firmware = cur_meta.get("firmware_version")
+        prev_firmware = prev_meta.get("firmware_version")
+        if cur_firmware and prev_firmware and cur_firmware != prev_firmware:
+            problems.append(
+                f"firmware_version: {prev_firmware!r} -> {cur_firmware!r} "
+                "(pass --allow-firmware-change to compare anyway)"
+            )
     cur_settings = cur_meta.get("voice_settings") or {}
     prev_settings = prev_meta.get("voice_settings") or {}
     for name in ("voice_wake_word_threshold", "voice_wake_word_window_seconds"):
@@ -818,6 +1068,24 @@ def main() -> int:
         help="exclusive end of the window, ISO-8601 UTC (e.g. 2026-11-11T17:45:00Z)",
     )
     parser.add_argument(
+        "--since",
+        default=None,
+        help=(
+            "start of the window when there is no satellite-soak.log; defaults "
+            "to capture_started_utc in META"
+        ),
+    )
+    parser.add_argument(
+        "--allow-reboot",
+        action="store_true",
+        help="report only the final boot segment when the device restarted",
+    )
+    parser.add_argument(
+        "--allow-firmware-change",
+        action="store_true",
+        help="compare two captures that ran different firmware",
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -835,9 +1103,23 @@ def main() -> int:
     until = datetime.fromisoformat(args.until)
     if until.tzinfo is None:
         until = until.replace(tzinfo=UTC)
+    since = None
+    if args.since:
+        since = datetime.fromisoformat(args.since)
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=UTC)
+    else:
+        since = _since_from_meta(args.dir)
+        if since is not None:
+            print(
+                f"since: {since.isoformat()} (from META capture_started_utc)",
+                file=sys.stderr,
+            )
 
     try:
-        text, payload = report(args.dir, until)
+        text, payload = report(
+            args.dir, until, since=since, allow_reboot=args.allow_reboot
+        )
     except LogError as exc:
         print(f"soak_report: {exc}", file=sys.stderr)
         return 1
@@ -848,17 +1130,16 @@ def main() -> int:
     print(f"\nwritten  : {out}")
 
     code = 0
-    empty: list[str] = []
-    for section_name, rows in payload["sections"].items():
-        if any(value.startswith("n/a") for _label, value, _d in rows):
-            empty.append(section_name)
+    empty: list[str] = payload.get("empty_sections") or []
     if empty:
         print(f"WARNING  : no source lines for {', '.join(empty)}", file=sys.stderr)
         code = 1
 
     if args.compare is not None:
         previous = json.loads(args.compare.read_text(encoding="utf-8"))
-        compare_code, text_diff = compare(payload, previous)
+        compare_code, text_diff = compare(
+            payload, previous, allow_firmware_change=args.allow_firmware_change
+        )
         print("\n" + text_diff)
         code = max(code, compare_code)
     return code

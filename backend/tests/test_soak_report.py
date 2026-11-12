@@ -150,7 +150,8 @@ def test_playback_and_device_numbers_match_the_fixture() -> None:
     assert playback["ring full (truncated)"] == "1 (50%)"
     assert playback["underruns"] == "1"
     assert device["LED transitions"] == "3 IDLE, 3 LISTENING, 1 THINKING, 1 SPEAKING"
-    assert device["transcript frames"] == "1"
+    assert device["transcript frames"] == "2"
+    assert device["boots"] == "1"
 
 
 def test_asgi_exceptions_are_counted_per_session_not_per_class_name() -> None:
@@ -309,3 +310,149 @@ def test_the_report_is_identical_under_a_german_locale(tmp_path: Path) -> None:
         return result.stdout
 
     assert run_as("C") == run_as(german)
+
+
+def test_the_banner_supplies_the_firmware_and_the_boot_count() -> None:
+    # The version is the only record of what actually ran on the device, and a
+    # second boot resets the uptime clock — so both are read, and `boots` is a
+    # gate (see the reboot tests), not decoration.
+    _text, payload = report(FIXTURE_DIR, UNTIL)
+
+    assert payload["meta"]["firmware_version"] == "v0.4.0-25-g9adf84f"
+    assert payload["meta"]["idf_version"] == "v5.4.4"
+    assert payload["meta"]["boots"] == 1
+    assert payload["meta"]["anchor_source"] == "pairs"
+
+
+def test_a_rebooted_capture_is_refused(tmp_path: Path) -> None:
+    # derive_anchor pairs from the END, so with enough reconnects after a reboot
+    # it silently re-anchors to the reboot with a spread of 0.00 — a confident
+    # report about a window hours shorter than the capture.
+    _copy_capture(tmp_path, satellite="satellite-reboot.log")
+
+    with pytest.raises(LogError, match="rebooted"):
+        report(tmp_path, UNTIL)
+
+
+def test_allow_reboot_reports_the_final_segment_only(tmp_path: Path) -> None:
+    _copy_capture(tmp_path, satellite="satellite-reboot.log")
+
+    text, payload = report(tmp_path, UNTIL, allow_reboot=True)
+
+    device = _rows_dict(payload, "Device")
+    assert payload["meta"]["boots"] == 2
+    assert payload["meta"]["firmware_version"] == "v0.4.0-25-g9adf84f"
+    assert device["boots"] == "2"
+    # One session end and three LISTENING transitions exist after the last boot;
+    # the pre-reboot lines would double both if the cut were missing.
+    assert _rows_dict(payload, "Sessions")["device sessions ended"] == "1"
+    assert device["LED transitions"] == "3 LISTENING"
+    assert "final boot segment only" in text
+
+
+def test_a_server_only_capture_says_so_instead_of_zero(tmp_path: Path) -> None:
+    # Absence is not a defect: the operator chose a capture with no device, so
+    # no row may claim "0 matching lines" and no section may fail the run.
+    _copy_capture(tmp_path, satellite=None)
+
+    _text, payload = report(tmp_path, UNTIL, since=BOOT)
+
+    sessions = _rows_dict(payload, "Sessions")
+    assert sessions["device sessions ended"] == "n/a (no satellite log)"
+    assert sessions["loss signature"] == "n/a (no satellite log)"
+    assert sessions["no close frame received"] == "n/a (no satellite log)"
+    assert _rows_dict(payload, "Playback")["underruns"] == "n/a (no satellite log)"
+    assert _rows_dict(payload, "Device")["boots"] == "n/a (no satellite log)"
+    assert payload["empty_sections"] == []
+    assert payload["meta"]["anchor_source"] == "since"
+    assert payload["meta"]["window_start"] == BOOT.isoformat()
+    assert payload["meta"]["satellite_log"] is False
+
+
+def test_a_server_only_capture_without_since_names_the_flag(tmp_path: Path) -> None:
+    _copy_capture(tmp_path, satellite=None)
+
+    with pytest.raises(LogError, match="--since"):
+        report(tmp_path, UNTIL)
+
+
+def test_since_defaults_to_the_meta_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Retyping the window by hand is how the first soak ended up 35 minutes off.
+    _copy_capture(tmp_path, satellite=None)
+    (tmp_path / "META").write_text(
+        "satellite=off\ncapture_started_utc=2026-01-01T00:00:00Z\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "soak_report",
+            "--dir",
+            str(tmp_path),
+            "--until",
+            "2026-01-02T00:00:00Z",
+            "--out",
+            str(tmp_path / "report.json"),
+        ],
+    )
+
+    import scripts.soak_report as module
+
+    assert module.main() == 0
+    written = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert written["meta"]["anchor_source"] == "since"
+    assert written["meta"]["window_start"] == "2026-01-01T00:00:00+00:00"
+    assert "from META" in capsys.readouterr().err
+
+
+def test_compare_refuses_reports_with_different_anchor_sources() -> None:
+    _text, anchored = report(FIXTURE_DIR, UNTIL)
+    _text, wall_clock = report(FIXTURE_DIR, UNTIL)
+    wall_clock["meta"]["anchor_source"] = "since"
+
+    code, message = compare(wall_clock, anchored)
+
+    assert code == 1
+    assert "anchor_source" in message
+
+
+def test_compare_refuses_a_firmware_change_unless_allowed() -> None:
+    _text, current = report(FIXTURE_DIR, UNTIL)
+    _text, previous = report(FIXTURE_DIR, UNTIL)
+    previous["meta"]["firmware_version"] = "v0.4.0-24-gdeadbee"
+
+    code, message = compare(current, previous)
+
+    assert code == 1
+    assert "firmware_version" in message
+    assert compare(current, previous, allow_firmware_change=True)[0] == 0
+
+
+def test_compare_refuses_a_report_from_the_previous_schema() -> None:
+    _text, current = report(FIXTURE_DIR, UNTIL)
+    _text, previous = report(FIXTURE_DIR, UNTIL)
+    previous["meta"]["schema_version"] = 1
+
+    code, message = compare(current, previous)
+
+    assert code == 1
+    assert "schema_version" in message
+
+
+def _copy_capture(tmp_path: Path, *, satellite: str | None) -> None:
+    """Lay out a capture directory, optionally with a serial log.
+
+    Args:
+        tmp_path: Where to write.
+        satellite: Fixture filename for `satellite-soak.log`, or None for a
+            server-only capture.
+    """
+    for name in ("backend.log", "frontend.log"):
+        (tmp_path / name).write_text(
+            (FIXTURE_DIR / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
+    if satellite is not None:
+        (tmp_path / "satellite-soak.log").write_text(
+            (FIXTURE_DIR / satellite).read_text(encoding="utf-8"), encoding="utf-8"
+        )
