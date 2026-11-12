@@ -18,6 +18,8 @@ from pathlib import Path
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "soak_collectors.sh"
+# Pinned so a test addresses a known directory instead of a timestamp.
+RUN = "20260101T000000Z"
 
 
 def _run(
@@ -28,7 +30,7 @@ def _run(
     Args:
         args: Subcommand and its arguments.
         env: Extra environment for the run.
-        soak_dir: Where the collectors would write.
+        soak_dir: Where the collectors would write, one directory per run.
 
     Returns:
         The completed process.
@@ -43,9 +45,15 @@ def _run(
             "HOME": str(soak_dir),
             "SOAK_DIR": str(soak_dir),
             "SOAK_REPO": str(soak_dir),
+            "SOAK_RUN_ID": RUN,
             **env,
         },
     )
+
+
+def _run_dir(soak: Path) -> Path:
+    """Return the run directory the collector addresses in these tests."""
+    return soak / RUN
 
 
 def _fake_device(root: Path, name: str, target: str) -> None:
@@ -160,13 +168,15 @@ def test_preflight_fails_fast_without_a_device(tmp_path: Path) -> None:
 
     assert result.returncode == 1
     assert "SOAK_SATELLITE=0" in result.stderr
-    assert not (soak / "plan").exists()
+    assert not (soak / "current").exists()
 
 
 def test_preflight_refuses_to_append_over_a_capture(tmp_path: Path) -> None:
     soak = tmp_path / "soak"
     soak.mkdir()
-    (soak / "backend.log").write_text("existing capture\n", encoding="utf-8")
+    run = _run_dir(soak)
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "backend.log").write_text("existing capture\n", encoding="utf-8")
 
     result = _run(["preflight"], {"SOAK_SATELLITE": "0"}, soak)
 
@@ -181,14 +191,16 @@ def test_meta_folds_the_resolved_plan_into_meta(tmp_path: Path) -> None:
     # later `make soak-meta` cannot silently drop them.
     soak = tmp_path / "soak"
     soak.mkdir()
-    (soak / "plan").write_text(
+    run = _run_dir(soak)
+    run.mkdir(parents=True, exist_ok=True)
+    (run / "plan").write_text(
         "satellite=1\nsatellite_port=/dev/serial/by-id/usb-X-if00\n", encoding="utf-8"
     )
 
     written = _run(["meta"], {"SOAK_SATELLITE": "0"}, soak)
 
     assert written.returncode == 0, written.stderr
-    meta = (soak / "META").read_text(encoding="utf-8")
+    meta = (run / "META").read_text(encoding="utf-8")
     assert "satellite=1" in meta
     assert "satellite_port=/dev/serial/by-id/usb-X-if00" in meta
 
@@ -245,15 +257,17 @@ def test_start_and_stop_manage_the_group_and_report_the_skip(tmp_path: Path) -> 
         assert started.returncode == 0, started.stderr
         assert "satellite: skipped (SOAK_SATELLITE=0)" in started.stdout
         assert "make soak-report UNTIL=<ISO> SINCE=<ISO>" in started.stdout
-        assert (soak / "backend.pgid").exists()
-        assert (soak / "frontend.pgid").exists()
-        assert "satellite.pgid" not in [p.name for p in soak.iterdir()]
+        run = _run_dir(soak)
+        assert (run / "backend.pgid").exists()
+        assert (run / "frontend.pgid").exists()
+        assert "satellite.pgid" not in [p.name for p in run.iterdir()]
+        assert (soak / "current").read_text(encoding="utf-8").strip() == RUN
     finally:
         stopped = _run(["stop"], env, soak)
 
     assert "backend: stopped" in stopped.stdout
     assert "frontend: stopped" in stopped.stdout
-    assert not (soak / "backend.pgid").exists()
+    assert not (_run_dir(soak) / "backend.pgid").exists()
 
 
 def _sourced(function: str, *args: str) -> subprocess.CompletedProcess:
@@ -305,3 +319,69 @@ def test_a_failed_start_is_deleted_only_when_nothing_was_captured(
 
     assert noise.returncode == 0
     assert kept.returncode == 1
+
+
+def test_two_runs_get_two_directories(tmp_path: Path) -> None:
+    # The whole point of the run directory: a second capture cannot overwrite,
+    # interleave with or append to the first, and each log's path names the run
+    # it came from.
+    bin_dir = _fake_docker(tmp_path)
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    base = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "SOAK_SATELLITE": "0",
+        "SOAK_FIRST_LINE_S": "5",
+    }
+
+    first = _run(["start"], {**base, "SOAK_RUN_ID": "20260101T000000Z"}, soak)
+    _run(["stop"], {**base, "SOAK_RUN_ID": "20260101T000000Z"}, soak)
+    second = _run(["start"], {**base, "SOAK_RUN_ID": "20260102T000000Z"}, soak)
+    _run(["stop"], {**base, "SOAK_RUN_ID": "20260102T000000Z"}, soak)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert "already has bytes" not in second.stderr
+    assert (soak / "20260101T000000Z" / "backend.log").exists()
+    assert (soak / "20260102T000000Z" / "backend.log").exists()
+    assert (soak / "current").read_text(encoding="utf-8").strip() == "20260102T000000Z"
+
+
+def test_meta_is_written_once_per_run(tmp_path: Path) -> None:
+    # `make soak-meta` after a capture would otherwise drop the facts `start`
+    # appended — the capture start and the firmware — and describe a container
+    # that has since been replaced.
+    soak = tmp_path / "soak"
+    run = _run_dir(soak)
+    run.mkdir(parents=True)
+    (run / "META").write_text(
+        "soak_run=20260101T000000Z\ncapture_started_utc=2026-01-01T00:00:00Z\n",
+        encoding="utf-8",
+    )
+
+    refused = _run(["meta"], {"SOAK_SATELLITE": "0"}, soak)
+    forced = _run(["meta"], {"SOAK_SATELLITE": "0", "SOAK_META_FORCE": "1"}, soak)
+
+    assert refused.returncode == 1
+    assert "already exists" in refused.stderr
+    assert forced.returncode == 0, forced.stderr
+
+
+def test_runs_lists_every_capture_newest_first(tmp_path: Path) -> None:
+    soak = tmp_path / "soak"
+    for name, firmware in (
+        ("20260101T000000Z", "v0.4.0-25-g9adf84f"),
+        ("20260102T000000Z", "v0.4.1"),
+    ):
+        (soak / name).mkdir(parents=True)
+        (soak / name / "META").write_text(f"satellite_firmware={firmware}\n")
+    (soak / "current").write_text("20260102T000000Z\n")
+
+    result = _run(["runs"], {}, soak)
+
+    assert result.returncode == 0, result.stderr
+    lines = [line for line in result.stdout.splitlines() if line.startswith("  ")]
+    assert "20260102T000000Z" in lines[0]
+    assert "v0.4.1" in lines[0]
+    assert "<- current" in lines[0]
+    assert "v0.4.0-25-g9adf84f" in lines[1]

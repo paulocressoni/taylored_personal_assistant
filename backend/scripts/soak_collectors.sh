@@ -37,6 +37,7 @@
 #
 # Usage:
 #   soak_collectors.sh plan        print the resolved streams; change nothing
+#   soak_collectors.sh runs        list the captures in the soak directory
 #   soak_collectors.sh preflight   check everything a start would need
 #   soak_collectors.sh start       start the collectors (idempotent)
 #   soak_collectors.sh stop        stop them by process group
@@ -63,20 +64,78 @@ SOAK_STALE_S="${SOAK_STALE_S:-300}"
 # be tested without a board plugged in.
 SOAK_SERIAL_DIR="${SOAK_SERIAL_DIR:-/dev/serial/by-id}"
 
+# Every capture lives in its own directory named after the moment it started, so
+# two soaks can never overwrite, interleave or append to one another — and the
+# name is the label that relates a log to the run it came from. Two run
+# directories side by side are self-explanatory; `backend.log` written twice
+# is not.
+#
+# `current` points at the run the other subcommands act on, so `stop`, `status`
+# and `report` work from any shell without carrying an environment variable.
+SOAK_RUN_ID="${SOAK_RUN_ID:-}"
+SOAK_RUN_DIR=""          # resolved by _resolve_run
+PLAN_FILE="$SOAK_DIR/.no-run/plan"   # replaced by _resolve_run
+CURRENT_POINTER="$SOAK_DIR/current"
+
 # The satellite sends the shared key as ?api_key= (the browser uses a
 # subprotocol header instead), so every access log line contains it.
 REDACT='s/\(api_key=\)[^ &"]*/\1REDACTED/g'
 
-PLAN_FILE="$SOAK_DIR/plan"
+_new_run_id() {
+    # A UTC timestamp, because it sorts, it needs no lookup table, and it says
+    # when the soak started without opening a file.
+    date -u +%Y%m%dT%H%M%SZ
+}
+
+_resolve_run() {
+    # Decide which run directory the command acts on.
+    #
+    # Order: an explicit SOAK_RUN_ID, then the `current` pointer, then a fresh
+    # stamp. Only `preflight` is allowed to create one, so a read-only command
+    # never leaves an empty directory behind.
+    local create="${1:-no}" run_id
+    run_id="$SOAK_RUN_ID"
+    if [ -z "$run_id" ] && [ -f "$CURRENT_POINTER" ]; then
+        run_id="$(cat "$CURRENT_POINTER")"
+    fi
+    if [ -z "$run_id" ] && [ "$create" = create ]; then
+        run_id="$(_new_run_id)"
+    fi
+    SOAK_RUN_ID="$run_id"
+    if [ -n "$run_id" ]; then
+        SOAK_RUN_DIR="$SOAK_DIR/$run_id"
+        PLAN_FILE="$SOAK_RUN_DIR/plan"
+    else
+        SOAK_RUN_DIR=""
+        # Reads of a file that cannot exist must not collapse to "/plan".
+        PLAN_FILE="$SOAK_DIR/.no-run/plan"
+    fi
+}
+
+_require_run() {
+    # Refuse to guess which capture a command means.
+    _resolve_run
+    if [ -z "$SOAK_RUN_DIR" ]; then
+        echo "no soak run found in $SOAK_DIR — start one with 'make soak-up'" >&2
+        return 1
+    fi
+    if [ ! -d "$SOAK_RUN_DIR" ]; then
+        echo "soak run ${SOAK_RUN_ID} does not exist in $SOAK_DIR" >&2
+        return 1
+    fi
+}
 
 _log_path() {
-    # The satellite's file has a name of its own; it predates this script and
-    # the report reads it by that name.
+    # The satellite's file has a name of its own; the report looks for it by
+    # that name inside the run directory.
+    local base="${SOAK_RUN_DIR:-$SOAK_DIR/.no-run}"
     case "$1" in
-        satellite) printf '%s\n' "$SOAK_DIR/satellite-soak.log" ;;
-        *) printf '%s\n' "$SOAK_DIR/$1.log" ;;
+        satellite) printf '%s\n' "$base/satellite-soak.log" ;;
+        *) printf '%s\n' "$base/$1.log" ;;
     esac
 }
+
+_pgid_path() { printf '%s\n' "$SOAK_RUN_DIR/$1.pgid"; }
 
 _satellite_port() {
     # Resolve the serial port, printing it on success.
@@ -225,6 +284,7 @@ _tail_of() {
 }
 
 cmd_plan() {
+    _resolve_run
     if [ "$SOAK_SATELLITE" != 1 ]; then
         echo "satellite: skipped (SOAK_SATELLITE=$SOAK_SATELLITE)"
     else
@@ -246,6 +306,7 @@ cmd_plan() {
 }
 
 cmd_preflight() {
+    _resolve_run create
     # Checks only: nothing is built, nothing is started, no toolchain is loaded.
     # This runs BEFORE `docker compose build`, so a missing device costs a
     # second instead of a full image build.
@@ -263,14 +324,34 @@ cmd_preflight() {
 
     mkdir -p "$SOAK_DIR"
 
+    # The previous run is checked before the new one: its collectors are still
+    # alive in their own directory, and two captures at once would each report
+    # half a conversation.
+    if [ -f "$CURRENT_POINTER" ]; then
+        local previous previous_dir
+        previous="$(cat "$CURRENT_POINTER")"
+        previous_dir="$SOAK_DIR/$previous"
+        if [ -d "$previous_dir" ]; then
+            local busy
+            for busy in "$previous_dir"/*.pgid; do
+                [ -e "$busy" ] || continue
+                if _running_pgid "$busy" >/dev/null; then
+                    echo "preflight: run $previous is still collecting — 'make soak-stop' first" >&2
+                    failed=1
+                    break
+                fi
+            done
+        fi
+    fi
+
     local name kind target
     while read -r name kind target; do
         if [ "$kind" = serial ]; then
             port="$target"
             continue
         fi
-        if _running_pgid "$SOAK_DIR/$name.pgid" >/dev/null; then
-            echo "preflight: $name is already collecting (pgid $(cat "$SOAK_DIR/$name.pgid"))" >&2
+        if _running_pgid "$SOAK_RUN_DIR/$name.pgid" >/dev/null; then
+            echo "preflight: $name is already collecting (pgid $(cat "$SOAK_RUN_DIR/$name.pgid"))" >&2
             failed=1
         fi
         _guard_append "$name" "$(_log_path "$name")" || failed=1
@@ -299,8 +380,8 @@ satellite_skipped=SOAK_SATELLITE=$SOAK_SATELLITE"
                 echo "           (a leftover 'idf.py monitor' or 'screen' ends a capture)" >&2
                 failed=1
             fi
-            if _running_pgid "$SOAK_DIR/satellite.pgid" >/dev/null; then
-                echo "preflight: satellite is already collecting (pgid $(cat "$SOAK_DIR/satellite.pgid"))" >&2
+            if _running_pgid "$SOAK_RUN_DIR/satellite.pgid" >/dev/null; then
+                echo "preflight: satellite is already collecting (pgid $(cat "$SOAK_RUN_DIR/satellite.pgid"))" >&2
                 failed=1
             fi
             _guard_append satellite "$(_log_path satellite)" || failed=1
@@ -311,16 +392,19 @@ satellite_device=$(readlink -f "$port")"
     fi
 
     if [ "$failed" -ne 0 ]; then
-        rm -f "$PLAN_FILE"
         return 1
     fi
+    mkdir -p "$SOAK_RUN_DIR"
     printf '%s\n' "$plan" > "$PLAN_FILE"
-    echo "preflight: ok (plan written to $PLAN_FILE)"
+    # The pointer is written only on success, so a refused start never leaves a
+    # run id that names an empty directory.
+    printf '%s\n' "$SOAK_RUN_ID" > "$CURRENT_POINTER"
+    echo "preflight: ok (run $SOAK_RUN_ID, plan written to $SOAK_RUN_DIR/plan)"
 }
 
 _start_container() {
     local name="$1" container="$2"
-    local pgid_file="$SOAK_DIR/$name.pgid"
+    local pgid_file="$SOAK_RUN_DIR/$name.pgid"
     local log
     log="$(_log_path "$name")"
     if _running_pgid "$pgid_file" >/dev/null; then
@@ -331,7 +415,7 @@ _start_container() {
         echo "  $name: no container named $container — is the stack up?" >&2
         return 1
     fi
-    _container_id "$container" > "$SOAK_DIR/$name.container"
+    _container_id "$container" > "$SOAK_RUN_DIR/$name.container"
     # setsid => its own process group, so `stop` can kill the writer and the
     # `sed` filter together without touching this shell or the container.
     setsid nohup bash -c \
@@ -353,7 +437,7 @@ _start_satellite() {
     local port="$1"
     local log
     log="$(_log_path satellite)"
-    local pgid_file="$SOAK_DIR/satellite.pgid"
+    local pgid_file="$SOAK_RUN_DIR/satellite.pgid"
     if _running_pgid "$pgid_file" >/dev/null; then
         echo "  satellite: already collecting (pgid $(cat "$pgid_file"))"
         return 0
@@ -402,12 +486,12 @@ _start_satellite() {
 _fail_start_satellite() {
     local log="$1"
     local pgid
-    if pgid="$(_running_pgid "$SOAK_DIR/satellite.pgid")"; then
+    if pgid="$(_running_pgid "$SOAK_RUN_DIR/satellite.pgid")"; then
         kill -TERM -- "-$pgid" 2>/dev/null || true
         sleep 1
         kill -KILL -- "-$pgid" 2>/dev/null || true
     fi
-    rm -f "$SOAK_DIR/satellite.pgid" "$log.exit"
+    rm -f "$SOAK_RUN_DIR/satellite.pgid" "$log.exit"
     _tail_of "$log"
     if _only_script_noise "$log"; then
         echo "  satellite: removed $log (it held only script's header)" >&2
@@ -416,7 +500,10 @@ _fail_start_satellite() {
 }
 
 cmd_start() {
-    mkdir -p "$SOAK_DIR"
+    _resolve_run create
+    mkdir -p "$SOAK_RUN_DIR"
+    # `start` is also reachable by hand, so it publishes the pointer too.
+    printf '%s\n' "$SOAK_RUN_ID" > "$CURRENT_POINTER"
     local name kind target port="" satellite_failed=0
     while read -r name kind target; do
         if [ "$kind" = serial ]; then
@@ -440,9 +527,10 @@ cmd_start() {
 }
 
 cmd_stop() {
+    _require_run || return 1
     local stopped=0
     while read -r name _kind _target; do
-        local pgid_file="$SOAK_DIR/$name.pgid"
+        local pgid_file="$SOAK_RUN_DIR/$name.pgid"
         if pgid="$( _running_pgid "$pgid_file" )"; then
             kill -TERM -- "-$pgid" 2>/dev/null || true
             # Give sed a moment to flush the last line, then insist.
@@ -456,7 +544,7 @@ cmd_stop() {
         else
             echo "  $name: not collecting"
         fi
-        rm -f "$pgid_file" "$SOAK_DIR/$name.container"
+        rm -f "$pgid_file" "$SOAK_RUN_DIR/$name.container"
     done < <(_streams)
     # Per-capture side files go too, so a later `make soak-meta` cannot fold in
     # a previous soak's device facts.
@@ -465,14 +553,16 @@ cmd_stop() {
 }
 
 cmd_status() {
+    _require_run || return 1
+    echo "run      : $SOAK_RUN_ID ($SOAK_RUN_DIR)"
     while read -r name kind target; do
-        local pgid_file="$SOAK_DIR/$name.pgid"
+        local pgid_file="$SOAK_RUN_DIR/$name.pgid"
         local log
         log="$(_log_path "$name")"
         if pgid="$(_running_pgid "$pgid_file")"; then
             if [ "$kind" = container ]; then
                 local watched live
-                watched="$(cat "$SOAK_DIR/$name.container" 2>/dev/null | cut -c1-12)"
+                watched="$(cat "$SOAK_RUN_DIR/$name.container" 2>/dev/null | cut -c1-12)"
                 live="$(_container_id "$target" | cut -c1-12)"
                 if [ "$watched" != "$live" ]; then
                     # docker logs follows a container: a recreate ends the
@@ -511,20 +601,58 @@ cmd_status() {
     done < <(_streams)
 }
 
+cmd_runs() {
+    # List the captures in the soak directory, newest first.
+    #
+    # A run is a directory named after the moment it started, so the answer to
+    # "which soak is this log from" is the path itself.
+    local dir name current="" firmware
+    mkdir -p "$SOAK_DIR"
+    if [ -f "$CURRENT_POINTER" ]; then
+        current="$(cat "$CURRENT_POINTER")"
+    fi
+    if ! ls -d "$SOAK_DIR"/*/ >/dev/null 2>&1; then
+        echo "no runs in $SOAK_DIR"
+        return 0
+    fi
+    echo "runs in $SOAK_DIR (newest first):"
+    while read -r dir; do
+        name="$(basename "$dir")"
+        firmware="no firmware recorded"
+        if [ -f "$dir/META" ]; then
+            firmware="$(sed -n 's/^satellite_firmware=//p' "$dir/META" | tail -1)"
+            if [ -z "$firmware" ]; then firmware="no satellite"; fi
+        fi
+        local marker=""
+        if [ "$name" = "$current" ]; then marker="  <- current"; fi
+        printf '  %-22s %8s  %-22s%s\n' "$name" "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$firmware" "$marker"
+    done < <(ls -d "$SOAK_DIR"/*/ 2>/dev/null | sort -r)
+}
+
 cmd_meta() {
+    _require_run || return 1
     local mode="${1:-write}" started="${2:-}"
     if [ "$mode" != append ]; then
-        # Truncating META while a capture runs would erase the facts `start`
-        # appended, so it refuses instead.
+        # META describes one run and is written once, by `soak-up`, after the
+        # stack is up. Rewriting it later would drop the facts `start` appended
+        # (the capture start and the firmware) — and while a capture runs it
+        # would also describe a container that has since been replaced.
+        if [ -s "$SOAK_RUN_DIR/META" ] && [ "${SOAK_META_FORCE:-0}" != 1 ]; then
+            echo "meta: $SOAK_RUN_DIR/META already exists for run $SOAK_RUN_ID" >&2
+            echo "      it is written once per run — 'meta append' adds to it," >&2
+            echo "      SOAK_META_FORCE=1 regenerates it" >&2
+            return 1
+        fi
         local name kind target
         while read -r name kind target; do
-            if _running_pgid "$SOAK_DIR/$name.pgid" >/dev/null; then
+            if _running_pgid "$SOAK_RUN_DIR/$name.pgid" >/dev/null; then
                 echo "meta: $name is collecting — use 'meta append'" >&2
                 return 1
             fi
         done < <(_streams)
         mkdir -p "$SOAK_DIR"
         {
+            echo "soak_run=$SOAK_RUN_ID"
             echo "captured_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo "git_sha=$(git -C "$SOAK_REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
             if git -C "$SOAK_REPO" diff --quiet 2>/dev/null; then
@@ -542,10 +670,10 @@ cmd_meta() {
                 | grep -E '^VOICE_' \
                 | grep -viE '(API_KEY|SECRET|TOKEN|PASSWORD)=' \
                 | sort || echo "voice_settings=unavailable"
-            if [ -f "$PLAN_FILE" ]; then
+            if [ -s "$PLAN_FILE" ]; then
                 cat "$PLAN_FILE"
             fi
-        } > "$SOAK_DIR/META"
+        } > "$SOAK_RUN_DIR/META"
         return 0
     fi
 
@@ -554,13 +682,14 @@ cmd_meta() {
     local log
     log="$(_log_path satellite)"
     {
+        echo "soak_run=$SOAK_RUN_ID"
         echo "capture_started_utc=${started:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
         local firmware idf
         firmware="$(sed -n 's/.*app_init: App version: *//p' "$log" 2>/dev/null | tail -1)"
         idf="$(sed -n 's/.*app_init: ESP-IDF: *//p' "$log" 2>/dev/null | tail -1)"
         if [ -n "$firmware" ]; then echo "satellite_firmware=$firmware"; fi
         if [ -n "$idf" ]; then echo "satellite_idf=$idf"; fi
-    } >> "$SOAK_DIR/META"
+    } >> "$SOAK_RUN_DIR/META"
 }
 
 # Dispatched only when executed, so the helpers above can be sourced by a test
@@ -568,13 +697,14 @@ cmd_meta() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         plan) cmd_plan ;;
+        runs) cmd_runs ;;
         preflight) cmd_preflight ;;
         start) cmd_start ;;
         stop) cmd_stop ;;
         status) cmd_status ;;
         meta) shift; cmd_meta "${1:-write}" "${2:-}" ;;
         *)
-            echo "usage: $(basename "$0") {plan|preflight|start|stop|status|meta [append]}" >&2
+            echo "usage: $(basename "$0") {plan|runs|preflight|start|stop|status|meta [append]}" >&2
             exit 2
             ;;
     esac

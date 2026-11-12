@@ -17,7 +17,7 @@ MSG ?=
 APP_VERSION := $(shell sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 export APP_VERSION
 
-.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-preflight soak-stop soak-status soak-meta soak-report
+.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-preflight soak-stop soak-status soak-runs soak-meta soak-report
 
 config:
 	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
@@ -100,6 +100,13 @@ export SOAK_DIR ?= $(HOME)/wake-soak
 export SOAK_SATELLITE ?= 1
 export SOAK_SATELLITE_PORT ?=
 export SOAK_APPEND ?= 0
+# Each capture gets its own directory under $(SOAK_DIR), named after the moment
+# it started, so two soaks can never overwrite or interleave each other's logs
+# and a file name always names the run it belongs to. `$(SOAK_DIR)/current` is
+# the pointer the other targets read; set RUN=<name> to address an older one.
+RUN ?= $(shell cat $(SOAK_DIR)/current 2>/dev/null)
+export RUN
+SOAK_RUN_DIR := $(SOAK_DIR)/$(RUN)
 SOAK_IMAGE := taylored-assistant-backend:soak-local
 SOAK_BACKEND := taylored-assistant-prod-backend-1
 COMPOSE_SOAK := docker compose -p taylored-assistant-prod \
@@ -131,14 +138,18 @@ soak-status:
 	@echo "soak dir : $(SOAK_DIR)"
 	@echo "backend  : $(shell docker inspect -f '{{.Id}}' $(SOAK_BACKEND) 2>/dev/null | cut -c1-12 || echo 'not running')"
 	@echo "image    : $(shell docker inspect -f '{{.Image}}' $(SOAK_BACKEND) 2>/dev/null | cut -c8-19 || echo '-')"
-	@test -f $(SOAK_DIR)/META && sed 's/^/meta     : /' $(SOAK_DIR)/META || echo "meta     : none (run make soak-up)"
+	@test -f $(SOAK_RUN_DIR)/META && sed 's/^/meta     : /' $(SOAK_RUN_DIR)/META || echo "meta     : none (run make soak-up)"
 	@bash $(BACKEND)/scripts/soak_collectors.sh status
+
+# Every capture, newest first, with the firmware it ran.
+soak-runs:
+	@bash $(BACKEND)/scripts/soak_collectors.sh runs
 
 # The script owns META: it refuses to truncate while a capture is running, so
 # the facts `start` appended cannot be lost by re-running this target.
 soak-meta:
 	@bash $(BACKEND)/scripts/soak_collectors.sh meta
-	@echo "META written to $(SOAK_DIR)/META"
+	@echo "META written to $(SOAK_RUN_DIR)/META"
 
 # SINCE is only needed for a server-only capture that has no META; the tool
 # otherwise reads capture_started_utc from META rather than trusting a retyped
@@ -147,8 +158,11 @@ soak-report:
 	@test -n "$(UNTIL)" || \
 	  { echo "soak-report: set UNTIL=<ISO-8601 UTC>, e.g. make soak-report UNTIL=2026-11-11T17:45:00Z"; \
 	    exit 1; }
-	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_DIR) --until "$(UNTIL)" \
-	  $(if $(SINCE),--since "$(SINCE)",)
+	@test -d $(SOAK_RUN_DIR) || \
+	  { echo "soak-report: no run at $(SOAK_RUN_DIR) — see 'make soak-runs', or pass RUN=<name>"; \
+	    exit 1; }
+	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_RUN_DIR) --until "$(UNTIL)" \
+	  $(if $(SINCE),--since "$(SINCE)",) $(if $(COMPARE),--compare "$(COMPARE)",)
 
 # ============================ PROD ============================
 # Runs the CI-published GHCR images pinned to :$(APP_VERSION) — nothing is

@@ -11,7 +11,36 @@ wake-word milestone are in [`voice.md`](voice.md#what-was-measured-and-what-was-
 
 ## 1. Capture
 
-Three files in one directory (default `~/wake-soak/`), all three started by `make soak-up`:
+Every soak gets its **own directory**, named after the moment it started, and all three streams are
+written into it by `make soak-up`:
+
+```
+~/wake-soak/
+  20261112T170218Z/          <- one soak, named for its UTC start
+    satellite-soak.log       the serial console: idf.py monitor in a pty
+    backend.log              docker logs -t -f, with api_key= redacted
+    frontend.log             the same for nginx
+    META                     what the run actually was
+    report.json              written by soak_report.py
+  20261109T185944Z/          <- the 47-hour soak, named for its clock anchor
+  current                    a one-line pointer at the newest run
+```
+
+The directory name is the label: a log path answers "which soak is this from" without opening
+anything, two captures can never overwrite, interleave with or append to one another, and
+`--compare` becomes a plain file reference between two run directories.
+
+```bash
+make soak-runs                            # every capture, newest first, with its firmware
+make soak-report UNTIL=… RUN=20261109T185944Z   # report an older one
+make soak-report UNTIL=… COMPARE=~/wake-soak/20261109T185944Z/report.json
+```
+
+`RUN` defaults to `$(cat ~/wake-soak/current)`, so the ordinary case needs no flag. Two names to know:
+
+- the **directory** is `<UTC start>`, `date -u +%Y%m%dT%H%M%SZ`;
+- **`capture_started_utc`** in `META` is the exact moment the first byte arrived, which is what a
+  server-only report uses as its window start.
 
 | File | Produced by |
 |---|---|
@@ -48,9 +77,10 @@ measured rather than assumed:
   otherwise the single `/dev/serial/by-id/*` device (stable across renumbering, and it carries the
   MAC). Two devices are refused rather than guessed, because a soak attributed to the wrong board is
   worse than no soak.
-- **A capture is never appended by accident.** If any log already has bytes, `soak-up` refuses before
-  building anything; `SOAK_APPEND=1` is the deliberate override, and it passes `-a` to `script` so the
-  satellite log appends too.
+- **A capture is never appended by accident.** Each run has its own directory, so a new soak cannot
+  touch an old one — and if you pin `RUN=<name>` to re-enter an existing one, `soak-up` refuses when
+  any log already has bytes. `SOAK_APPEND=1` is the deliberate override, and it passes `-a` to
+  `script` so the satellite log appends too.
 - **`soak-up` waits for proof**: a boot banner and a `ws: connected` within `SOAK_SATELLITE_S`
   (default 120 s — attach runs cmake, then the chip boots, then Wi-Fi associates). If either is
   missing it prints the tail of the log and `.err`, and fails, instead of leaving a capture that looks
@@ -170,7 +200,8 @@ cd backend
 uv run python scripts/soak_report.py --until 2026-11-11T17:45:00Z
 # -> prints the sections below, writes ~/wake-soak/report.json
 
-uv run python scripts/soak_report.py --until … --compare ~/wake-soak/soak-01/report.json
+uv run python scripts/soak_report.py --dir ~/wake-soak/20261112T170218Z --until … \
+  --compare ~/wake-soak/20261109T185944Z/report.json
 # -> refuses if the two captures are not comparable (schema, window, threshold, firmware)
 
 uv run python scripts/soak_report.py --until … --since 2026-11-11T09:00:00Z
@@ -192,6 +223,10 @@ Two rows read `n/a`, and they mean different things:
 `--since` defaults to `capture_started_utc` in `META`, so a server-only capture does not need a
 hand-typed timestamp — retyping it is the `START` mistake in a new hat. It is required only when
 neither a serial log nor a `META` exists.
+
+**META is written once per run.** `make soak-meta` regenerates it only for a run that has none
+(`SOAK_META_FORCE=1` overrides), because rewriting it after the capture would drop the facts `start`
+appended and describe a container that has since been replaced.
 
 **A rebooted device is refused.** `derive_anchor` pairs the newest connect/accept events, and a boot
 resets the uptime clock, so a second boot can silently move the window start to the reboot and report
