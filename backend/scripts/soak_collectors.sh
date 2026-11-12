@@ -38,6 +38,7 @@
 # Usage:
 #   soak_collectors.sh plan        print the resolved streams; change nothing
 #   soak_collectors.sh runs        list the captures in the soak directory
+#   soak_collectors.sh stack-state soak | preexisting — who owns the Docker stack
 #   soak_collectors.sh preflight   check everything a start would need
 #   soak_collectors.sh start       start the collectors (idempotent)
 #   soak_collectors.sh stop        stop them by process group
@@ -73,6 +74,10 @@ SOAK_SERIAL_DIR="${SOAK_SERIAL_DIR:-/dev/serial/by-id}"
 # `current` points at the run the other subcommands act on, so `stop`, `status`
 # and `report` work from any shell without carrying an environment variable.
 SOAK_RUN_ID="${SOAK_RUN_ID:-}"
+# Who brought the Docker stack up. `soak-down` undoes the soak, which includes
+# the stack — unless the stack was already running before, in which case taking
+# it down would stop something the operator started and did not ask us to stop.
+STACK_OWNER_FILE="$SOAK_DIR/stack.owner"
 SOAK_RUN_DIR=""          # resolved by _resolve_run
 PLAN_FILE="$SOAK_DIR/.no-run/plan"   # replaced by _resolve_run
 CURRENT_POINTER="$SOAK_DIR/current"
@@ -80,6 +85,34 @@ CURRENT_POINTER="$SOAK_DIR/current"
 # The satellite sends the shared key as ?api_key= (the browser uses a
 # subprotocol header instead), so every access log line contains it.
 REDACT='s/\(api_key=\)[^ &"]*/\1REDACTED/g'
+
+_stack_running() {
+    # True when any container of the prod compose project is running.
+    docker ps -q \
+        --filter label=com.docker.compose.project=taylored-assistant-prod \
+        2>/dev/null | grep -q .
+}
+
+_stack_owner() {
+    # Decide, and remember, who owns the stack.
+    #
+    #   soak         we are about to start it (nothing was running), or a
+    #                previous soak left it running — either way it is ours
+    #   preexisting  it was already up and no soak marker says otherwise, so it
+    #                belongs to the operator: `soak-down` must not stop it
+    # A marker only means something while a stack is actually up: with nothing
+    # running, whatever it says is history, and the stack the next soak starts
+    # is that soak's.
+    if _stack_running; then
+        if [ -f "$STACK_OWNER_FILE" ]; then
+            cat "$STACK_OWNER_FILE"
+        else
+            printf '%s\n' "preexisting"
+        fi
+        return 0
+    fi
+    printf '%s\n' "soak"
+}
 
 _new_run_id() {
     # A UTC timestamp, because it sorts, it needs no lookup table, and it says
@@ -349,6 +382,7 @@ cmd_preflight() {
     fi
 
     mkdir -p "$SOAK_DIR"
+    local owner
 
     # The previous run is checked before the new one: its collectors are still
     # alive in their own directory, and two captures at once would each report
@@ -420,12 +454,20 @@ satellite_device=$(readlink -f "$port")"
     if [ "$failed" -ne 0 ]; then
         return 1
     fi
+    owner="$(_stack_owner)"
+    plan="$plan
+stack_owner=$owner"
     mkdir -p "$SOAK_RUN_DIR"
     printf '%s\n' "$plan" > "$PLAN_FILE"
     # The pointer is written only on success, so a refused start never leaves a
     # run id that names an empty directory.
     printf '%s\n' "$SOAK_RUN_ID" > "$CURRENT_POINTER"
+    printf '%s\n' "$owner" > "$STACK_OWNER_FILE"
     echo "preflight: ok (run $SOAK_RUN_ID, plan written to $SOAK_RUN_DIR/plan)"
+    if [ "$owner" = preexisting ]; then
+        echo "preflight: the stack is already running and was not started by a soak;"
+        echo "           make soak-down will leave it alone (make prod-down stops it)"
+    fi
 }
 
 _start_container() {
@@ -554,6 +596,11 @@ cmd_start() {
         echo "             later: make soak-report UNTIL=<ISO> SINCE=<ISO>"
     fi
     [ "$satellite_failed" -eq 0 ] || return 1
+}
+
+cmd_stack_state() {
+    # Print who owns the stack, for `make soak-down` to act on.
+    printf '%s\n' "$(_stack_owner)"
 }
 
 cmd_stop() {
@@ -729,13 +776,14 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     case "${1:-}" in
         plan) cmd_plan ;;
         runs) cmd_runs ;;
+        stack-state) cmd_stack_state ;;
         preflight) cmd_preflight ;;
         start) cmd_start ;;
         stop) cmd_stop ;;
         status) cmd_status ;;
         meta) shift; cmd_meta "${1:-write}" "${2:-}" ;;
         *)
-            echo "usage: $(basename "$0") {plan|runs|preflight|start|stop|status|meta [append]}" >&2
+            echo "usage: $(basename "$0") {plan|runs|stack-state|preflight|start|stop|status|meta [append]}" >&2
             exit 2
             ;;
     esac

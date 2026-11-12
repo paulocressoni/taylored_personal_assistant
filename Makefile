@@ -17,7 +17,7 @@ MSG ?=
 APP_VERSION := $(shell sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 export APP_VERSION
 
-.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-preflight soak-stop soak-status soak-runs soak-meta soak-report
+.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-preflight soak-stop soak-down soak-status soak-runs soak-meta soak-report
 
 config:
 	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
@@ -129,9 +129,35 @@ soak-up: soak-preflight
 	$(COMPOSE_SOAK) --profile observability up -d --no-build --wait
 	@$(MAKE) --no-print-directory soak-meta
 	@bash $(BACKEND)/scripts/soak_collectors.sh start
+	@echo ""
+	@echo "soak running. Stop the capture with 'make soak-stop', or stop everything"
+	@echo "this target started — capture and stack — with 'make soak-down'."
 
+# Stops the capture and leaves the stack running — use it mid-soak to freeze the
+# window, or when you want to keep using the assistant afterwards.
 soak-stop:
 	@bash $(BACKEND)/scripts/soak_collectors.sh stop
+	@echo "soak-stop: the stack is still up. To stop it too: make soak-down"
+
+# Undoes `soak-up`: stops the capture AND the stack it started.
+#
+# Not every stack: if one was already running when the soak began, it belongs to
+# the operator and taking it down would stop something nobody asked us to stop.
+# preflight records which case this is in $(SOAK_DIR)/stack.owner, and the reason
+# is printed either way. Volumes are never removed — that is the conversation
+# data the soak exists to produce.
+soak-down:
+	@bash $(BACKEND)/scripts/soak_collectors.sh stop
+	@owner=$$(bash $(BACKEND)/scripts/soak_collectors.sh stack-state); \
+	if [ "$$owner" = preexisting ] && [ "$${SOAK_FORCE_STACK_DOWN:-0}" != 1 ]; then \
+	  echo "soak-down: the stack was already running before this soak — leaving it up."; \
+	  echo "           stop it yourself with: make prod-down"; \
+	  echo "           (SOAK_FORCE_STACK_DOWN=1 make soak-down stops it anyway)"; \
+	else \
+	  echo "soak-down: stopping the stack this soak started (volumes are kept)"; \
+	  $(COMPOSE_SOAK) --profile observability down; \
+	  rm -f $(SOAK_DIR)/stack.owner; \
+	fi
 
 soak-status:
 	@echo "repo     : $(shell git rev-parse --short HEAD)$(shell git diff --quiet || echo ' (dirty)')"

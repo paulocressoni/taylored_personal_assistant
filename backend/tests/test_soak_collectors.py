@@ -467,3 +467,123 @@ def test_a_new_capture_never_reuses_the_previous_run_name(tmp_path: Path) -> Non
     pointer = (soak / "current").read_text(encoding="utf-8").strip()
     assert pointer != "20260101T000000Z"
     assert (soak / "20260101T000000Z" / "backend.log").read_text() == "old capture\n"
+
+
+def _docker_running(root: Path, *, running: bool) -> Path:
+    """Write a `docker` stub whose `ps -q` reports a stack or nothing.
+
+    Args:
+        root: Directory to place the stub and its bin dir in.
+        running: Whether `ps -q` should print a container id.
+
+    Returns:
+        The directory to prepend to `PATH`.
+    """
+    bin_dir = root / "ownerbin"
+    bin_dir.mkdir(exist_ok=True)
+    stub = bin_dir / "docker"
+    body = "echo c1" if running else "exit 0"
+    stub.write_text(f'#!/usr/bin/env bash\ncase "$1" in ps) {body} ;; esac\nexit 0\n')
+    stub.chmod(0o755)
+    return bin_dir
+
+
+def test_a_stack_that_was_already_up_belongs_to_the_operator(tmp_path: Path) -> None:
+    # `soak-down` undoes the soak. If the stack predates it, taking it down
+    # would stop something the operator started and never asked us to stop.
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    bin_dir = _docker_running(tmp_path, running=True)
+
+    state = _sourced_env(
+        "stack-state", {"SOAK_DIR": str(soak), "SOAK_REPO": str(soak)}, bin_dir
+    )
+
+    assert state.stdout.strip() == "preexisting"
+
+
+def test_a_stack_this_soak_started_is_ours_to_stop(tmp_path: Path) -> None:
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    bin_dir = _docker_running(tmp_path, running=False)
+
+    state = _sourced_env(
+        "stack-state", {"SOAK_DIR": str(soak), "SOAK_REPO": str(soak)}, bin_dir
+    )
+
+    assert state.stdout.strip() == "soak"
+
+
+def test_a_leftover_soak_stack_stays_ours(tmp_path: Path) -> None:
+    # The complaint this exists for: a soak left a stack running, and a second
+    # soak must still be able to stop it — so the marker outranks the "it was
+    # already up" inference.
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    (soak / "stack.owner").write_text("soak\n")
+    bin_dir = _docker_running(tmp_path, running=True)
+
+    state = _sourced_env(
+        "stack-state", {"SOAK_DIR": str(soak), "SOAK_REPO": str(soak)}, bin_dir
+    )
+
+    assert state.stdout.strip() == "soak"
+
+
+def test_a_stale_marker_does_not_outlive_its_stack(tmp_path: Path) -> None:
+    # After `make prod-down` nothing is running, so the marker is history: the
+    # stack the next soak brings up is the next soak's to stop.
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    (soak / "stack.owner").write_text("preexisting\n")
+    bin_dir = _docker_running(tmp_path, running=False)
+
+    state = _sourced_env(
+        "stack-state", {"SOAK_DIR": str(soak), "SOAK_REPO": str(soak)}, bin_dir
+    )
+
+    assert state.stdout.strip() == "soak"
+
+
+def test_preflight_records_who_owns_the_stack(tmp_path: Path) -> None:
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    (soak / "infra" / "compose").mkdir(parents=True)
+    (soak / "infra" / "compose" / ".env.prod").write_text("")
+    bin_dir = _docker_running(tmp_path, running=True)
+
+    result = _sourced_env(
+        "preflight",
+        {"SOAK_DIR": str(soak), "SOAK_REPO": str(soak), "SOAK_SATELLITE": "0"},
+        bin_dir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (soak / "stack.owner").read_text().strip() == "preexisting"
+    assert "make prod-down" in result.stdout
+
+
+def _sourced_env(
+    subcommand: str, env: dict[str, str], bin_dir: Path
+) -> subprocess.CompletedProcess:
+    """Run one subcommand with a chosen `PATH`, so a docker stub is honoured.
+
+    Args:
+        subcommand: The collector subcommand.
+        env: Environment for the run.
+        bin_dir: Directory holding the `docker` stub.
+
+    Returns:
+        The completed process.
+    """
+    return subprocess.run(
+        ["bash", str(SCRIPT), subcommand],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": f"{bin_dir}:/usr/bin:/bin",
+            "HOME": env["SOAK_DIR"],
+            **env,
+        },
+    )

@@ -135,9 +135,28 @@ From the repo root:
 APP_VERSION=0.4.0 make soak-up     # build this tree's backend, start on :8080, begin capture
 make soak-status                   # git sha, image, container, META, collector state
 make soak-stop                     # stop the capture (leaves the stack running)
+make soak-down                     # stop the capture AND the stack soak-up started
 
 make soak-up SOAK_SATELLITE=0      # the same, without the device
 ```
+
+### `soak-down` undoes `soak-up` — including the stack
+
+`soak-up` starts the whole prod stack: backend, frontend, Langfuse, Postgres, ClickHouse, MinIO and
+Redis. `soak-stop` deliberately only stops the *collectors*, so the stack keeps serving while you keep
+talking to the device. When you are finished, **`make soak-down`** stops both.
+
+It will not stop a stack it did not start. `soak-up` records who owns the stack in
+`$(SOAK_DIR)/stack.owner`:
+
+| Value | Meaning | `soak-down` does |
+|---|---|---|
+| `soak` | nothing was running, so this soak started it — or a previous soak left it running | stops it |
+| `preexisting` | it was already up and no soak claims it, so it is yours | leaves it, and prints `make prod-down` |
+
+`SOAK_FORCE_STACK_DOWN=1 make soak-down` stops it either way. **Volumes are never removed** — the prod
+Postgres and ClickHouse volumes hold the conversations the soak produced. The marker is ignored while
+nothing is running, so a stale `preexisting` cannot outlive the stack it described.
 
 `make soak-up` **recreates the backend container**, so it also ends any capture already following
 it. That is the right first step and the wrong mid-soak step — check `make soak-status` first.
@@ -172,7 +191,7 @@ never against the group alone.
 **What this is not.** The image is built from the working tree: not CI-tested, not Trivy-scanned, and
 it writes to the **prod volumes and the prod Postgres**. That is acceptable for a soak — the data is
 what the release would write anyway — but it must not be left running as *the* deployment. Finish with
-`APP_VERSION=<release> make prod-up` to return to a published image.
+`make soak-down` to stop it, and `APP_VERSION=<release> make prod-up` to return to a published image.
 
 ## 3. Freeze the window
 
