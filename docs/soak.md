@@ -220,9 +220,13 @@ more than **2 s**, because placing hours of events on a guess is worse than refu
 ## 5. Produce the report
 
 ```bash
+make soak-report                                  # the last run, both bounds from META
+make soak-report RUN=20261109T185944Z             # an earlier one
+make soak-report COMPARE=$HOME/wake-soak/20261109T185944Z/report.json   # diff against another
+
 cd backend
 uv run python scripts/soak_report.py --until 2026-11-11T17:45:00Z
-# -> prints the sections below, writes ~/wake-soak/report.json
+# -> prints the sections below, writes <run>/report.json
 
 uv run python scripts/soak_report.py --dir ~/wake-soak/20261112T170218Z --until … \
   --compare ~/wake-soak/20261109T185944Z/report.json
@@ -247,6 +251,12 @@ Two rows read `n/a`, and they mean different things:
 `--since` defaults to `capture_started_utc` in `META`, so a server-only capture does not need a
 hand-typed timestamp — retyping it is the `START` mistake in a new hat. It is required only when
 neither a serial log nor a `META` exists.
+
+**The window end is recorded, not retyped.** `make soak-stop` writes
+`capture_ended_utc` into `META`, and `soak_report.py` uses it as `--until` when the flag is
+omitted — so `make soak-report` after a soak takes no arguments. Pass `UNTIL=` to freeze an earlier
+moment of a running capture, or to reproduce a value quoted in a document (the 47-hour figures above
+use `UNTIL=2026-11-11T17:45:00Z`, not the capture's true end).
 
 **META is written once per run.** `make soak-meta` regenerates it only for a run that has none
 (`SOAK_META_FORCE=1` overrides), because rewriting it after the capture would drop the facts `start`
