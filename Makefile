@@ -180,15 +180,17 @@ soak-meta:
 # SINCE is only needed for a server-only capture that has no META; the tool
 # otherwise reads capture_started_utc from META rather than trusting a retyped
 # timestamp.
+# No arguments needed after a soak: the window end comes from the
+# capture_ended_utc that `make soak-stop` recorded. UNTIL, SINCE and COMPARE are
+# overrides — UNTIL to freeze an earlier moment of a running capture, COMPARE to
+# diff this report against another run's report.json.
 soak-report:
-	@test -n "$(UNTIL)" || \
-	  { echo "soak-report: set UNTIL=<ISO-8601 UTC>, e.g. make soak-report UNTIL=2026-11-11T17:45:00Z"; \
-	    exit 1; }
 	@test -d $(SOAK_RUN_DIR) || \
 	  { echo "soak-report: no run at $(SOAK_RUN_DIR) — see 'make soak-runs', or pass RUN=<name>"; \
 	    exit 1; }
-	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_RUN_DIR) --until "$(UNTIL)" \
-	  $(if $(SINCE),--since "$(SINCE)",) $(if $(COMPARE),--compare "$(COMPARE)",)
+	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_RUN_DIR) \
+	  $(if $(UNTIL),--until "$(UNTIL)",) $(if $(SINCE),--since "$(SINCE)",) \
+	  $(if $(COMPARE),--compare "$(COMPARE)",)
 
 # ============================ PROD ============================
 # Runs the CI-published GHCR images pinned to :$(APP_VERSION) — nothing is

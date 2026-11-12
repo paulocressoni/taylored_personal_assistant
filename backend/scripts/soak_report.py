@@ -86,6 +86,9 @@ PLAYOUT_BYTES_PER_S = 32000
 # says which one it means: nothing matched a log that exists, or there was no
 # device in this capture at all.
 NO_SATELLITE = "no satellite log"
+# The two flavours of n/a, kept apart because they mean different things and
+# only one of them is a fault.
+N_A_NO_LINES = "n/a (0 matching lines)"
 
 
 class LogError(RuntimeError):
@@ -288,7 +291,25 @@ class Section:
     def __init__(self, name: str) -> None:
         self.name = name
         self.rows: list[tuple[str, str, str]] = []
-        self.empty = False
+
+    @property
+    def empty(self) -> bool:
+        """True when the section wanted a number and could not find one.
+
+        Two rules, both learned from using the tool on a real capture:
+
+        - a gate that saw 9 rejections and 0 detections has **data**; one n/a
+          row must not condemn the section;
+        - a server-only soak has device rows that are absent *by design*, and
+          failing that report would blame the operator for their own choice.
+
+        So a section is empty only when every row is the "nothing matched"
+        flavour — the one that means a log was there and did not answer.
+        """
+        values = [value for _label, value, _denominator in self.rows]
+        if any(not value.startswith("n/a") for value in values):
+            return False
+        return any(value == N_A_NO_LINES for value in values)
 
     def add(self, label: str, value: Any, denominator: str = "") -> None:
         """Record one line of the report.
@@ -298,19 +319,15 @@ class Section:
             value: The number, or `None`/"" when it could not be computed.
             denominator: What the number is out of, printed after it.
         """
-        if value is None:
-            text = "n/a (0 matching lines)"
-            self.empty = True
-        else:
-            text = str(value)
+        text = N_A_NO_LINES if value is None else str(value)
         self.rows.append((label, text, denominator))
 
     def absent(self, label: str, reason: str, denominator: str = "") -> None:
         """Record a line that cannot exist in this capture, by design.
 
-        Deliberately does **not** set `empty`: a server-only soak has no device
-        rows because the operator chose that, and blaming it on missing data
-        would make the exit code lie.
+        Deliberately contributes no data, but does not make the section empty by
+        itself: a server-only soak has no device rows because the operator chose
+        that, and blaming it on missing data would make the exit code lie.
 
         Args:
             label: What is being reported.
@@ -762,6 +779,29 @@ def build_errors(backend: list[str], boot: datetime, until: datetime) -> Section
     return section
 
 
+def _span_hours(start: Any, end: Any) -> float | None:
+    """Measure a report window in hours.
+
+    Args:
+        start: The `window_start` ISO timestamp, or None.
+        end: The `until` ISO timestamp, or None.
+
+    Returns:
+        The span in hours, or None when either bound is missing or unparseable.
+    """
+    try:
+        return (
+            datetime.fromisoformat(end) - datetime.fromisoformat(start)
+        ).total_seconds() / 3600
+    except (TypeError, ValueError):
+        return None
+
+
+def _fmt_hours(hours: float | None) -> str:
+    """Render a span for the comparison header."""
+    return f"{hours:.1f} h" if hours is not None else "unknown span"
+
+
 def _jsonable(value: Any) -> Any:
     """Coerce a settings value into something `json.dumps` can write.
 
@@ -784,21 +824,26 @@ def _jsonable(value: Any) -> Any:
 _SECRET_HINTS = ("key", "secret", "token", "password")
 
 
-def _since_from_meta(directory: Path) -> datetime | None:
-    """Read the capture start the collector recorded, so nobody retypes it.
+def _meta_time(directory: Path, key: str) -> datetime | None:
+    """Read one UTC timestamp the collector recorded into `META`.
+
+    Both bounds of the window come from here: the collector knows when the
+    first byte arrived and when the last writer stopped, and a hand-typed bound
+    is the `START` mistake in a new hat.
 
     Args:
         directory: Where `META` lives.
+        key: The field name, e.g. `capture_started_utc`.
 
     Returns:
-        The `capture_started_utc` value, or None when META or the key is absent.
+        The timestamp, or None when META or the key is absent or unparseable.
     """
     path = directory / "META"
     if not path.exists():
         return None
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         name, _, value = line.partition("=")
-        if name.strip() != "capture_started_utc" or not value.strip():
+        if name.strip() != key or not value.strip():
             continue
         try:
             stamp = datetime.fromisoformat(value.strip())
@@ -1021,7 +1066,12 @@ def compare(
     cur_meta = current.get("meta", {})
     prev_meta = previous.get("meta", {})
     problems = []
-    for key in ("schema_version", "until", "window_start", "anchor_source"):
+    # The two windows are NOT part of the refusal set: two captures start at
+    # different boots and end at different `--until` bounds by construction, so
+    # refusing on them would make the one comparison this tool exists for —
+    # "did this change make voice worse than the last soak?" — impossible. The
+    # measurement *configuration* has to match; the exposure is reported below.
+    for key in ("schema_version", "anchor_source"):
         if cur_meta.get(key) != prev_meta.get(key):
             problems.append(f"{key}: {prev_meta.get(key)!r} -> {cur_meta.get(key)!r}")
     if not allow_firmware_change:
@@ -1053,7 +1103,17 @@ def compare(
         return flat
 
     now, before = flatten(current), flatten(previous)
+    prev_h = _span_hours(prev_meta.get("window_start"), prev_meta.get("until"))
+    cur_h = _span_hours(cur_meta.get("window_start"), cur_meta.get("until"))
     lines = ["Comparison (previous -> current)"]
+    lines.append(
+        f"window  : previous {_fmt_hours(prev_h)}  |  current {_fmt_hours(cur_h)}"
+    )
+    if prev_h and cur_h and abs(cur_h - prev_h) > 0.1 * max(prev_h, cur_h):
+        lines.append(
+            "note    : the captures cover different spans — the counts below are "
+            "totals, not rates"
+        )
     for key in sorted(set(now) | set(before)):
         old, new = before.get(key, "—"), now.get(key, "—")
         marker = "  " if old == new else "* "
@@ -1079,8 +1139,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--until",
-        required=True,
-        help="exclusive end of the window, ISO-8601 UTC (e.g. 2026-11-11T17:45:00Z)",
+        default=None,
+        help=(
+            "exclusive end of the window, ISO-8601 UTC (e.g. 2026-11-11T17:45:00Z); "
+            "defaults to capture_ended_utc in META"
+        ),
     )
     parser.add_argument(
         "--since",
@@ -1115,9 +1178,23 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING)
-    until = datetime.fromisoformat(args.until)
-    if until.tzinfo is None:
-        until = until.replace(tzinfo=UTC)
+    if args.until:
+        until = datetime.fromisoformat(args.until)
+        if until.tzinfo is None:
+            until = until.replace(tzinfo=UTC)
+    else:
+        until = _meta_time(args.dir, "capture_ended_utc")
+        if until is None:
+            print(
+                "soak_report: no --until given and no capture_ended_utc in META. "
+                "Pass --until <ISO-8601 UTC>; it is the exclusive end of the "
+                "window, so it should be the moment the capture stopped",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"until: {until.isoformat()} (from META capture_ended_utc)", file=sys.stderr
+        )
     since = None
     if args.since:
         since = datetime.fromisoformat(args.since)
@@ -1126,7 +1203,7 @@ def main() -> int:
     elif not (args.dir / "satellite-soak.log").exists():
         # Only worth resolving when it will be used: a serial log anchors the
         # window itself, and announcing a bound that is then ignored is noise.
-        since = _since_from_meta(args.dir)
+        since = _meta_time(args.dir, "capture_started_utc")
         if since is not None:
             print(
                 f"since: {since.isoformat()} (from META capture_started_utc)",

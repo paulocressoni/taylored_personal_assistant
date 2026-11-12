@@ -205,15 +205,18 @@ def test_main_exits_non_zero_when_a_section_has_no_lines(
     assert "no source lines" in capsys.readouterr().err
 
 
-def test_compare_refuses_reports_from_different_windows() -> None:
+def test_compare_refuses_reports_of_different_kinds(tmp_path: Path) -> None:
+    # Windows may differ (see the span test); what may not is the measurement
+    # being a different kind of measurement.
     _text, current = report(FIXTURE_DIR, UNTIL)
-    _later_text, later = report(FIXTURE_DIR, datetime(2026, 1, 3, tzinfo=UTC))
+    _copy_capture(tmp_path, satellite=None)
+    _text, server_only = report(tmp_path, UNTIL, since=BOOT)
 
-    code, message = compare(current, later)
+    code, message = compare(server_only, current)
 
     assert code == 1
     assert "NOT COMPARABLE" in message
-    assert "until" in message
+    assert "anchor_source" in message
 
 
 def test_compare_accepts_two_identical_reports() -> None:
@@ -467,3 +470,83 @@ def test_pointing_at_the_parent_directory_names_a_run(tmp_path: Path) -> None:
 
     with pytest.raises(LogError, match="run directories"):
         report(tmp_path, UNTIL)
+
+
+def test_a_section_with_some_numbers_is_not_reported_as_empty() -> None:
+    # A gate that saw 9 rejections and 0 detections has data. Treating any n/a
+    # row as "no source lines" mislabelled whole sections and failed captures
+    # that worked — the first real run of this tool hit it.
+    section = Section("Gate")
+    section.add("detections", None)
+    section.add("rejections", 9)
+
+    assert section.empty is False
+
+    empty_section = Section("Latency")
+    empty_section.add("stt_ms", None)
+    assert empty_section.empty is True
+
+
+def test_until_defaults_to_the_recorded_capture_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The collector records both bounds, so the report after a soak needs no
+    # arguments at all — and a hand-typed bound cannot drift.
+    _copy_capture(tmp_path, satellite="satellite-soak.log")
+    (tmp_path / "META").write_text(
+        "capture_started_utc=2026-01-01T00:00:00Z\n"
+        "capture_ended_utc=2026-01-02T00:00:00Z\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "sys.argv",
+        ["soak_report", "--dir", str(tmp_path), "--out", str(tmp_path / "report.json")],
+    )
+
+    import scripts.soak_report as module
+
+    assert module.main() == 0
+    written = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    assert written["meta"]["until"] == "2026-01-02T00:00:00+00:00"
+    assert "from META" in capsys.readouterr().err
+
+
+def test_until_is_required_when_meta_has_no_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _copy_capture(tmp_path, satellite="satellite-soak.log")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["soak_report", "--dir", str(tmp_path), "--out", str(tmp_path / "r.json")],
+    )
+
+    import scripts.soak_report as module
+
+    assert module.main() == 1
+    assert "--until" in capsys.readouterr().err
+
+
+def test_compare_accepts_two_soaks_with_different_windows() -> None:
+    # Two captures start at different boots and end at different --until bounds
+    # by construction. Refusing on that made the comparison this tool exists
+    # for — "is this soak worse than the last one?" — impossible.
+    _text, early = report(FIXTURE_DIR, datetime(2026, 1, 2, tzinfo=UTC))
+    _text, late = report(FIXTURE_DIR, datetime(2026, 1, 3, tzinfo=UTC))
+
+    code, message = compare(late, early)
+
+    assert code == 0
+    assert "window" in message
+    assert "different spans" in message
+
+
+def test_compare_still_refuses_a_different_threshold() -> None:
+    _text, current = report(FIXTURE_DIR, UNTIL)
+    _text, previous = report(FIXTURE_DIR, UNTIL)
+    current["meta"]["voice_settings"] = {"voice_wake_word_threshold": 0.5}
+    previous["meta"]["voice_settings"] = {"voice_wake_word_threshold": 0.3}
+
+    code, message = compare(current, previous)
+
+    assert code == 1
+    assert "voice_wake_word_threshold" in message

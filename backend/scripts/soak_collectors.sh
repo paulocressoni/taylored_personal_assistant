@@ -623,6 +623,17 @@ cmd_stop() {
         fi
         rm -f "$pgid_file" "$SOAK_RUN_DIR/$name.container"
     done < <(_streams)
+    if [ "$stopped" -eq 1 ]; then
+        # The exclusive end of the reporting window, recorded when the capture
+        # actually ends. Without it every report needs a hand-typed `--until`,
+        # and a hand-typed bound is the `START` mistake in a new hat.
+        {
+            echo "capture_ended_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            local line_count
+            line_count="$(cat "$SOAK_RUN_DIR"/*.log 2>/dev/null | wc -l)"
+            echo "capture_lines=$line_count"
+        } >> "$SOAK_RUN_DIR/META"
+    fi
     # Per-capture side files go too, so a later `make soak-meta` cannot fold in
     # a previous soak's device facts.
     rm -f "$PLAN_FILE" "$(_log_path satellite).exit"
