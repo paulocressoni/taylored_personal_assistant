@@ -899,7 +899,22 @@ def report(
     """
     satellite_path = directory / "satellite-soak.log"
     satellite = _read_lines(satellite_path) if satellite_path.exists() else None
-    backend = _read_lines(directory / "backend.log")
+    try:
+        backend = _read_lines(directory / "backend.log")
+    except LogError as exc:
+        # The soak directory holds one directory per run, so pointing at the
+        # parent is the easy mistake. Name the run the operator probably meant.
+        runs = (
+            sorted(child.name for child in directory.iterdir() if child.is_dir())
+            if directory.is_dir()
+            else []
+        )
+        if not runs:
+            raise
+        raise LogError(
+            f"{exc} — {directory} holds {len(runs)} run directories; "
+            f"point --dir at one, e.g. --dir {directory / runs[-1]}"
+        ) from None
 
     boots = count_boots(satellite or [])
     dropped = 0
@@ -1108,7 +1123,9 @@ def main() -> int:
         since = datetime.fromisoformat(args.since)
         if since.tzinfo is None:
             since = since.replace(tzinfo=UTC)
-    else:
+    elif not (args.dir / "satellite-soak.log").exists():
+        # Only worth resolving when it will be used: a serial log anchors the
+        # window itself, and announcing a bound that is then ignored is noise.
         since = _since_from_meta(args.dir)
         if since is not None:
             print(

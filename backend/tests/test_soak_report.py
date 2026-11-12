@@ -456,3 +456,14 @@ def _copy_capture(tmp_path: Path, *, satellite: str | None) -> None:
         (tmp_path / "satellite-soak.log").write_text(
             (FIXTURE_DIR / satellite).read_text(encoding="utf-8"), encoding="utf-8"
         )
+
+
+def test_pointing_at_the_parent_directory_names_a_run(tmp_path: Path) -> None:
+    # Soak captures now live one directory per run, so `--dir ~/wake-soak` is
+    # the easy mistake. The error has to say what to do instead of only that a
+    # file is missing.
+    (tmp_path / "20260101T000000Z").mkdir()
+    (tmp_path / "20260102T000000Z").mkdir()
+
+    with pytest.raises(LogError, match="run directories"):
+        report(tmp_path, UNTIL)
