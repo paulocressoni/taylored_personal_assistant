@@ -90,16 +90,23 @@ _new_run_id() {
 _resolve_run() {
     # Decide which run directory the command acts on.
     #
-    # Order: an explicit SOAK_RUN_ID, then the `current` pointer, then a fresh
-    # stamp. Only `preflight` is allowed to create one, so a read-only command
-    # never leaves an empty directory behind.
-    local create="${1:-no}" run_id
-    run_id="$SOAK_RUN_ID"
-    if [ -z "$run_id" ] && [ -f "$CURRENT_POINTER" ]; then
-        run_id="$(cat "$CURRENT_POINTER")"
-    fi
-    if [ -z "$run_id" ] && [ "$create" = create ]; then
+    #   new      a capture is about to start: honour a pinned SOAK_RUN_ID, else
+    #            mint a fresh stamp. It must NOT reuse the pointer, or starting
+    #            a second soak would write into the first one's directory.
+    #   current  act on the capture the pointer names (default): stop, status,
+    #            meta and the report all mean "the one that just ran".
+    #
+    # Only these two modes exist, so a read-only command never creates an empty
+    # directory and a new soak never inherits an old name.
+    local mode="${1:-current}" run_id
+    if [ -n "$SOAK_RUN_ID" ]; then
+        run_id="$SOAK_RUN_ID"
+    elif [ "$mode" = new ]; then
         run_id="$(_new_run_id)"
+    elif [ -f "$CURRENT_POINTER" ]; then
+        run_id="$(cat "$CURRENT_POINTER")"
+    else
+        run_id=""
     fi
     SOAK_RUN_ID="$run_id"
     if [ -n "$run_id" ]; then
@@ -325,7 +332,7 @@ cmd_plan() {
 }
 
 cmd_preflight() {
-    _resolve_run create
+    _resolve_run new
     # Checks only: nothing is built, nothing is started, no toolchain is loaded.
     # This runs BEFORE `docker compose build`, so a missing device costs a
     # second instead of a full image build.
@@ -430,6 +437,9 @@ _start_container() {
         echo "  $name: already collecting (pgid $(cat "$pgid_file"))"
         return 0
     fi
+    # Reached without a preflight (by hand, or after a stop): the run it
+    # resolved may already hold a capture, which `>>` would interleave.
+    _guard_append "$name" "$log" || return 1
     if ! docker inspect "$container" >/dev/null 2>&1; then
         echo "  $name: no container named $container — is the stack up?" >&2
         return 1
@@ -461,6 +471,7 @@ _start_satellite() {
         echo "  satellite: already collecting (pgid $(cat "$pgid_file"))"
         return 0
     fi
+    _guard_append satellite "$log" || return 1
     rm -f "$log.exit"
     local started
     started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -519,7 +530,7 @@ _fail_start_satellite() {
 }
 
 cmd_start() {
-    _resolve_run create
+    _resolve_run current
     mkdir -p "$SOAK_RUN_DIR"
     # `start` is also reachable by hand, so it publishes the pointer too.
     printf '%s\n' "$SOAK_RUN_ID" > "$CURRENT_POINTER"

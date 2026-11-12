@@ -432,3 +432,38 @@ def test_runs_survives_a_meta_written_by_an_older_build(tmp_path: Path) -> None:
     assert "\r" not in line and "\x1b" not in line
     assert "<- current" in line
     assert line.index("20260101T000000Z") == 2
+
+
+def test_a_new_capture_never_reuses_the_previous_run_name(tmp_path: Path) -> None:
+    # `current` names the run you want to STOP or REPORT, not the one to write
+    # into. Reusing it meant the second soak of the day was refused with
+    # "already has bytes" by its own predecessor's files.
+    _fake_device(tmp_path, "usb-Espressif_X-if00", "ttyACM0")
+    soak = tmp_path / "soak"
+    soak.mkdir()
+    (soak / "20260101T000000Z").mkdir()
+    (soak / "20260101T000000Z" / "backend.log").write_text("old capture\n")
+    (soak / "current").write_text("20260101T000000Z\n")
+    # preflight also insists on the prod env file, so give it one.
+    (soak / "infra" / "compose").mkdir(parents=True)
+    (soak / "infra" / "compose" / ".env.prod").write_text("")
+    env = {"SOAK_SERIAL_DIR": str(tmp_path / "by-id"), "SOAK_SATELLITE": "0"}
+
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "preflight"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={
+            "PATH": "/usr/bin:/bin:/usr/local/bin",
+            "HOME": str(soak),
+            "SOAK_DIR": str(soak),
+            "SOAK_REPO": str(soak),
+            **env,
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    pointer = (soak / "current").read_text(encoding="utf-8").strip()
+    assert pointer != "20260101T000000Z"
+    assert (soak / "20260101T000000Z" / "backend.log").read_text() == "old capture\n"
