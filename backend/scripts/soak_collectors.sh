@@ -178,7 +178,7 @@ _only_script_noise() {
     # ~110 lines and not one of them is a firmware line, so a "no `I (`" test
     # would delete exactly the output the operator needs.
     [ -f "$1" ] || return 1
-    if grep -qvE '^(Script started on|Script done on)?$' "$1"; then
+    if grep -qvE '^(Script (started|done) on.*)?$' "$1"; then
         return 1
     fi
     return 0
@@ -563,15 +563,19 @@ cmd_meta() {
     } >> "$SOAK_DIR/META"
 }
 
-case "${1:-}" in
-    plan) cmd_plan ;;
-    preflight) cmd_preflight ;;
-    start) cmd_start ;;
-    stop) cmd_stop ;;
-    status) cmd_status ;;
-    meta) shift; cmd_meta "${1:-write}" "${2:-}" ;;
-    *)
-        echo "usage: $(basename "$0") {plan|preflight|start|stop|status|meta [append]}" >&2
-        exit 2
-        ;;
-esac
+# Dispatched only when executed, so the helpers above can be sourced by a test
+# without a subcommand.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    case "${1:-}" in
+        plan) cmd_plan ;;
+        preflight) cmd_preflight ;;
+        start) cmd_start ;;
+        stop) cmd_stop ;;
+        status) cmd_status ;;
+        meta) shift; cmd_meta "${1:-write}" "${2:-}" ;;
+        *)
+            echo "usage: $(basename "$0") {plan|preflight|start|stop|status|meta [append]}" >&2
+            exit 2
+            ;;
+    esac
+fi

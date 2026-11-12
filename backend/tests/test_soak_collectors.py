@@ -254,3 +254,54 @@ def test_start_and_stop_manage_the_group_and_report_the_skip(tmp_path: Path) -> 
     assert "backend: stopped" in stopped.stdout
     assert "frontend: stopped" in stopped.stdout
     assert not (soak / "backend.pgid").exists()
+
+
+def _sourced(function: str, *args: str) -> subprocess.CompletedProcess:
+    """Call one of the script's helpers by sourcing it.
+
+    The script dispatches its subcommands only when executed, so a test can
+    reach the predicates directly instead of guessing at them through `plan`.
+
+    Args:
+        function: Helper name.
+        args: Its arguments.
+
+    Returns:
+        The completed process.
+    """
+    return subprocess.run(
+        ["bash", "-c", f'. "{SCRIPT}" && {function} "$@"', function, *args],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_a_failed_start_is_deleted_only_when_nothing_was_captured(
+    tmp_path: Path,
+) -> None:
+    # `script` writes its header before the child runs, so a start that never
+    # produced firmware output leaves a small file. Deleting it lets a retry
+    # proceed without a manual rm — but a failed cmake reconfigure prints ~110
+    # lines and not one of them is a firmware line, so a "no `I (`" test would
+    # delete exactly the output an operator needs.
+    header_only = tmp_path / "header-only.log"
+    header_only.write_text(
+        "Script started on 2026-01-01 00:00:00+00:00\n\n"
+        "Script done on 2026-01-01 00:00:01+00:00\n",
+        encoding="utf-8",
+    )
+    failed_cmake = tmp_path / "failed-cmake.log"
+    failed_cmake.write_text(
+        "Script started on 2026-01-01 00:00:00+00:00\n"
+        "Running cmake in directory /repo/firmware/satellite/build\n"
+        "CMake Error: could not find toolchain\n"
+        "Script done on 2026-01-01 00:00:01+00:00\n",
+        encoding="utf-8",
+    )
+
+    noise = _sourced("_only_script_noise", str(header_only))
+    kept = _sourced("_only_script_noise", str(failed_cmake))
+
+    assert noise.returncode == 0
+    assert kept.returncode == 1
