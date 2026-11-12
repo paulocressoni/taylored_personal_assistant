@@ -824,6 +824,44 @@ def _jsonable(value: Any) -> Any:
 _SECRET_HINTS = ("key", "secret", "token", "password")
 
 
+_ISO_FULL = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)Z")
+
+
+def latest_event(directory: Path) -> datetime | None:
+    """Find the last wall-clock moment the capture recorded.
+
+    The fallback for a run with no `capture_ended_utc`: one stopped by an older
+    build, or whose collectors were killed outright. Nothing exists after this
+    instant, so it is the tightest correct end for the window — and it is
+    observed, unlike a hand-typed bound.
+
+    Args:
+        directory: Where the logs live.
+
+    Returns:
+        One second past the newest timestamp in the container logs, or None when
+        they hold no timestamp at all. The extra second keeps the final line
+        inside the exclusive bound, because lines carry microseconds while the
+        bound is printed at second resolution.
+    """
+    latest: datetime | None = None
+    for name in ("backend.log", "frontend.log"):
+        path = directory / name
+        if not path.exists():
+            continue
+        with path.open("r", errors="replace") as handle:
+            for line in handle:
+                match = _ISO_FULL.match(line)
+                if match is None:
+                    continue
+                stamp = datetime.fromisoformat(match.group(1) + "+00:00")
+                if latest is None or stamp > latest:
+                    latest = stamp
+    if latest is None:
+        return None
+    return latest.replace(microsecond=0) + timedelta(seconds=1)
+
+
 def _meta_time(directory: Path, key: str) -> datetime | None:
     """Read one UTC timestamp the collector recorded into `META`.
 
@@ -1184,17 +1222,26 @@ def main() -> int:
             until = until.replace(tzinfo=UTC)
     else:
         until = _meta_time(args.dir, "capture_ended_utc")
-        if until is None:
+        if until is not None:
             print(
-                "soak_report: no --until given and no capture_ended_utc in META. "
-                "Pass --until <ISO-8601 UTC>; it is the exclusive end of the "
-                "window, so it should be the moment the capture stopped",
+                f"until: {until.isoformat()} (from META capture_ended_utc)",
                 file=sys.stderr,
             )
-            return 1
-        print(
-            f"until: {until.isoformat()} (from META capture_ended_utc)", file=sys.stderr
-        )
+        else:
+            until = latest_event(args.dir)
+            if until is None:
+                print(
+                    "soak_report: no --until given, no capture_ended_utc in META "
+                    "and no timestamped line in the logs. Pass --until "
+                    "<ISO-8601 UTC>; it is the exclusive end of the window, so it "
+                    "should be the moment the capture stopped",
+                    file=sys.stderr,
+                )
+                return 1
+            print(
+                f"until: {until.isoformat()} (from the last line in the capture)",
+                file=sys.stderr,
+            )
     since = None
     if args.since:
         since = datetime.fromisoformat(args.since)

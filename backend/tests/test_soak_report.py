@@ -24,6 +24,7 @@ from scripts.soak_report import (
     build_gate,
     compare,
     derive_anchor,
+    latest_event,
     percentile,
     report,
 )
@@ -511,10 +512,11 @@ def test_until_defaults_to_the_recorded_capture_end(
     assert "from META" in capsys.readouterr().err
 
 
-def test_until_is_required_when_meta_has_no_end(
+def test_until_is_required_when_nothing_records_an_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    _copy_capture(tmp_path, satellite="satellite-soak.log")
+    # No META and no timestamped line anywhere: there is nothing to derive the
+    # window from, so the tool asks rather than inventing one.
     monkeypatch.setattr(
         "sys.argv",
         ["soak_report", "--dir", str(tmp_path), "--out", str(tmp_path / "r.json")],
@@ -550,3 +552,38 @@ def test_compare_still_refuses_a_different_threshold() -> None:
 
     assert code == 1
     assert "voice_wake_word_threshold" in message
+
+
+def test_until_falls_back_to_the_last_recorded_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A capture stopped by an older build has no capture_ended_utc. Nothing
+    # exists after the last line, so deriving the bound from it is observed, not
+    # guessed — and it beats making the operator retype a timestamp.
+    _copy_capture(tmp_path, satellite="satellite-soak.log")
+    (tmp_path / "META").write_text("capture_started_utc=2026-01-01T00:00:00Z\n")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["soak_report", "--dir", str(tmp_path), "--out", str(tmp_path / "report.json")],
+    )
+
+    import scripts.soak_report as module
+
+    assert module.main() == 0
+    err = capsys.readouterr().err
+    assert "from the last line in the capture" in err
+    written = json.loads((tmp_path / "report.json").read_text(encoding="utf-8"))
+    # The fixture's newest line is at 00:00:31, and the bound is exclusive, so it
+    # has to sit one second later or the final line would fall outside.
+    assert written["meta"]["until"] == "2026-01-01T00:00:32+00:00"
+
+
+def test_latest_event_ignores_lines_without_a_timestamp(tmp_path: Path) -> None:
+    (tmp_path / "backend.log").write_text(
+        "no timestamp here\n"
+        '2026-01-01T00:00:10.900000001Z {"message": "a"}\n'
+        '2026-01-01T00:00:12.500000001Z {"message": "b"}\n',
+        encoding="utf-8",
+    )
+
+    assert latest_event(tmp_path) == datetime(2026, 1, 1, 0, 0, 13, tzinfo=UTC)

@@ -254,7 +254,9 @@ neither a serial log nor a `META` exists.
 
 **The window end is recorded, not retyped.** `make soak-stop` writes
 `capture_ended_utc` into `META`, and `soak_report.py` uses it as `--until` when the flag is
-omitted — so `make soak-report` after a soak takes no arguments. Pass `UNTIL=` to freeze an earlier
+omitted — so `make soak-report` after a soak takes no arguments. A capture with no such record (stopped
+by an older build, or killed outright) falls back to **one second past the last timestamped line**,
+which is observed rather than guessed and is printed as such. Pass `UNTIL=` to freeze an earlier
 moment of a running capture, or to reproduce a value quoted in a document (the 47-hour figures above
 use `UNTIL=2026-11-11T17:45:00Z`, not the capture's true end).
 
