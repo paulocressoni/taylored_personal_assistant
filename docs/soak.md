@@ -11,17 +11,53 @@ wake-word milestone are in [`voice.md`](voice.md#what-was-measured-and-what-was-
 
 ## 1. Capture
 
-Three files in one directory (default `~/wake-soak/`):
+Three files in one directory (default `~/wake-soak/`), all three started by `make soak-up`:
 
 | File | Produced by |
 |---|---|
-| `satellite-soak.log` | `screen -L -Logfile … -S soak idf.py -p /dev/ttyACM0 monitor` — see [`satellite.md`](satellite.md#capturing-a-log-you-can-keep) |
+| `satellite-soak.log` | the serial console: `idf.py monitor` inside a pty, attached to the board on this machine |
 | `backend.log` | `docker logs -t -f <backend container>`, with `api_key=` redacted |
 | `frontend.log` | the same for the nginx container |
 
+The satellite is the one stream that can be left out: `make soak-up SOAK_SATELLITE=0` starts only the
+two container collectors. The report then needs a `--since` — or a `META` carrying
+`capture_started_utc`, which `make soak-up` writes — and prints `n/a (no satellite log)` where the
+device numbers would be. Leaving it out costs every device metric and the clock anchor, so the
+default is to include it.
+
+### The satellite stream
+
+`backend/scripts/soak_collectors.sh` starts all three and records a process group for each, so
+`make soak-stop` can end them. The satellite cannot use the container recipe, and the reasons were
+measured rather than assumed:
+
+- **`screen` cannot start this.** The recipe in
+  [`satellite.md`](satellite.md#capturing-a-log-you-can-keep) is the right way for a human to *watch*
+  the device, but `screen` refuses to run without a TTY (`Must be connected to a terminal.`). Behind
+  `>/dev/null 2>&1` that failure is invisible and leaves a zero-byte capture.
+- **`script` provides the pty** the monitor needs, from any context. Three of its defaults then
+  matter: without `-f` it writes the typescript only at exit; with stdin at `/dev/null` the child sees
+  EOF and exits at once (so a FIFO feeder holds stdin open); without `-a` it truncates an existing
+  file.
+- **The capture opens with `Script started on …` and closes with `Script done on …`** — `script`'s own
+  bookkeeping, in English because the collector exports `LC_ALL=C`. The report ignores both lines.
+- **Attaching resets the board.** `idf.py monitor` pulls DTR/RTS, so the satellite reboots when the
+  collector starts. That is desirable at the beginning of a soak: the boot banner it prints is where
+  the firmware version comes from.
+- **The port is discovered, not assumed.** The collector uses `${SOAK_SATELLITE_PORT}` if set,
+  otherwise the single `/dev/serial/by-id/*` device (stable across renumbering, and it carries the
+  MAC). Two devices are refused rather than guessed, because a soak attributed to the wrong board is
+  worse than no soak.
+- **A capture is never appended by accident.** If any log already has bytes, `soak-up` refuses before
+  building anything; `SOAK_APPEND=1` is the deliberate override, and it passes `-a` to `script` so the
+  satellite log appends too.
+- **`soak-up` waits for proof**: a boot banner and a `ws: connected` within `SOAK_SATELLITE_S`
+  (default 120 s — attach runs cmake, then the chip boots, then Wi-Fi associates). If either is
+  missing it prints the tail of the log and `.err`, and fails, instead of leaving a capture that looks
+  healthy and is empty.
+
 The backend and frontend collectors need two properties that a naive `nohup … &` does not give them.
-`make soak-up` (next section) starts them through `backend/scripts/soak_collectors.sh`; to do it by
-hand, the shape is:
+To do those two by hand, the shape is:
 
 ```bash
 R='s/\(api_key=\)[^ &"]*/\1REDACTED/g'
@@ -64,6 +100,8 @@ From the repo root:
 APP_VERSION=0.4.0 make soak-up     # build this tree's backend, start on :8080, begin capture
 make soak-status                   # git sha, image, container, META, collector state
 make soak-stop                     # stop the capture (leaves the stack running)
+
+make soak-up SOAK_SATELLITE=0      # the same, without the device
 ```
 
 `make soak-up` **recreates the backend container**, so it also ends any capture already following
@@ -71,20 +109,30 @@ it. That is the right first step and the wrong mid-soak step — check `make soa
 
 What `make soak-up` does, in order:
 
-1. **Refuses if the dev stack is up.** Both stacks publish `langfuse-web` on `:3000`; the frontends
-   use `5173` and `8080` and do not collide.
+1. **Preflights before building anything** (`make soak-preflight`). It fails in about a second,
+   instead of after a three-minute image build, when the dev stack is up, `.env.prod` is missing, a
+   log already has bytes, a collector is still running, or the board is absent, unreadable or held by
+   a leftover monitor. A `.env.prod`-shaped remedy is printed for each. The resolved device facts go
+   to `~/wake-soak/plan`, which `META` then folds in.
 2. **Builds only the backend** from the working tree, tagged `taylored-assistant-backend:soak-local`.
    The frontend stays the released GHCR image — it is nginx, it owns `:8080`, and `/ws` is already
    proxied.
 3. **Starts the prod stack** with the soak overlay (`--no-build`, so nothing else is compiled).
 4. **Writes `META`**: git sha and dirty flag, app version, image and container ids, and the
-   **effective** `VOICE_*` settings read out of the running container rather than from a file.
+   **effective** `VOICE_*` settings read out of the running container rather than from a file. It has
+   to run *after* the stack is up, or it would describe the container it is about to replace.
 5. **Starts the collectors** through `backend/scripts/soak_collectors.sh`, which records a process
    *group* — not `$!` — so `make soak-stop` can actually end the `docker logs -f | sed` pipeline, and
-   which refuses to lose a capture silently when a container is recreated.
+   which refuses to lose a capture silently when a container is recreated. It then waits for the
+   satellite's boot banner and first `ws: connected`, and appends `capture_started_utc`,
+   `satellite_firmware` and `satellite_idf` to `META`.
 
 `make soak-status` reports `collecting UNMANAGED` when the capture was started by hand; that is the
-honest state, because `soak-stop` cannot kill a group it did not create.
+honest state, because `soak-stop` cannot kill a group it did not create. For the satellite it also
+distinguishes `collecting (log 3 s ago)`, `SILENT (log idle 412 s)`, `monitor exited (rc=…)`,
+`capture process gone` and `DEVICE GONE` — a group that survives its writer is exactly how a dead
+capture comes to look alive, so liveness is checked against the `script` process and the log's age,
+never against the group alone.
 
 **What this is not.** The image is built from the working tree: not CI-tested, not Trivy-scanned, and
 it writes to the **prod volumes and the prod Postgres**. That is acceptable for a soak — the data is
@@ -123,12 +171,33 @@ uv run python scripts/soak_report.py --until 2026-11-11T17:45:00Z
 # -> prints the sections below, writes ~/wake-soak/report.json
 
 uv run python scripts/soak_report.py --until … --compare ~/wake-soak/soak-01/report.json
-# -> refuses if the two captures are not comparable (schema, window, threshold)
+# -> refuses if the two captures are not comparable (schema, window, threshold, firmware)
+
+uv run python scripts/soak_report.py --until … --since 2026-11-11T09:00:00Z
+# -> a server-only capture: no satellite-soak.log to anchor to
 ```
 
-Exit code is **1** when any section found no source lines or the anchor is unusable, so a silent zero
-cannot pass a check. `report.json` carries its own `meta` — schema version, window, anchor spread,
-git sha, app version and every non-secret `voice_*` setting — which is what makes `--compare` honest.
+Exit code is **1** when a section found no source lines or the anchor is unusable, so a silent zero
+cannot pass a check. `report.json` carries its own `meta` — schema version, window, anchor source,
+anchor spread, git sha, app version, firmware and boot count, and every non-secret `voice_*` setting —
+which is what makes `--compare` honest.
+
+Two rows read `n/a`, and they mean different things:
+
+| Text | Meaning |
+|---|---|
+| `n/a (0 matching lines)` | the log was there and nothing matched. Counts as a failure: the exit code becomes 1 |
+| `n/a (no satellite log)` | this capture had no device by design. Does **not** fail the run |
+
+`--since` defaults to `capture_started_utc` in `META`, so a server-only capture does not need a
+hand-typed timestamp — retyping it is the `START` mistake in a new hat. It is required only when
+neither a serial log nor a `META` exists.
+
+**A rebooted device is refused.** `derive_anchor` pairs the newest connect/accept events, and a boot
+resets the uptime clock, so a second boot can silently move the window start to the reboot and report
+nothing about the hours before it. The tool therefore refuses a capture with more than one
+`app_init: Project name:` line; `--allow-reboot` reports the segment after the last boot and says how
+much it ignored.
 
 ## 6. Metric dictionary
 
@@ -155,6 +224,7 @@ different p50 on the same data.
 | Playback | `ring full (truncated)` | `ring full` | replies | the answer was longer than the ring: deterministic truncation |
 | Playback | `underruns` | `playout ran dry` | replies | audible gaps and clicks |
 | Device | `LED transitions` | `leds: state -> N` | — | 1 IDLE, 2 LISTENING, 3 THINKING, 4 SPEAKING |
+| Device | `boots` | `app_init: Project name:` | — | more than one means the uptime clock restarted; the anchor refuses |
 | Device | `transcript frames` | `heard:` | — | what the device actually received |
 | Server errors | `ASGI exceptions` | `Exception in ASGI application` | closed sessions | must be one per vanished client at most, never more |
 
@@ -163,8 +233,9 @@ different p50 on the same data.
 1. One variable per soak. Two changes at once and the delta is uninterpretable.
 2. Keep `META` with the logs, and keep `report.json` with the capture it describes.
 3. `--compare` prints `*` next to every metric that moved. It refuses outright when the schema,
-   the window or the wake-word threshold/window differ — a "delta" across different settings is not a
-   delta.
+   the window, the anchor source, the firmware or the wake-word threshold/window differ — a "delta"
+   across different settings is not a delta. A firmware bump is a bigger variable than any of them,
+   so it is refused last: `--allow-firmware-change` says you meant it.
 
 ## 8. Soak #2 wants labelled utterances
 

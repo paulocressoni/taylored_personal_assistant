@@ -331,6 +331,13 @@ Two habits pay for themselves immediately:
 
 ### Capturing a log you can keep
 
+**For a soak, do not do this by hand.** `make soak-up` attaches the monitor itself, records it as a
+managed collector, and refuses to start if the board is missing, unreadable or already held — see
+[`soak.md`](soak.md#the-satellite-stream). Attaching also **resets the board**, which is deliberate at
+the start of a soak: the boot banner it prints is where the report gets the firmware version.
+
+The recipe below is for watching the device yourself, and for a capture outside a soak.
+
 `idf.py monitor` shows one screenful and forgets the rest. For anything longer than a minute, run
 it inside `screen` and tee it to a file:
 
@@ -528,10 +535,11 @@ per-call-site, so a handler that forgets `s_muted` paints green over a muted dev
 
 ## Measuring a soak
 
-A single session proves the contract; a 47-hour one proves the product. The capture procedure, the
-device-clock anchor (the serial log has no wall clock) and the metric dictionary are in
-[`soak.md`](soak.md); `backend/scripts/soak_report.py` turns the three logs into one comparable
-report.
+A single session proves the contract; a 47-hour one proves the product. `make soak-up` starts all
+three collectors — the two container logs and the board's serial console — so there is nothing to
+start by hand; the capture procedure, the device-clock anchor (the serial log has no wall clock) and
+the metric dictionary are in [`soak.md`](soak.md), and `backend/scripts/soak_report.py` turns the three
+logs into one comparable report.
 
 ### Reconnecting
 

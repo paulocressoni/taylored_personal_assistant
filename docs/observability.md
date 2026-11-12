@@ -328,6 +328,26 @@ used to be visible only as `Exception in ASGI application` (one per session, 491
 soak), which made the log unreadable and every engine look broken. `_close_quietly` now treats it as
 a normal end and this line names it.
 
+### The satellite's serial console
+
+The **device** is the third source, and it is not a log file this service writes: it is the board's
+serial console, captured by `make soak-up` (see [soak.md](soak.md#the-satellite-stream)). The lines a
+soak report reads:
+
+| Line | Where from | Read for |
+|---|---|---|
+| `app_init: Project name:` | the ESP-IDF boot banner | how many times the board booted — more than one invalidates the clock anchor |
+| `app_init: App version:` / `ESP-IDF:` | the same banner | the firmware that actually ran, recorded in `META` and in `report.json` |
+| `ws: connected` | the firmware | the device half of the clock anchor, paired with the server's `[accepted]` |
+| `session ended after N s (…)` | the firmware | device-side socket lifetimes |
+| `leds: state -> N` | the firmware | 1 IDLE, 2 LISTENING, 3 THINKING, 4 SPEAKING |
+| `heard: …` | the firmware | what the device actually received; may be non-ASCII |
+| `reply audio: N bytes`, `ring full`, `playout ran dry` | the firmware | playback size, truncation, underruns |
+
+The capture also carries `script`'s own `Script started on …` / `Script done on …` bookkeeping lines,
+and `idf_monitor` replays the cmake output of a reconfigure at the head. The report ignores all of
+them.
+
 ## Upgrading
 
 Two versions move independently: the **app** (the GHCR image, pinned by
