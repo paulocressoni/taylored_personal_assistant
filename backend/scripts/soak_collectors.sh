@@ -519,6 +519,7 @@ _start_satellite() {
     started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Values travel through the environment: splicing "$port" into a
     # single-quoted body is one quoting change away from a broken command.
+    # shellcheck disable=SC2016 # the body must expand in the CHILD, not here
     SOAK_REPO="$SOAK_REPO" SOAK_PORT="$port" SOAK_LOG="$log" SOAK_APPEND="$SOAK_APPEND" \
     LC_ALL=C PYTHONIOENCODING=utf-8 \
     setsid bash -c '
@@ -699,7 +700,7 @@ cmd_runs() {
     if [ -f "$CURRENT_POINTER" ]; then
         current="$(cat "$CURRENT_POINTER")"
     fi
-    if ! ls -d "$SOAK_DIR"/*/ >/dev/null 2>&1; then
+    if ! find "$SOAK_DIR" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then
         echo "no runs in $SOAK_DIR"
         return 0
     fi
@@ -716,7 +717,7 @@ cmd_runs() {
         printf '  %-22s %8s  %-22s%s\n' \
             "$name" "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$firmware" "$marker" \
             | sed -e 's/[[:space:]]*$//'
-    done < <(ls -d "$SOAK_DIR"/*/ 2>/dev/null | sort -r)
+    done < <(find "$SOAK_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r)
 }
 
 cmd_meta() {
