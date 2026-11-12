@@ -36,7 +36,12 @@ make soak-report UNTIL=… RUN=20261109T185944Z   # report an older one
 make soak-report UNTIL=… COMPARE=~/wake-soak/20261109T185944Z/report.json
 ```
 
-`RUN` defaults to `$(cat ~/wake-soak/current)`, so the ordinary case needs no flag. Two names to know:
+`RUN` defaults to `$(cat ~/wake-soak/current)`, so the ordinary case needs no flag. A **new capture
+always gets a new name**: `soak-up` mints a timestamp, and the pointer only tells `stop`, `status`,
+`meta` and `report` which capture you mean. Pin `RUN=<name>` only to resume writing into an existing
+directory, which is also the one case where the "already has bytes" refusal applies.
+
+Two names to know:
 
 - the **directory** is `<UTC start>`, `date -u +%Y%m%dT%H%M%SZ`;
 - **`capture_started_utc`** in `META` is the exact moment the first byte arrived, which is what a
