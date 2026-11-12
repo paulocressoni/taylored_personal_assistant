@@ -385,3 +385,50 @@ def test_runs_lists_every_capture_newest_first(tmp_path: Path) -> None:
     assert "v0.4.1" in lines[0]
     assert "<- current" in lines[0]
     assert "v0.4.0-25-g9adf84f" in lines[1]
+
+
+ESC = bytes([27])
+
+
+def _serial_line(text: str) -> bytes:
+    """Render one serial line the way `idf_monitor` writes it: colour + CRLF."""
+    return ESC + b"[0;32m" + text.encode() + ESC + b"[0m\r\r\n"
+
+
+def test_a_value_read_from_the_serial_log_is_plain_text(tmp_path: Path) -> None:
+    # `idf_monitor` colourises every line and ends it with CRLF, so a naive sed
+    # capture drags an ANSI reset and carriage returns into META. The escape is
+    # invisible; the carriage return rewinds the terminal, which is how a run
+    # listing came to print `<- current` over the run's own name — and a value
+    # carrying an escape compares unequal to the same firmware read cleanly.
+    log = tmp_path / "satellite-soak.log"
+    log.write_bytes(
+        _serial_line("I (630) app_init: App version:      v0.4.0-25-g9adf84f")
+        + _serial_line("I (630) app_init: ESP-IDF:          v5.4.4")
+    )
+
+    firmware = _sourced("_log_value", str(log), "app_init: App version:")
+    idf = _sourced("_log_value", str(log), "app_init: ESP-IDF:")
+
+    assert firmware.stdout == "v0.4.0-25-g9adf84f\n"
+    assert idf.stdout == "v5.4.4\n"
+
+
+def test_runs_survives_a_meta_written_by_an_older_build(tmp_path: Path) -> None:
+    soak = tmp_path / "soak"
+    run = soak / "20260101T000000Z"
+    run.mkdir(parents=True)
+    # A META written before the escape-stripping fix.
+    (run / "META").write_bytes(
+        b"satellite_firmware=v0.4.0-25-g9adf84f" + ESC + b"[0m\r\r\n"
+    )
+    (soak / "current").write_text("20260101T000000Z\n")
+
+    result = _run(["runs"], {}, soak)
+
+    assert result.returncode == 0, result.stderr
+    line = next(iter(result.stdout.splitlines()[1:]))
+    assert "v0.4.0-25-g9adf84f" in line
+    assert "\r" not in line and "\x1b" not in line
+    assert "<- current" in line
+    assert line.index("20260101T000000Z") == 2

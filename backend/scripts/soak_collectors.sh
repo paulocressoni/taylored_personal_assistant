@@ -220,6 +220,25 @@ _running_pgid() {
     printf '%s\n' "$pgid"
 }
 
+_log_value() {
+    # Read the last value of a boot-banner field from the serial log.
+    #
+    # The log is not plain text: `idf_monitor` colourises each line and ends it
+    # with CRLF, so a naive `sed` capture drags an ANSI reset and two carriage
+    # returns into META. Those are invisible here and lethal later — a carriage
+    # return rewinds the terminal (which is how `<- current` came to overwrite
+    # the run name) and a value with a trailing escape compares unequal to the
+    # same firmware read from a clean file.
+    local log="$1" pattern="$2"
+    # Cut at the first control character rather than deleting control
+    # characters one by one: deleting the ESC alone would leave the bracket
+    # sequence behind as literal text.
+    sed -n "s/.*$pattern *//p" "$log" 2>/dev/null \
+        | tail -1 \
+        | sed -e 's/[[:cntrl:]].*//' \
+        | sed -e 's/[[:space:]]*$//'
+}
+
 _log_age_s() {
     local file="$1"
     [ -f "$file" ] || return 1
@@ -620,12 +639,14 @@ cmd_runs() {
         name="$(basename "$dir")"
         firmware="no firmware recorded"
         if [ -f "$dir/META" ]; then
-            firmware="$(sed -n 's/^satellite_firmware=//p' "$dir/META" | tail -1)"
+            firmware="$(sed -n 's/^satellite_firmware=//p' "$dir/META" | tail -1 | sed -e 's/[[:cntrl:]].*//')"
             if [ -z "$firmware" ]; then firmware="no satellite"; fi
         fi
         local marker=""
         if [ "$name" = "$current" ]; then marker="  <- current"; fi
-        printf '  %-22s %8s  %-22s%s\n' "$name" "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$firmware" "$marker"
+        printf '  %-22s %8s  %-22s%s\n' \
+            "$name" "$(du -sh "$dir" 2>/dev/null | cut -f1)" "$firmware" "$marker" \
+            | sed -e 's/[[:space:]]*$//'
     done < <(ls -d "$SOAK_DIR"/*/ 2>/dev/null | sort -r)
 }
 
@@ -682,11 +703,10 @@ cmd_meta() {
     local log
     log="$(_log_path satellite)"
     {
-        echo "soak_run=$SOAK_RUN_ID"
         echo "capture_started_utc=${started:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
         local firmware idf
-        firmware="$(sed -n 's/.*app_init: App version: *//p' "$log" 2>/dev/null | tail -1)"
-        idf="$(sed -n 's/.*app_init: ESP-IDF: *//p' "$log" 2>/dev/null | tail -1)"
+        firmware="$(_log_value "$log" 'app_init: App version:')"
+        idf="$(_log_value "$log" 'app_init: ESP-IDF:')"
         if [ -n "$firmware" ]; then echo "satellite_firmware=$firmware"; fi
         if [ -n "$idf" ]; then echo "satellite_idf=$idf"; fi
     } >> "$SOAK_RUN_DIR/META"
