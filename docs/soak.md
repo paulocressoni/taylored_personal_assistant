@@ -9,6 +9,109 @@ This page is the procedure and the dictionary. The tool is
 [`backend/scripts/soak_report.py`](../backend/scripts/soak_report.py); the numbers it produces for the
 wake-word milestone are in [`voice.md`](voice.md#what-was-measured-and-what-was-not).
 
+## Start to finish
+
+One soak, from an idle machine to a report. Every command below is copy-pasteable; the outputs are
+from a real run on this deployment.
+
+**1. Attach the board and check it is visible.** The collector finds the device by its stable
+`by-id` name, not by `ttyACM0`, which renumbers.
+
+```bash
+ls -l /dev/serial/by-id/
+# usb-Espressif_USB_JTAG_serial_debug_unit_68:EE:8F:51:17:04-if00 -> ../../ttyACM0
+```
+
+**2. Check everything before spending three minutes on a build.** Optional — `soak-up` runs it anyway —
+but useful when you have just plugged something in.
+
+```bash
+make soak-preflight
+# preflight: ok (run 20261113T091500Z, plan written to /home/mini/wake-soak/20261113T091500Z/plan)
+```
+
+If it fails it names the failing check — dev stack up, `.env.prod` missing, a capture or collector
+already running, no board attached, port unreadable, or port held by a leftover monitor — and stops
+before the build.
+
+**3. Start the soak.** This builds this tree's backend, starts the prod stack on `:8080` and begins
+collecting all three streams. The board resets when the monitor attaches — that is expected, and its
+boot banner is where the firmware version comes from.
+
+```bash
+APP_VERSION=0.4.0 make soak-up
+# ...  (more setup output)
+# META written to /home/mini/wake-soak/20261113T091500Z/META
+#   backend: collecting into /home/mini/wake-soak/20261113T091500Z/backend.log (pgid 49129)
+#   frontend: collecting into /home/mini/wake-soak/20261113T091500Z/frontend.log (pgid 49194)
+#   satellite: collecting /dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_68:EE:8F:51:17:04-if00
+#              into /home/mini/wake-soak/20261113T091500Z/satellite-soak.log (pgid 49239)
+#   satellite: booted and connected
+#
+# soak running. Stop the capture with 'make soak-stop', or stop everything
+# this target started — capture and stack — with 'make soak-down'.
+```
+
+`satellite: booted and connected` is the proof line: it means the board's boot banner and the first
+`ws: connected` both arrived. Without it the run is not a soak.
+
+**4. Confirm it is live.** Three streams, three lines; `collecting` with a log age in seconds is what
+you want to see.
+
+```bash
+make soak-status
+# run      : 20261113T091500Z (/home/mini/wake-soak/20261113T091500Z)
+#   backend: collecting (pgid 49129, container af1ef694064e)
+#   frontend: collecting (pgid 49194, container 3c61a3beaca1)
+#   satellite: collecting (pgid 49239, log 1s ago)
+```
+
+**5. Use it, and label what you say.** This is the part that produces evidence: 10 real wakes and 10
+near misses, with the clock time of each (see [§8](#8-soak-2-wants-labelled-utterances)). Leave it
+running for hours or days — it needs no supervision. To watch the gate work:
+
+```bash
+cd ~/wake-soak/20261113T091500Z
+tail -f backend.log | grep -E "wake word|turn (accepted|ignored)|session (open|closed)"
+```
+
+**6. Stop it.** `soak-down` ends the capture *and* the stack it started, and records the window end.
+Use `soak-stop` instead if you want to keep talking to the assistant afterwards.
+
+```bash
+make soak-down
+#   backend: stopped (pgid 49129)
+#   frontend: stopped (pgid 49194)
+#   satellite: stopped (pgid 49239)
+# soak-down: stopping the stack this soak started (volumes are kept)
+```
+
+**7. Report it.** No arguments: both bounds of the window come from the run's `META`.
+
+```bash
+make soak-report
+# until: 2026-11-13T18:40:02+00:00 (from META capture_ended_utc)
+# Soak report — window = [2026-11-13T09:15:06.410000+00:00, 2026-11-13T18:40:02+00:00)  ·  schema v2
+# anchor: device boot 2026-11-13T09:15:06.410000+00:00 (spread 0.41 s over connect/accept pairs)
+# ...  (the sections below)
+# written  : /home/mini/wake-soak/20261113T091500Z/report.json
+```
+
+An exit code of **1** means a section wanted a number and found none — usually a capture nobody spoke
+to. It is a verdict on the capture, not a crash.
+
+**8. Compare it with an earlier soak.** Pass the other run's `report.json`:
+
+```bash
+make soak-report COMPARE=$HOME/wake-soak/20261109T185944Z/report.json
+# Comparison (previous -> current)
+# window  : previous 49.5 h  |  current 9.4 h
+# * Latency/first_audio_ms   p50 3387 · p90 5717 · max 8152 ms  ->  p50 3120 · p90 5402 · max 7980 ms
+```
+
+Different lengths are fine and are printed; what is refused is a different *measurement* — schema,
+anchor source, threshold or firmware (see [§7](#7-comparing-two-soaks)).
+
 ## 1. Capture
 
 Every soak gets its **own directory**, named after the moment it started, and all three streams are
@@ -31,9 +134,9 @@ anything, two captures can never overwrite, interleave with or append to one ano
 `--compare` becomes a plain file reference between two run directories.
 
 ```bash
-make soak-runs                            # every capture, newest first, with its firmware
-make soak-report UNTIL=… RUN=20261109T185944Z   # report an older one
-make soak-report UNTIL=… COMPARE=~/wake-soak/20261109T185944Z/report.json
+make soak-runs                                                    # every capture, newest first
+make soak-report RUN=20261109T185944Z                             # report an older one
+make soak-report COMPARE=$HOME/wake-soak/20261109T185944Z/report.json   # diff two soaks
 ```
 
 `RUN` defaults to `$(cat ~/wake-soak/current)`, so the ordinary case needs no flag. A **new capture
@@ -193,17 +296,32 @@ it writes to the **prod volumes and the prod Postgres**. That is acceptable for 
 what the release would write anyway — but it must not be left running as *the* deployment. Finish with
 `make soak-down` to stop it, and `APP_VERSION=<release> make prod-up` to return to a published image.
 
-## 3. Freeze the window
+## 3. The window
 
-`soak_report.py` requires `--until`, an **exclusive** UTC bound, and applies it to every section.
-That is not pedantry: a running soak is a moving target, and a report whose sections were measured at
+Every section is measured over one window, `[window_start, until)`, and `until` is **exclusive**. That
+is not pedantry: a running soak is a moving target, and a report whose sections were measured at
 different moments cannot be compared with anything.
 
-Recording the end of the window is therefore part of the procedure:
+You do not have to supply it. `make soak-stop` (and `soak-down`) record `capture_ended_utc` in the
+run's `META`, and the report uses it:
 
 ```bash
-date -u +%Y-%m-%dT%H:%M:%SZ | tee -a ~/wake-soak/META
+make soak-stop        # or: make soak-down
+make soak-report      # -> until: 2026-11-13T18:40:02+00:00 (from META capture_ended_utc)
 ```
+
+Pass it only in these two situations:
+
+| Situation | Command |
+|---|---|
+| report a **running** capture up to now, without stopping it | `make soak-report UNTIL=$(date -u +%Y-%m-%dT%H:%M:%SZ)` |
+| reproduce a window quoted somewhere | `make soak-report RUN=20261109T185944Z UNTIL=2026-11-11T17:45:00Z` |
+
+A run with no recorded end at all — stopped by an older build, or killed outright — needs nothing
+either: the report falls back to one second past the last timestamped line and says so.
+
+`UNTIL` takes ISO-8601 UTC to the second, always ending in `Z`: `2026-11-11T17:45:00Z`. A bound
+without `Z` is read as UTC anyway, but writing it makes the intent obvious.
 
 ## 4. The device clock
 
@@ -220,24 +338,32 @@ more than **2 s**, because placing hours of events on a guess is worse than refu
 ## 5. Produce the report
 
 ```bash
-make soak-report                                  # the last run, both bounds from META
-make soak-report RUN=20261109T185944Z             # an earlier one
-make soak-report COMPARE=$HOME/wake-soak/20261109T185944Z/report.json   # diff against another
-
-cd backend
-uv run python scripts/soak_report.py --until 2026-11-11T17:45:00Z
-# -> prints the sections below, writes <run>/report.json
-
-uv run python scripts/soak_report.py --dir ~/wake-soak/20261112T170218Z --until … \
-  --compare ~/wake-soak/20261109T185944Z/report.json
-# -> refuses if the two captures are not comparable (schema, window, threshold, firmware)
-
-uv run python scripts/soak_report.py --until … --since 2026-11-11T09:00:00Z
-# -> a server-only capture: no satellite-soak.log to anchor to
+make soak-report                                                      # the run in `current`
+make soak-report RUN=20261109T185944Z                                 # a named run
+make soak-report RUN=20261109T185944Z UNTIL=2026-11-11T17:45:00Z      # a specific window
+make soak-report COMPARE=$HOME/wake-soak/20261109T185944Z/report.json # diff two soaks
 ```
 
-Exit code is **1** when a section found no source lines or the anchor is unusable, so a silent zero
-cannot pass a check. `report.json` carries its own `meta` — schema version, window, anchor source,
+Calling the tool directly needs `--dir`, because `~/wake-soak` is the parent of the runs, not a run:
+
+```bash
+cd backend
+
+uv run python scripts/soak_report.py --dir ~/wake-soak/20261109T185944Z --until 2026-11-11T17:45:00Z
+# -> prints the sections below, writes ~/wake-soak/20261109T185944Z/report.json
+
+uv run python scripts/soak_report.py --dir ~/wake-soak/20261113T091500Z \
+  --compare ~/wake-soak/20261109T185944Z/report.json
+# -> refuses if the two captures are not comparable (schema, anchor source, threshold, firmware)
+
+uv run python scripts/soak_report.py --dir ~/wake-soak/20261113T140000Z --since 2026-11-13T14:00:00Z
+# -> a server-only capture: no satellite-soak.log to anchor to; --until still comes from META
+```
+
+Exit code is **1** when a section produced no number at all, or the anchor is unusable, so a silent
+zero cannot pass a check. A section with *some* numbers is never a failure: a gate that saw 9
+rejections and 0 detections reported the 9. A capture with no device is not a failure either — its
+device rows read `n/a (no satellite log)` and the run exits 0. `report.json` carries its own `meta` — schema version, window, anchor source,
 anchor spread, git sha, app version, firmware and boot count, and every non-secret `voice_*` setting —
 which is what makes `--compare` honest.
 
@@ -303,10 +429,14 @@ different p50 on the same data.
 
 1. One variable per soak. Two changes at once and the delta is uninterpretable.
 2. Keep `META` with the logs, and keep `report.json` with the capture it describes.
-3. `--compare` prints `*` next to every metric that moved. It refuses outright when the schema,
-   the window, the anchor source, the firmware or the wake-word threshold/window differ — a "delta"
-   across different settings is not a delta. A firmware bump is a bigger variable than any of them,
-   so it is refused last: `--allow-firmware-change` says you meant it.
+3. `--compare` prints `*` next to every metric that moved. It refuses when the **measurement**
+   differs — schema, anchor source, or the wake-word threshold/window — because a "delta" across
+   different settings is not a delta. A firmware bump is a bigger variable than any of them, so it is
+   refused last: `--allow-firmware-change` says you meant it.
+4. The two **windows** may differ, and usually will: they start at different device boots and end at
+   different moments. The comparison prints both lengths and warns that the counts below are totals,
+   not rates. Two soaks of 2 h and 47 h are comparable in shape, not in totals — normalise before you
+   conclude anything.
 
 ## 8. Soak #2 wants labelled utterances
 
