@@ -741,6 +741,11 @@ bugs, and the second kind needs a procedure.
 
 ### Run both captures
 
+**`make soak-up` does all of this**, for the device and the server at once, and puts the files in a
+per-run directory with a report tool attached — see [`soak.md`](soak.md#start-to-finish). Use it unless
+you specifically want a `screen` window in front of you; the manual recipe below is what it replaces,
+and it is still the way to *watch* the device rather than measure it.
+
 The device log and the server log are two halves of the same conversation, and lining them up
 afterwards is much easier if both have timestamps and both start at the same moment.
 
@@ -752,7 +757,7 @@ screen -L -Logfile ~/soak.log -S soak idf.py -p /dev/ttyACM0 monitor
 ```
 
 ```bash
-cd ~/Documents/workspace/taylored_personal_assistant
+cd "$(git rev-parse --show-toplevel)"   # the repo root, wherever the clone lives
 export APP_VERSION=$(sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 screen -L -Logfile ~/backend-soak.log -S backend-logs \
   docker compose -p taylored-assistant-prod \
@@ -776,6 +781,9 @@ Docker's `json-file` driver already keeps these logs (`max-size: 50m`, `max-file
 capture is recoverable with `docker logs --since …`.
 
 ### Read the device side
+
+With `make soak-up` the file is `~/wake-soak/<run>/satellite-soak.log`; with the manual capture it is
+the `-Logfile` you chose. The greps are the same either way.
 
 ```bash
 grep -c "ring full"                     ~/soak.log   # 0: no answer exceeded the ring

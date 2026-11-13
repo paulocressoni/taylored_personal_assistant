@@ -230,6 +230,10 @@ half.
   because an AudioWorklet runs in its own global scope and cannot import modules.
 - **Capture is wired only after `ready`.** The route reads the first message as the start
   frame; sending audio earlier gets the socket refused with `1003`.
+- **The start frame carries `wake_word: "manual"`.** The satellite is gated behind "Hey Jarvis",
+  but a click on **Speak** is not ambient audio, so the browser asks to be exempt and a server
+  operator cannot refuse it. The `ready` frame echoes `wake_word: true|false` so the client knows
+  whether *this* session is gated — see [`docs/voice.md`](./voice.md).
 - **Playback is scheduled, not played.** Each chunk starts at
   `nextPlaybackTime(context.currentTime, cursor)` — back-to-back while audio is buffered,
   "now" when the queue ran dry — which is what keeps the seam between chunks inaudible.

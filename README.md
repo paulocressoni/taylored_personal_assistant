@@ -16,7 +16,7 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 8. [Step 6 — Run the backend](#step-6--run-the-backend)
 9. [Step 7 — Run the frontend](#step-7--run-the-frontend)
 10. [Docker (M07) — containerized backend](#docker-m07--containerized-backend)
-11. [Observability (M08) — self-hosted Langfuse](#observability-m08--self-hosted-langfuse)
+11. [Observability (M08) — self-hosted Langfuse](#observability-m08m12--self-hosted-langfuse)
 12. [HTTP + WebSocket API (M09)](#http--websocket-api-m09)
 13. [React frontend (M10) — chat UI](#react-frontend-m10--chat-ui)
 14. [LLM provider layer (M02)](#llm-provider-layer-m02)
@@ -26,10 +26,11 @@ A tailored smart home assistant. A monorepo that runs a Python/FastAPI + LangGra
 18. [Recurrent & on IDE-start commands](#recurrent--on-ide-start-commands)
 19. [Troubleshooting](#troubleshooting)
 20. [Voice pipeline (M29)](#voice-pipeline-m29)
-21. [Roadmap](#roadmap)
-22. [Implementation plan](docs/implementation_plan.md)
-23. [Deployment runbook](docs/deploy.md)
-24. [First production run](docs/first-prod-run.md)
+21. [Satellite & soaks (D1)](#satellite--soaks-d1)
+22. [Roadmap](#roadmap)
+23. [Implementation plan](docs/implementation_plan.md)
+24. [Deployment runbook](docs/deploy.md)
+25. [First production run](docs/first-prod-run.md)
 
 ---
 
@@ -827,7 +828,7 @@ docker run -d --name assistant-backend -p 8000:8000 assistant-backend
 > Containers are **ephemeral** — anything written inside is lost when the container is removed. Persistent data will live in **volumes** (M08, Compose).
 >
 > M08 note: this image runs the **assistant** only. Observability (self-hosted Langfuse)
-> is a **separate** Compose stack — see [Observability (M08)](#observability-m08--self-hosted-langfuse).
+> is a **separate** Compose stack — see [Observability (M08)](#observability-m08m12--self-hosted-langfuse).
 
 ### Published images
 
@@ -1155,6 +1156,10 @@ Run everything from `backend/` unless noted.
 | Frontend format (write / check) | `cd frontend && npm run format` · `npm run format:check` |
 | Regenerate API types | `cd frontend && npm run types` (backend on :8000) |
 | Install frontend deps (locked) | `cd frontend && npm ci` |
+| Start a soak (device + server + proxy) | `APP_VERSION=0.4.0 make soak-up` (repo root) |
+| Is the soak alive? | `make soak-status` · `make soak-runs` (repo root) |
+| Report / compare a soak | `make soak-report` · `make soak-report COMPARE=~/wake-soak/<run>/report.json` |
+| Stop the soak (and the stack it started) | `make soak-down` (repo root) |
 | Run pre-commit on everything | `uv run pre-commit run --all-files` |
 | Update hook versions | `uv run pre-commit autoupdate` |
 
@@ -1275,6 +1280,11 @@ identically; the reply is synthesised sentence by sentence while the graph is st
 generating, and speaking over the answer cuts the turn off. Voice turns land in the SAME
 conversation as typed ones.
 
+A **server-side wake word** now sits in front of it ("Hey Jarvis", openWakeWord, also off by
+default — see [Satellite & soaks](#satellite--soaks-d1)): nothing reaches STT until the phrase is
+heard, and the phrase is what cancels an answer in flight. The browser is exempt, because a click is
+not ambient audio.
+
 It is **off by default**. To try it:
 
 **Windows (PowerShell):**
@@ -1312,6 +1322,69 @@ leaves behind — one `stt` span per turn, one `tts` span per sentence, six stag
 the trace root — are documented in [docs/observability.md](docs/observability.md), and the
 panels that read them (plus the barge-in rate no panel can show) in
 [infra/observability/dashboards.md](infra/observability/dashboards.md).
+
+## Satellite & soaks (D1)
+
+The satellite is the always-on end of the pipeline: a **reSpeaker XVF3800** (four-mic array with its
+own DSP, AEC and beamformer) driven by a **XIAO ESP32-S3**, streaming 16 kHz audio to `WS /ws/voice`
+over Wi-Fi and playing the answer back through the array's speaker. The firmware carries **no wake
+word, no VAD and no beamforming logic** — all of that is on the server, so the browser, the simulator
+and the device behave identically and can be retuned without a reflash.
+
+| Piece | Where |
+|---|---|
+| Firmware (C, ESP-IDF 5.4) | `firmware/satellite-xvf3800-xiao/` |
+| Pin map, bring-up, task model, troubleshooting catalogue | [`docs/satellite.md`](docs/satellite.md) |
+| Wire protocol and the wake-word gate | [`docs/voice.md`](docs/voice.md) |
+| Measurement tooling | [`docs/soak.md`](docs/soak.md) |
+
+```bash
+source firmware/env.sh                     # ESP-IDF into THIS shell (must be sourced)
+cd firmware/satellite-xvf3800-xiao
+idf.py -p /dev/ttyACM0 flash monitor       # the port is the XIAO's USB, not the XVF3800's
+```
+
+Two things bite on a fresh shell. `source firmware/env.sh` is mandatory — `idf.py` is not on `PATH`
+otherwise — and your account must be in the `dialout` group to open `/dev/ttyACM0`
+(`sudo usermod -aG dialout "$USER"`, then a **new login**; groups are fixed when a process starts, so
+a newly opened terminal does not help). Attaching the monitor resets the board: that is deliberate,
+and its boot banner is where the firmware version comes from.
+
+### Enabling the wake word
+
+The gate is **off by default** — with it off, every sound in the room is a turn, which is what every
+existing deployment and every existing test expects. To turn it on, in `backend/.env.prod` (or
+`.env.dev`):
+
+```bash
+VOICE_WAKE_WORD_ENABLED=true
+# VOICE_WAKE_WORD_THRESHOLD=0.5        # lower = more sensitive, more false wakes
+# VOICE_WAKE_WORD_WINDOW_SECONDS=6     # how long after the phrase its command may start
+```
+
+Restart the backend; no firmware change and no rebuild. The phrase is **"Hey Jarvis", English only** —
+openWakeWord ships no German or Portuguese model. The browser is unaffected: it sends
+`wake_word: "manual"`, because a button click is not ambient audio.
+
+### Measuring it: soaks
+
+A soak is a multi-day capture of **all three ends** of one conversation — the device console, the
+backend log and the nginx log — plus a report that can be diffed against the previous soak. It is the
+only test that sees a real room, and the only one whose raw material has three clocks.
+
+```bash
+make soak-up         # build this tree's backend, serve it on the prod URL, collect three streams
+make soak-status     # run id, image, META, and whether each stream is alive
+make soak-runs       # every capture, newest first, with the firmware it ran
+make soak-report     # one report over the recorded window, no arguments needed
+make soak-down       # stop the capture AND the stack it started (volumes kept)
+```
+
+Each capture lands in its own directory under `~/wake-soak/`, named for its UTC start, so two soaks can
+never overwrite one another. `make soak-up` refuses to start on a detached board, an unreadable port or
+an existing capture — before it spends minutes building — and `make soak-down` will not stop a stack it
+did not start. The procedure, the metric dictionary and the field results are in
+[`docs/soak.md`](docs/soak.md) and [`docs/voice.md`](docs/voice.md).
 
 ## Roadmap
 

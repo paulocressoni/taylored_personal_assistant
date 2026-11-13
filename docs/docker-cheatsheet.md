@@ -260,6 +260,14 @@ Every target below has a raw `docker compose` equivalent in the sections above.
 | `make dev-logs` | Tail all logs (`-f`) |
 | `make dev-ps` | Show running services |
 | `make dev-local` | Pre-M12 loop: local uvicorn, no Docker |
+| `make soak-up` | **Prod** stack with this tree's backend, plus the three soak collectors (`SOAK_SATELLITE=0` for a server-only capture) |
+| `make soak-stop` / `make soak-down` | Stop the capture / the capture **and** the stack it started (volumes kept) |
+| `make soak-status` | Run id, image, META and per-stream liveness |
+
+The soak targets differ from the rest: they run the **prod** project (`taylored-assistant-prod`)
+because the flashed satellite's server URI is a compile-time constant, and they refuse to start while
+the dev stack is up — both stacks publish `langfuse-web` on `:3000`. See
+[soak.md](soak.md#2-serving-a-pre-release-backend-on-the-prod-url).
 
 ### The same commands in PowerShell (Windows)
 
