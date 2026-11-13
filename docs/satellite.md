@@ -48,12 +48,29 @@ is a server change that needs no reflash. The firmware is the dumbest possible e
 purpose; see the *why this shape* note under D1.3 in
 [`implementation_plan.md`](implementation_plan.md).
 
-### What "no wake word" means today
+### The wake word lives on the server
 
-In the current build the satellite streams continuously once connected, so anything said in the
-room can become a turn. During the 19.7-hour soak this produced transcripts like *"and then
-they'll just kiss you"* and *"in the night"* from ambient conversation. That is expected: the wake
-word is a separate delivery item, and the firmware is designed not to need changes when it lands.
+Through the 19.7-hour soak the satellite streamed continuously, so anything said in the room
+became a turn — transcripts like *"and then they'll just kiss you"* and *"in the night"* came from
+ambient conversation, and any noise could also cut an answer short by flushing the playout.
+
+A server-side gate now sits in front of that, and **this firmware did not change to get it**:
+it still sends only `session_id`, `device_id` and `output_sample_rate`, which the server resolves
+to `wake_word: "auto"`. The practical differences on the device:
+
+- room audio is scored and discarded, so it no longer opens a turn, flushes playback, or moves the
+  LED out of SPEAKING;
+- saying **"Hey Jarvis"** is what starts a turn, and saying it over an answer is what interrupts
+  one;
+- a bare "Hey Jarvis" lights LISTENING and waits for the command — but only for
+  `VOICE_WAKE_WORD_WINDOW_SECONDS` (6 s by default);
+- the `ready` frame now carries `wake_word: true`, so a device could show whether it is gated
+  without any firmware change to *send* anything.
+
+The phrase is a server setting (`VOICE_WAKE_WORD_PHRASE`), which is the point of putting it
+there: changing it, or disabling the gate entirely, is a config change and a restart, not a
+reflash. Phrase and model details, and the honest state of the measurements, are in
+[`docs/voice.md`](voice.md#wake-word-server-side-openwakeword).
 
 ---
 
@@ -161,37 +178,63 @@ Read the path: `idf5.4_py3.14_env`. The installer built its virtualenv with **Py
 directory name from the *current* `python3`. It therefore looks for a directory named after 3.14,
 which was never created. The install is not broken; the lookup key changed.
 
-Two ways out:
+The fix is a `python3` shim that reports **3.12**, placed **first on `PATH`** — one symlink, and it
+survives upgrades of the system Python. The symlink alone is not enough: `install.sh` resolves
+`python3` through `PATH`, so if the shim's directory is not on `PATH` the installer still finds
+`/usr/bin/python3` and reproduces the failure above.
 
-1. Re-run `./install.sh` with `python3` pointing at 3.12, creating a second venv.
-2. **Put a shim first on `PATH`** whose `python3` is 3.12, so `export.sh` computes the name it
-   originally computed. This is what we did: one symlink, and it survives upgrades of the system
-   Python.
+Run exactly this, in order:
 
 ```bash
+# 1. drop the broken venv, so it cannot be reused by name
+rm -rf ~/.espressif/python_env/idf5.4_py3.14_env
+
+# 2. create the shim (any 3.12 interpreter works; this one came from uv)
 mkdir -p ~/.local/share/esp-idf-python
 ln -sf "$(uv python find 3.12)" ~/.local/share/esp-idf-python/python3
+
+# 3. put it FIRST on PATH — this is the step that is easy to miss
+export PATH="$HOME/.local/share/esp-idf-python:$PATH"
+
+# 4. prove the shell now resolves 3.12 (must print Python 3.12.x)
+which python3 && python3 --version
+
+# 5. install: the venv it creates is now named idf5.4_py3.12_env
+cd ~/esp/esp-idf && ./install.sh esp32s3
 ```
 
-Any 3.12 interpreter works — here it is one that `uv` had already downloaded. What matters is the
-**minor version**, because that is what `export.sh` puts in the directory name. Confirm with
-`~/.local/share/esp-idf-python/python3 --version` before going further.
+What the last command must print, near the end:
+
+```text
+Creating a new Python environment in /home/<you>/.espressif/python_env/idf5.4_py3.12_env
+```
+
+`3.12` in that directory name **is** the success criterion — it is exactly the key `export.sh`
+computes. `export PATH=...` only affects the current shell, which is all `install.sh` needs;
+`firmware/env.sh` (Step 4) prepends the same directory itself, so later terminals need nothing.
 
 The general lesson: *when a tool builds a path out of an interpreter version, that version is part
 of the contract.* Never "fix" this class of problem with `sudo` or by editing the venv by hand.
 
 ### Step 3 — CMake and Ninja without root
 
-ESP-IDF needs `cmake` and `ninja`, and installing them system-wide wants `sudo`. We avoided that by
-putting them in a self-contained directory and prepending it to `PATH`:
+ESP-IDF needs `cmake` and `ninja`, and installing them system-wide wants `sudo`. `install.sh` does
+**not** install them on Linux: both are marked `"install": "on_request"` in ESP-IDF's own
+`tools/tools.json` (only Windows gets them automatically), so a fresh `install.sh esp32s3` finishes
+"successfully" and the build then fails with `cmake: command not found`.
+
+Install them into a self-contained directory instead and prepend it to `PATH`:
 
 ```bash
 uv venv ~/.local/share/idf-build-tools
 uv pip install --python ~/.local/share/idf-build-tools/bin/python cmake ninja
+~/.local/share/idf-build-tools/bin/cmake --version | head -1   # must print a version
 ```
 
 Both packages ship their binaries in `.../bin`, so one `PATH` entry covers both. Nothing outside
-your home directory changes, and deleting the directory removes the toolchain.
+your home directory changes, and deleting the directory removes the toolchain. `firmware/env.sh`
+fails with an explicit message if this directory is missing, rather than letting the first `cmake`
+call inside the build produce a confusing error.
 
 ### Step 4 — the `esp-idf` shell function
 
@@ -202,11 +245,13 @@ your terminal, which looks like a broken install.
 Two ways to make it stick:
 
 ```bash
-# option A — once per terminal
+# option A — once per terminal, from the repo root
 source firmware/env.sh
 
-# option B — once per machine, in ~/.bashrc
-esp-idf() { . "$HOME/Documents/workspace/taylored_personal_assistant/firmware/env.sh"; }
+# option B — once per machine: write the absolute path of THIS clone into ~/.bashrc
+# (run from the repo root; the path is resolved for you, so it is correct on any machine)
+echo "esp-idf() { . \"$PWD/firmware/env.sh\"; }" >> ~/.bashrc
+exec bash
 ```
 
 Then a new terminal is simply:
@@ -286,6 +331,13 @@ Two habits pay for themselves immediately:
 
 ### Capturing a log you can keep
 
+**For a soak, do not do this by hand.** `make soak-up` attaches the monitor itself, records it as a
+managed collector, and refuses to start if the board is missing, unreadable or already held — see
+[`soak.md`](soak.md#the-satellite-stream). Attaching also **resets the board**, which is deliberate at
+the start of a soak: the boot banner it prints is where the report gets the firmware version.
+
+The recipe below is for watching the device yourself, and for a capture outside a soak.
+
 `idf.py monitor` shows one screenful and forgets the rest. For anything longer than a minute, run
 it inside `screen` and tee it to a file:
 
@@ -303,6 +355,42 @@ screen -L -Logfile ~/soak.log -S soak idf.py -p /dev/ttyACM0 monitor
 
 The device is not affected by any of this: closing the monitor closes the serial port, and the
 satellite keeps running and reconnecting on its own. You only lose visibility.
+
+### `Path '/dev/ttyACM0' is not readable`
+
+The port is there, but your user may not open it:
+
+```text
+Error: Invalid value for '-p' / '--port': Path '/dev/ttyACM0' is not readable.
+```
+
+Check the two halves — the owning group, and whether you are in it:
+
+```bash
+ls -l /dev/ttyACM0     # crw-rw---- 1 root dialout 166, 0 ...
+id -nG                 # dialout must appear in this list
+```
+
+Serial devices belong to the `dialout` group on Debian/Ubuntu, and a fresh account is usually not
+a member. Add yourself once, then get a shell that carries the new group:
+
+```bash
+sudo usermod -aG dialout "$USER"
+newgrp dialout         # this terminal only; the next login session has it automatically
+id -nG                 # must now list dialout
+```
+
+`newgrp` opens a subshell, so re-load the toolchain inside it (`source firmware/env.sh`) before
+running `idf.py` again. No reboot and no udev rule are needed, and nothing is loosened for other
+users.
+
+**A newly opened terminal does not help.** Groups are attached to a process when it starts and can
+never be added later, so every terminal spawned by a long-running parent — an IDE's integrated
+terminal, a terminal multiplexer, a remote session — inherits the old, group-less credentials no
+matter how new it is. Only `newgrp dialout` in that terminal, a full restart of the editor (not a
+window reload), or a fresh login gets you the group. Verify with the two checks above rather than
+assuming, and note that `screen -L` **appends** to its logfile, so a capture that failed once will
+keep its error output at the top of the soak file — start a fresh filename.
 
 ### `Writing to serial is timing out`
 
@@ -432,6 +520,27 @@ brightness 48 is effectively invisible across a room; that cost an hour of debug
 The rule that came out of it: **an indicator you cannot see from where you stand is not an
 indicator.** Prefer a steady colour at full brightness over a tasteful animation.
 
+| State | Colour | When |
+|---|---|---|
+| `LED_STATE_OFF` | none | boot, before the ring is configured |
+| `LED_STATE_IDLE` | blue `0x0000FF` | not in a session, or the socket dropped |
+| `LED_STATE_LISTENING` | green `0x00FF00` | session ready, and again when the server reports speech |
+| `LED_STATE_THINKING` | orange `0xFF8000` | a transcript arrived, the answer is being produced |
+| `LED_STATE_SPEAKING` | cyan `0x00FFFF` | answer audio is playing |
+| `LED_STATE_MUTED` | red `0xFF0000` | the microphone is muted |
+
+Two things to keep in mind when reading a log: **blue is not a wake-up**, it is the absence of a
+session — a soak counted 490 IDLE transitions in 47 hours, one per reconnect; and the mute state is
+per-call-site, so a handler that forgets `s_muted` paints green over a muted device.
+
+## Measuring a soak
+
+A single session proves the contract; a 47-hour one proves the product. `make soak-up` starts all
+three collectors — the two container logs and the board's serial console — so there is nothing to
+start by hand; the capture procedure, the device-clock anchor (the serial log has no wall clock) and
+the metric dictionary are in [`soak.md`](soak.md), and `backend/scripts/soak_report.py` turns the three
+logs into one comparable report.
+
 ### Reconnecting
 
 `satellite.c` owns the socket, so one place decides the retry policy:
@@ -502,7 +611,7 @@ is the sequence used here, and every step is reversible.
    free.
 3. **Flash and console** — `idf.py -p /dev/ttyACM0 flash monitor` shows a boot banner on the
    **XIAO** port. No banner means the wrong port, a missing cable, or no permission on the device
-   node.
+   node (fix: the `dialout` group, see "`Path '/dev/ttyACM0' is not readable`" above).
 4. **Command the chip** — I2C init logs the XVF3800 version and build string. Getting nothing here
    means wiring or address, not firmware logic.
 5. **Witness the LED** — `LED_STATE_IDLE` should be a steady blue ring. This proves the write path
@@ -621,7 +730,7 @@ that looks like firmware logic turns out to be one layer lower or higher.
 | `playout ran dry after 160 of 320` | the tail half-frame at the end of an answer |
 | `Writing to serial is timing out` | the firmware never reads its console; the host is pushing keystrokes (§4) |
 | English speech transcribed in Portuguese | turn one sends no language hint, so the provider auto-detects; a cognate like *"Brasil"* swings it. See [`voice.md`](voice.md) known limitations |
-| ambient conversation becomes a turn | no wake word yet, by design |
+| ambient conversation becomes a turn | fixed: the server-side gate ignores audio without "Hey Jarvis" |
 
 ---
 
@@ -631,6 +740,11 @@ Feature tests say "it worked when I tried it". A soak says "it did not degrade".
 bugs, and the second kind needs a procedure.
 
 ### Run both captures
+
+**`make soak-up` does all of this**, for the device and the server at once, and puts the files in a
+per-run directory with a report tool attached — see [`soak.md`](soak.md#start-to-finish). Use it unless
+you specifically want a `screen` window in front of you; the manual recipe below is what it replaces,
+and it is still the way to *watch* the device rather than measure it.
 
 The device log and the server log are two halves of the same conversation, and lining them up
 afterwards is much easier if both have timestamps and both start at the same moment.
@@ -643,7 +757,7 @@ screen -L -Logfile ~/soak.log -S soak idf.py -p /dev/ttyACM0 monitor
 ```
 
 ```bash
-cd ~/Documents/workspace/taylored_personal_assistant
+cd "$(git rev-parse --show-toplevel)"   # the repo root, wherever the clone lives
 export APP_VERSION=$(sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 screen -L -Logfile ~/backend-soak.log -S backend-logs \
   docker compose -p taylored-assistant-prod \
@@ -667,6 +781,9 @@ Docker's `json-file` driver already keeps these logs (`max-size: 50m`, `max-file
 capture is recoverable with `docker logs --since …`.
 
 ### Read the device side
+
+With `make soak-up` the file is `~/wake-soak/<run>/satellite-soak.log`; with the manual capture it is
+the `-Logfile` you chose. The greps are the same either way.
 
 ```bash
 grep -c "ring full"                     ~/soak.log   # 0: no answer exceeded the ring

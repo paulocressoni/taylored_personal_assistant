@@ -1,0 +1,56 @@
+Executing action: monitor
+Running cmake in directory /repo/firmware/satellite/build
+-- Building ESP-IDF components for target esp32s3
+[0;32mI (26) boot: ESP-IDF v5.4.4 2nd stage bootloader[0m
+I (28) boot.esp32s3: Boot SPI Speed : 80MHz
+I (29) boot: Enabling RNG early entropy source...
+I (629) app_init: Application information:
+I (630) app_init: Project name:     satellite_xvf3800_xiao
+I (630) app_init: App version:      v0.4.0-25-g9adf84f
+I (630) app_init: Compile time:     Nov  1 2026 13:33:59
+I (630) app_init: ESP-IDF:          v5.4.4
+I (634) main_task: Started on CPU0
+I (1000) sat: capture errors=0 (stack free 5980 bytes)
+I (1001) sat: uplink sent=50 failed=0
+I (2000) ws: connected
+I (2001) sat: session ready
+I (2002) leds: state -> 2
+I (3000) sat: capture errors=0 (stack free 5980 bytes)
+I (4000) sat: heartbeat: online ready
+I (5000) sat: heard: what is the capital of France?
+I (5200) sat: heard: Wie viele Bänder hat das Orchester?
+I (5001) leds: state -> 3
+I (6000) sat: reply audio: 16000 bytes
+I (6001) leds: state -> 4
+E (7100) transport_ws: Error transport_poll_write
+E (7101) websocket_client: esp_transport_write() returned 0, transport_error=ESP_OK
+W (7102) ws: error: none
+W (7103) ws: session ended after 5 s (none)
+W (7104) sat: session lost
+I (7105) leds: state -> 1
+I (7106) sat: uplink sent=49 failed=1
+I (8000) ws: connected
+I (8001) sat: session ready
+I (8002) leds: state -> 2
+I (9000) sat: uplink sent=50 failed=0
+I (10000) sat: reply audio: 32000 bytes
+W (10100) playout ran dry after 100 of 500 samples
+W (10200) playout: ring full: the answer is longer than the ring, the rest of it will be lost
+W (10300) playout: overruns=1 (answer truncated: the ring was full)
+E (11000) transport_ws: Error transport_poll_write
+E (11001) esp_transport_write() returned 0, transport_error=ESP_OK
+W (11002) ws: session ended after 3 s (none)
+W (11003) sat: session lost
+I (11004) leds: state -> 1
+I (11005) sat: uplink sent=50 failed=1
+I (12000) ws: connected
+I (12001) sat: session ready
+I (12002) leds: state -> 2
+I (1800000) sat: uplink sent=50 failed=0
+I (1810000) sat: capture errors=0 (stack free 5980 bytes)
+E (1810100) transport_ws: Error transport_poll_write
+E (1810101) esp_transport_write() returned 0, transport_error=ESP_OK
+W (1810102) ws: session ended after 1798 s (none)
+W (1810103) sat: session lost
+I (1810104) leds: state -> 1
+I (1810105) sat: uplink sent=50 failed=1

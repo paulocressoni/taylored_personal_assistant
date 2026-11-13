@@ -1,0 +1,23 @@
+2026-01-01T00:00:02.000000001Z INFO:     172.18.0.10:1 - "WebSocket /ws/voice?api_key=REDACTED" [accepted]
+2026-01-01T00:00:02.100000001Z {"ts": "2026-01-01T00:00:02.100000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice session open (output_rate=16000, resampling=True)"}
+2026-01-01T00:00:03.000000001Z {"ts": "2026-01-01T00:00:03.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "wake word detected (score=0.97, in_turn=False)"}
+2026-01-01T00:00:05.000000001Z {"ts": "2026-01-01T00:00:05.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice turn accepted (wake_lead=-0.42s)"}
+2026-01-01T00:00:05.000000001Z {"ts": "2026-01-01T00:00:05.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice turn timing stt_ms=250.0ms graph_ttft_ms=2000.0ms tts_ttfb_ms=900.0ms first_audio_ms=3200.0ms turn_ms=6000.0ms"}
+2026-01-01T00:00:06.000000001Z {"ts": "2026-01-01T00:00:06.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "ignored: no wake word (speech=1.5s, since_arm=never)"}
+2026-01-01T00:00:06.500000001Z {"ts": "2026-01-01T00:00:06.500000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "ignored: no wake word (speech=0.4s, since_arm=0.3s)"}
+2026-01-01T00:00:07.000000001Z {"ts": "2026-01-01T00:00:07.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "ignored: no wake word (speech=2.0s, since_arm=45.0s)"}
+2026-01-01T00:00:07.100000001Z ERROR:    Exception in ASGI application
+2026-01-01T00:00:07.200000001Z {"ts": "2026-01-01T00:00:07.200000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice session closed"}
+2026-01-01T00:00:08.000000001Z INFO:     172.18.0.10:2 - "WebSocket /ws/voice?api_key=REDACTED" [accepted]
+2026-01-01T00:00:08.100000001Z {"ts": "2026-01-01T00:00:08.100000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice session open (output_rate=16000, resampling=True)"}
+2026-01-01T00:00:09.000000001Z {"ts": "2026-01-01T00:00:09.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "wake word detected (score=0.55, in_turn=False)"}
+2026-01-01T00:00:10.000000001Z {"ts": "2026-01-01T00:00:10.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "ignored: no wake word (speech=3.0s, since_arm=8.0s)"}
+2026-01-01T00:00:10.500000001Z {"ts": "2026-01-01T00:00:10.500000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "ignored: no wake word (speech=0.2s, since_arm=120.0s)"}
+2026-01-01T00:00:11.000000001Z {"ts": "2026-01-01T00:00:11.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice session closed"}
+2026-01-01T00:00:12.000000001Z INFO:     172.18.0.10:3 - "WebSocket /ws/voice?api_key=REDACTED" [accepted]
+2026-01-01T00:00:12.100000001Z {"ts": "2026-01-01T00:00:12.100000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice session open (output_rate=16000, resampling=True)"}
+2026-01-01T00:00:20.000000001Z {"ts": "2026-01-01T00:00:20.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "wake word detected (score=0.99, in_turn=False)"}
+2026-01-01T00:00:21.000000001Z {"ts": "2026-01-01T00:00:21.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice turn accepted (wake_lead=0.75s)"}
+2026-01-01T00:00:21.000000001Z {"ts": "2026-01-01T00:00:21.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice turn timing stt_ms=300.0ms graph_ttft_ms=4000.0ms tts_ttfb_ms=1500.0ms first_audio_ms=5000.0ms turn_ms=12000.0ms"}
+2026-01-01T00:00:30.000000001Z {"ts": "2026-01-01T00:00:30.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "wake word heard without a command; window re-armed"}
+2026-01-01T00:00:31.000000001Z {"ts": "2026-01-01T00:00:31.000000001+00:00", "level": "INFO", "logger": "app.voice.session", "message": "voice session closed"}

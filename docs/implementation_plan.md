@@ -456,6 +456,48 @@ actual room — which is the only data that matters for a keyword spotter.
 - The phrase can be changed for all three languages by editing config and restarting — no reflash.
 - Measured on your own recordings: false-accept and false-reject rates are known numbers, not guesses, at 1 m and 4 m.
 
+**STATUS: implemented; recall unverified.** openWakeWord `hey_jarvis_v0.1` behind a
+server-side gate (`backend/app/voice/wake.py`, `session.py`), English only, firmware unchanged.
+
+Deviations from the steps above, recorded rather than silently dropped:
+
+- **Step 1's engine spike was not run.** The engine was chosen as directed, so no
+  Porcupine/Vosk comparison exists; if the licence or the recall below becomes a problem, that
+  spike is still the right first move.
+- **One language only.** `de` and `pt-BR` conversations start with an English phrase.
+- **No follow-up window by design.** A completed answer does not leave the session listening, so
+  every turn starts with "Hey Jarvis"; the phrase is also the barge-in signal.
+
+What was measured: 1.9 ms per 80 ms hop (~40× realtime, ~2.5 % of a core per session); 0 false
+accepts over chat, questions and synthetic noise down to 2 dB SNR; **a 60 % false-reject rate on
+synthetic positives that barely improves at threshold 0.1**, which is a property of TTS speech
+being out of distribution for a model trained on human recordings — not of the operating point.
+**Real-room recall is therefore still open**, and it is the one criterion in DONE WHEN above that
+this delivery does not satisfy. The cheap close-out is ten utterances recorded on the device and
+scored with `scripts/wake_word_eval.py`, or a month of daily use with the detection log counted.
+
+Licence: the three pre-trained graphs are **CC BY-NC-SA 4.0**, not Apache-2.0 (only the code is).
+Attribution and the licence text ship with the binaries in the wheel; commercial use of the
+appliance is not permitted under those terms. That is a real constraint on this feature, not a
+footnote.
+
+#### What the 47-hour soak found, and where each item goes
+
+The wake-word delivery closed with a real satellite soak (`docs/soak.md` for the procedure,
+`scripts/soak_report.py` for the numbers, `docs/voice.md` for the results). It answered the recall
+question only partly — 124 detections, 109 turns, and 3 335 segments the gate rejected, which is
+2.3 h of room audio that never reached STT — and it found six things that are **not** wake-word bugs
+and do not belong in this delivery:
+
+| Milestone | What it fixes | Why it ranks there |
+|---|---|---|
+| **O1a + F1 — session diagnostics, then transport hardening** | per-session received-frame counter and queue depth, RSSI at loss, ASGI close code, nginx session timings; then: never abort a session on one failed audio write, longer send budget, keepalive | 490 session losses in 47 h, all from one local `transport_poll_write` timeout, ~4–7/h even with nobody home. Every other soak metric is measured through that noise. |
+| **O1b + soak #2 — detection diagnostics** | near-miss scores in `[0.2, threshold)`, a structured per-turn line, raw transcript for `wake_only`/`cancel`, and ~20 labelled utterances recorded on the device | a miss currently leaves no trace, so recall cannot be computed. This is what turns D1.4's "UNVERIFIED" into a number. |
+| **F2 — playback** | decide 16 vs 24 kHz output **before** sizing the ring, then raise the 30 s ring (60 s = 1.9 MB at 16 kHz, 2.88 MB at 24 kHz), then the prebuffer | 16 answers were truncated deterministically (p90 reply 40.3 s > 30 s ring), and 74 playout underruns are the audible noise inside long answers. |
+| **F3 — LED and device events** | one mute-aware `leds_apply()` (four call sites currently ignore `s_muted`), a distinct "wake heard" state, and the vocabulary timers/alarms/reminders will need | the mute leak is visible on every reconnect because the ring goes blue (IDLE) and then green (LISTENING) regardless of mute. |
+| **V1 — voice interaction** | fuzzy cancel phrases, a 500 vs 800 ms endpointer A/B, TTS chunk tuning (the first chunk is cut at 12 characters), a first-audio budget | each needs a labelled soak of its own; four `cancel phrase heard` events cannot validate a matcher. |
+| **L1 — language** | per-turn language detection first, then the sticky-first-turn fix; `de`/`pt-BR` wake models later | three of the soak's user complaints end here, but nothing else depends on it. |
+
 **NOTES:** this deliberately spends CPU on the host for every idle second. Measure it — if the wake gate is
 expensive, the *later* milestone is to move it to the XIAO (WakeNet10 now has released `wn10_de_halloesp` /
 `wn10_pt_olaesp` models, and microWakeWord lives under the Open Home Foundation), keeping this server-side

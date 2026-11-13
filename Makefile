@@ -17,7 +17,7 @@ MSG ?=
 APP_VERSION := $(shell sed -n 's/.*__version__ = "\(.*\)".*/\1/p' backend/app/_version.py)
 export APP_VERSION
 
-.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps
+.PHONY: config cli test lint types dev-local dev-up dev-up-light dev-down dev-logs dev-ps prod-pull prod-up prod-down prod-logs prod-ps soak-up soak-preflight soak-stop soak-down soak-status soak-runs soak-meta soak-report
 
 config:
 	cd $(BACKEND) && ENV=$(ENV) uv run python -m app.core.cli
@@ -80,6 +80,117 @@ dev-logs:
 
 dev-ps:
 	$(COMPOSE_DEV) --profile observability ps
+
+# ============================ SOAK ============================
+# A soak runs THIS WORKING TREE's backend behind the prod URL, because the
+# flashed satellite's URI is compile-time and reflashing it would end the
+# baseline the soak exists to compare against. See docs/soak.md and
+# infra/compose/docker-compose.soak.yml.
+#
+# The frontend stays the released image: it owns :8080 and already proxies
+# /ws. Only the backend is rebuilt.
+#
+# WARNING: soak-up RECREATES the backend container, so it also ends any capture
+# already following it. That is fine as the first step of a soak and wrong in
+# the middle of one — check `make soak-status` before you run it.
+# Every soak knob is exported, because a variable defined in a makefile does
+# NOT reach a recipe's environment — only `export` or a command-line assignment
+# does. `make soak-up SOAK_SATELLITE=0` therefore works with no extra plumbing.
+export SOAK_DIR ?= $(HOME)/wake-soak
+export SOAK_SATELLITE ?= 1
+export SOAK_SATELLITE_PORT ?=
+export SOAK_APPEND ?= 0
+# Each capture gets its own directory under $(SOAK_DIR), named after the moment
+# it started, so two soaks can never overwrite or interleave each other's logs
+# and a file name always names the run it belongs to. `$(SOAK_DIR)/current` is
+# the pointer the other targets read; set RUN=<name> to address an older one.
+RUN ?= $(shell cat $(SOAK_DIR)/current 2>/dev/null)
+export RUN
+SOAK_RUN_DIR := $(SOAK_DIR)/$(RUN)
+SOAK_IMAGE := taylored-assistant-backend:soak-local
+SOAK_BACKEND := taylored-assistant-prod-backend-1
+COMPOSE_SOAK := docker compose -p taylored-assistant-prod \
+  -f $(COMPOSE_DIR)/docker-compose.base.yml \
+  -f $(COMPOSE_DIR)/docker-compose.prod.yml \
+  -f $(COMPOSE_DIR)/docker-compose.soak.yml \
+  --env-file $(COMPOSE_DIR)/.env.prod
+# The access logs print the shared key on every /ws/voice URL (the satellite
+# uses the ?api_key= fallback), so every capture is filtered on the way in.
+SOAK_REDACT := s/\\(api_key=\\)[^ &"]*/\\1REDACTED/g
+
+# Checks only — nothing is built and no toolchain is loaded, so a detached
+# board or an existing capture costs a second instead of a full image build.
+# Runs as a prerequisite, i.e. BEFORE the build.
+soak-preflight:
+	@bash $(BACKEND)/scripts/soak_collectors.sh preflight
+
+soak-up: soak-preflight
+	$(COMPOSE_SOAK) build backend
+	$(COMPOSE_SOAK) --profile observability up -d --no-build --wait
+	@$(MAKE) --no-print-directory soak-meta
+	@bash $(BACKEND)/scripts/soak_collectors.sh start
+	@echo ""
+	@echo "soak running. Stop the capture with 'make soak-stop', or stop everything"
+	@echo "this target started — capture and stack — with 'make soak-down'."
+
+# Stops the capture and leaves the stack running — use it mid-soak to freeze the
+# window, or when you want to keep using the assistant afterwards.
+soak-stop:
+	@bash $(BACKEND)/scripts/soak_collectors.sh stop
+	@echo "soak-stop: the stack is still up. To stop it too: make soak-down"
+
+# Undoes `soak-up`: stops the capture AND the stack it started.
+#
+# Not every stack: if one was already running when the soak began, it belongs to
+# the operator and taking it down would stop something nobody asked us to stop.
+# preflight records which case this is in $(SOAK_DIR)/stack.owner, and the reason
+# is printed either way. Volumes are never removed — that is the conversation
+# data the soak exists to produce.
+soak-down:
+	@bash $(BACKEND)/scripts/soak_collectors.sh stop
+	@owner=$$(bash $(BACKEND)/scripts/soak_collectors.sh stack-state); \
+	if [ "$$owner" = preexisting ] && [ "$${SOAK_FORCE_STACK_DOWN:-0}" != 1 ]; then \
+	  echo "soak-down: the stack was already running before this soak — leaving it up."; \
+	  echo "           stop it yourself with: make prod-down"; \
+	  echo "           (SOAK_FORCE_STACK_DOWN=1 make soak-down stops it anyway)"; \
+	else \
+	  echo "soak-down: stopping the stack this soak started (volumes are kept)"; \
+	  $(COMPOSE_SOAK) --profile observability down; \
+	  rm -f $(SOAK_DIR)/stack.owner; \
+	fi
+
+soak-status:
+	@echo "repo     : $(shell git rev-parse --short HEAD)$(shell git diff --quiet || echo ' (dirty)')"
+	@echo "soak dir : $(SOAK_DIR)"
+	@echo "backend  : $(shell docker inspect -f '{{.Id}}' $(SOAK_BACKEND) 2>/dev/null | cut -c1-12 || echo 'not running')"
+	@echo "image    : $(shell docker inspect -f '{{.Image}}' $(SOAK_BACKEND) 2>/dev/null | cut -c8-19 || echo '-')"
+	@test -f $(SOAK_RUN_DIR)/META && sed 's/^/meta     : /' $(SOAK_RUN_DIR)/META || echo "meta     : none (run make soak-up)"
+	@bash $(BACKEND)/scripts/soak_collectors.sh status
+
+# Every capture, newest first, with the firmware it ran.
+soak-runs:
+	@bash $(BACKEND)/scripts/soak_collectors.sh runs
+
+# The script owns META: it refuses to truncate while a capture is running, so
+# the facts `start` appended cannot be lost by re-running this target.
+soak-meta:
+	@bash $(BACKEND)/scripts/soak_collectors.sh meta
+	@echo "META written to $(SOAK_RUN_DIR)/META"
+
+# SINCE is only needed for a server-only capture that has no META; the tool
+# otherwise reads capture_started_utc from META rather than trusting a retyped
+# timestamp.
+# No arguments needed after a soak: the window end comes from the
+# capture_ended_utc that `make soak-stop` recorded. UNTIL, SINCE and COMPARE are
+# overrides — UNTIL to freeze an earlier moment of a running capture, COMPARE to
+# diff this report against another run's report.json.
+soak-report:
+	@test -d $(SOAK_RUN_DIR) || \
+	  { echo "soak-report: no run at $(SOAK_RUN_DIR) — see 'make soak-runs', or pass RUN=<name>"; \
+	    exit 1; }
+	cd $(BACKEND) && uv run python scripts/soak_report.py --dir $(SOAK_RUN_DIR) \
+	  $(if $(UNTIL),--until "$(UNTIL)",) $(if $(SINCE),--since "$(SINCE)",) \
+	  $(if $(COMPARE),--compare "$(COMPARE)",)
 
 # ============================ PROD ============================
 # Runs the CI-published GHCR images pinned to :$(APP_VERSION) — nothing is

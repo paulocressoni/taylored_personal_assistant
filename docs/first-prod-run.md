@@ -234,6 +234,7 @@ All seven random secrets must be **distinct** — do not reuse one value in seve
 | `VOICE_STT_API_KEY` | Groq (`gsk_…`) or OpenAI | STT provider |
 | `VOICE_TTS_API_KEY` | OpenAI (`sk-…`) | TTS provider |
 | `VOICE_TTS_VOICES` | omit for the defaults (`en: marin`, `de: cedar`, `pt-BR: coral`) | every supported language needs a voice |
+| `VOICE_WAKE_WORD_ENABLED` | `true` to require "Hey Jarvis" before a voice turn; needs the vendored models, which ship in the image | `VOICE_WAKE_WORD_PHRASE` sets what is stripped from transcripts, `VOICE_WAKE_WORD_ALLOW_OPT_OUT=false` refuses clients that ask to skip the gate |
 | `LANGFUSE_ENABLED` | `true` | best-effort: traces are dropped, the app keeps working |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | **the same pair as `LANGFUSE_INIT_PROJECT_*`** | see §0 |
 | `LANGFUSE_BASE_URL` | `http://localhost:3000` is fine | the prod overlay overrides it to the compose service name |

@@ -274,6 +274,11 @@ export function useVoiceSession({ sessionId, onTurnComplete }: Options): VoiceSe
         session_id: sessionId,
         device_id: getDeviceId(),
         output_sample_rate: PLAYBACK_RATE,
+        // The Speak control is a user gesture — a click starts the stream, the
+        // next click stops it — so this is not ambient audio and must not pay
+        // for a keyword spotter. 'manual' is never gated and never refused,
+        // which also keeps push-to-talk working on a strict server.
+        wake_word: 'manual',
       }
       socket.send(JSON.stringify(startFrame))
     })

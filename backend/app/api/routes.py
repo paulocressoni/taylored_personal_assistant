@@ -52,6 +52,7 @@ from app.core.observability import enrich_trace, mark_turn_failed, turn_span
 from app.graph.utils import get_last_message
 from app.voice.registry import SessionSlots, VoiceProviders
 from app.voice.session import Inbound, Outbound, Send, VoiceSession
+from app.voice.wake import WakeWordUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +528,28 @@ async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
         await _close_with_error(websocket, f"invalid start frame: {exc}", 1003)
         return
 
+    # Four states, resolved the same way for every client:
+    #   auto   -> the server setting (the satellite sends no field at all)
+    #   on     -> refused when the server has no detector; never silently
+    #             un-gated, because that would stream ambient audio to a paid STT
+    #             while the client believes it is gated
+    #   off    -> a declaration that the client may stream ambient audio; refused
+    #             when the operator forbids it
+    #   manual -> audio the user explicitly started; never gated, never refused,
+    #             so the browser keeps working under either policy
+    factory = providers.wake_word_factory
+    enabled = factory is not None
+    if start.wake_word == "on" and not enabled:
+        await _close_with_error(
+            websocket, "wake word is not enabled on this server", 1008
+        )
+        return
+    if start.wake_word == "off" and not settings.voice_wake_word_allow_opt_out:
+        await _close_with_error(websocket, "this server requires the wake word", 1008)
+        return
+    gated = enabled and start.wake_word in {"auto", "on"}
+    wake = factory() if gated and factory is not None else None
+
     session = VoiceSession(
         graph=websocket.app.state.graph,
         transcriber=providers.transcriber,
@@ -536,6 +559,8 @@ async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
         session_id=start.session_id,
         device_id=start.device_id,
         output_sample_rate=start.output_sample_rate,
+        wake=wake,
+        wake_phrase=providers.wake_phrase,
     )
     logger.info("voice session starting (output_rate=%d)", start.output_sample_rate)
     reason = _CloseReason("client gone")
@@ -544,6 +569,18 @@ async def _serve_voice(websocket: WebSocket, providers: VoiceProviders) -> None:
         await session.run(_inbound_frames(websocket, reason))
     except WebSocketDisconnect:
         reason.value = "client gone"
+        return
+    except WakeWordUnavailable:
+        # Fail closed by closing: the session has already sent its one error
+        # frame, and a detector that raised is not recoverable inside a live
+        # socket. Closing is also the only thing the satellite reacts to — it
+        # reconnects with backoff and gets a fresh detector.
+        reason.value = "wake word unavailable"
+        logger.error("voice wake detector failed; closing with 1011")
+        # The session already sent the one error frame that explains this; a second
+        # one would arrive after the client has been told the turn failed. Close
+        # with 1011 directly so the reason is the close code the satellite acts on.
+        await websocket.close(code=1011)
         return
     except Exception as exc:
         # Same policy as the text socket: log it, tell the client best-effort,

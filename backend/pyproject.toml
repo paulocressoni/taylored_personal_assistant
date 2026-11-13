@@ -56,7 +56,15 @@ include = ["app*"]
 # copies `app/` wholesale) nor the editable dev install needs this, but a plain
 # wheel build would silently omit the .onnx and only fail at the first turn.
 [tool.setuptools.package-data]
-"app.voice" = ["models/*.onnx"]
+# The graphs alone are not enough: they are CC BY-NC-SA 4.0, and the README in
+# that directory is the attribution. The Docker image copies `app/` wholesale,
+# but a wheel would otherwise redistribute the binaries without their licence.
+"app.voice" = [
+    "models/*.onnx",
+    "models/openwakeword/*.onnx",
+    "models/openwakeword/README.md",
+    "models/openwakeword/LICENSE*",
+]
 
 [tool.mypy]
 python_version = "3.12"

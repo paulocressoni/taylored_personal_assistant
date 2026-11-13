@@ -302,6 +302,52 @@ Two invariants to keep in mind before editing this code:
   count ([dashboards.md](../infra/observability/dashboards.md) §5.8), and the measured
   latency they belong to is tabulated in [voice.md](voice.md).
 
+**A `tts` span starting before the app-root span ends is the design, not a bug.** Sentences are
+synthesised as they stream out of the graph, so the first `tts` span legitimately begins while
+`LangGraph` is still producing text — that overlap is the whole reason `first_audio_ms` is smaller
+than `turn_ms`. What the waterfall must never show is a `tts` span starting after its own sentence
+was complete, or a stage span outliving the turn.
+
+### The voice log lines, and what they are for
+
+The trace waterfall answers "where did this turn spend its time"; the container log answers "what did
+the gate do while nobody was watching". Both exist because a soak (see [soak.md](soak.md)) counts
+events, not spans:
+
+| Line | Level | Emitted by | Meaning |
+|---|---|---|---|
+| `voice session starting (output_rate=N)` | INFO | the route | a start frame passed validation |
+| `voice session open (output_rate=N, resampling=B)` | INFO | the session | the session owns the socket; `resampling` says whether TTS output was converted |
+| `wake word detected (score=…, in_turn=…)` | INFO | the session | the phrase fired; `in_turn` means it is also a barge-in |
+| `voice turn accepted (wake_lead=±Xs)` | INFO | the session | a segment became a turn; negative = phrase and command in one breath |
+| `voice turn ignored: no wake word (speech=…, since_arm=…)` | INFO | the session | the gate refused a segment, and how long ago the permit was armed |
+| `voice session closed: <reason>` | INFO | the route | **exactly one per socket**: `client gone`, `idle timeout`, or `failed (<Exception>)` |
+
+The last one is the replacement for an ASGI traceback: a client that vanished without a CLOSE frame
+used to be visible only as `Exception in ASGI application` (one per session, 491 of them in a 47-hour
+soak), which made the log unreadable and every engine look broken. `_close_quietly` now treats it as
+a normal end and this line names it.
+
+### The satellite's serial console
+
+The **device** is the third source, and it is not a log file this service writes: it is the board's
+serial console, captured by `make soak-up` (see [soak.md](soak.md#the-satellite-stream)). The lines a
+soak report reads:
+
+| Line | Where from | Read for |
+|---|---|---|
+| `app_init: Project name:` | the ESP-IDF boot banner | how many times the board booted — more than one invalidates the clock anchor |
+| `app_init: App version:` / `ESP-IDF:` | the same banner | the firmware that actually ran, recorded in `META` and in `report.json` |
+| `ws: connected` | the firmware | the device half of the clock anchor, paired with the server's `[accepted]` |
+| `session ended after N s (…)` | the firmware | device-side socket lifetimes |
+| `leds: state -> N` | the firmware | 1 IDLE, 2 LISTENING, 3 THINKING, 4 SPEAKING |
+| `heard: …` | the firmware | what the device actually received; may be non-ASCII |
+| `reply audio: N bytes`, `ring full`, `playout ran dry` | the firmware | playback size, truncation, underruns |
+
+The capture also carries `script`'s own `Script started on …` / `Script done on …` bookkeeping lines,
+and `idf_monitor` replays the cmake output of a reconfigure at the head. The report ignores all of
+them.
+
 ## Upgrading
 
 Two versions move independently: the **app** (the GHCR image, pinned by

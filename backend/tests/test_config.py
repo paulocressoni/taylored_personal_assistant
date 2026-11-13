@@ -117,3 +117,70 @@ def test_voice_input_sample_rate_is_pinned_to_the_vad_window() -> None:
             voice_tts_api_key="sk-tts-test",  # pragma: allowlist secret
             voice_input_sample_rate=48000,
         )
+
+
+# --- wake word settings -----------------------------------------------------
+
+
+def _voice_settings(**overrides):
+    """Settings that pass the voice validators, so a wake rule can be isolated."""
+    base = {
+        "_env_file": None,
+        "deepseek_api_key": "sk-test-key",  # pragma: allowlist secret
+        "assistant_api_key": "sk-assistant-test",  # pragma: allowlist secret
+        "voice_enabled": True,
+        "voice_stt_api_key": "gsk-test",  # pragma: allowlist secret
+        "voice_tts_api_key": "sk-tts-test",  # pragma: allowlist secret
+    }
+    base.update(overrides)
+    return Settings(**base)
+
+
+def test_wake_word_defaults_keep_the_feature_off() -> None:
+    # `_env_file=None` keeps this an assertion about the FIELD default. Without
+    # it the test reads the developer's own .env.dev, and enabling the gate there
+    # — which a soak requires — turns a green suite red for the wrong reason. The
+    # two keys are only here to satisfy the fail-fast startup validation; no
+    # wake-word field is passed, so its defaults are what is being measured.
+    settings = Settings(
+        _env_file=None,
+        deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+        assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+    )
+
+    assert settings.voice_wake_word_enabled is False
+    assert settings.voice_wake_word_model == "hey_jarvis_v0.1.onnx"
+    assert settings.voice_wake_word_phrase == ""
+    assert settings.voice_wake_word_threshold == 0.5
+    assert settings.voice_wake_word_window_seconds == 6.0
+    assert settings.voice_wake_word_allow_opt_out is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["openwakeword/hey_jarvis_v0.1.onnx", "openwakeword\\hey_jarvis_v0.1.onnx"],
+)
+def test_a_wake_model_with_a_path_separator_is_rejected(model: str) -> None:
+    # `Path(name).name == name` alone would accept the backslash on Linux, where
+    # it is a legal filename character — the rule has to mean the same thing on
+    # every host that reads the setting.
+    with pytest.raises(ValueError, match="bare .onnx filename"):
+        _voice_settings(voice_wake_word_model=model)
+
+
+def test_a_wake_model_that_is_not_onnx_is_rejected() -> None:
+    with pytest.raises(ValueError, match="bare .onnx filename"):
+        _voice_settings(voice_wake_word_model="hey_jarvis_v0.1.tflite")
+
+
+def test_forbidding_opt_out_while_the_gate_is_off_is_a_startup_error() -> None:
+    # Every session would resolve to un-gated and then be refused: voice could
+    # not start at all. Fail at import instead of bricking the feature.
+    with pytest.raises(ValueError, match="ALLOW_OPT_OUT=false requires"):
+        Settings(
+            _env_file=None,
+            deepseek_api_key="sk-test-key",  # pragma: allowlist secret
+            assistant_api_key="sk-assistant-test",  # pragma: allowlist secret
+            voice_wake_word_enabled=False,
+            voice_wake_word_allow_opt_out=False,
+        )

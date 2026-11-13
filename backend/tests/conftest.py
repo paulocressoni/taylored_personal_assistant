@@ -15,6 +15,7 @@ import pytest
 from langchain_core.messages import BaseMessage
 
 from app.voice.stt import Transcript
+from app.voice.wake import Detection
 
 
 class FakeChatModel:
@@ -212,6 +213,47 @@ class ScriptedVad:
         if not self._probabilities:
             raise AssertionError("ScriptedVad ran out of scripted probabilities")
         return self._probabilities.pop(0)
+
+
+class ScriptedWake:
+    """Duck-typed `WakeWord` that fires on the scripted pushes.
+
+    One entry per `push` call: a positive score reports a `Detection`, `0.0`
+    reports nothing. The script models what the AUDIO contained, so a test can
+    say "this chunk holds the phrase, the next one does not" without any model.
+    Running past the end of the script reports silence rather than raising, so a
+    test that pushes one chunk too many does not fail for the wrong reason.
+    """
+
+    def __init__(self, *scores: float) -> None:
+        self._scores = list(scores)
+        self.pushes: list[int] = []
+        self.resets = 0
+
+    def reset(self) -> None:
+        """Record the reset without rewinding the audio script."""
+        self.resets += 1
+
+    def push(self, pcm: bytes) -> list[Detection]:
+        """Record the chunk and return the detections its scripted score implies."""
+        self.pushes.append(len(pcm))
+        score = self._scores.pop(0) if self._scores else 0.0
+        return [Detection(score=score)] if score > 0 else []
+
+
+class BrokenWake:
+    """Duck-typed `WakeWord` whose every push raises, like a corrupt graph."""
+
+    def __init__(self) -> None:
+        self.pushes = 0
+
+    def reset(self) -> None:
+        """No-op: this double never holds state."""
+
+    def push(self, pcm: bytes) -> list[Detection]:
+        """Raise, to exercise the fail-closed path."""
+        self.pushes += 1
+        raise RuntimeError("graph exploded")
 
 
 @pytest.fixture

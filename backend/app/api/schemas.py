@@ -81,3 +81,14 @@ class VoiceStartRequest(BaseModel):
             "app.voice.session.OUTPUT_SAMPLE_RATES by a test."
         ),
     )
+    wake_word: Literal["auto", "on", "off", "manual"] = Field(
+        default="auto",
+        description=(
+            "Whether this session must hear the wake word. 'auto' follows the "
+            "server setting (and is what the satellite sends by sending "
+            "nothing); 'on' is refused when the server has the feature off; "
+            "'off' is refused by a server that forbids un-gated sessions; "
+            "'manual' means the client only streams audio the user explicitly "
+            "started, so it is never gated."
+        ),
+    )

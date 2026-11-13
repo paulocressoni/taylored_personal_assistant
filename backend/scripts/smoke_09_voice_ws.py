@@ -134,7 +134,12 @@ async def _receive(socket: Any, recorder: _Recorder) -> None:
 
 
 async def run(
-    lang: str, output_rate: int, url: str, out: Path | None, drop: bool = False
+    lang: str,
+    output_rate: int,
+    url: str,
+    out: Path | None,
+    wake: str = "off",
+    drop: bool = False,
 ) -> None:
     """Stream one fixture over the socket and report what came back.
 
@@ -143,6 +148,8 @@ async def run(
         output_rate: Rate to ask the server to speak at, in Hz.
         url: The voice socket URL, without the key.
         out: Where to write the reply WAV, or None to keep only the numbers.
+        wake: `wake_word` value for the start frame; "off" keeps the script
+            un-gated, which is what its ordinary question needs.
         drop: Tear the TCP connection down mid-turn instead of closing the
             socket, which is what a device losing power or Wi-Fi does. The
             server then has a connected socket whose peer is gone — the path
@@ -177,6 +184,7 @@ async def run(
                     "session_id": f"smoke09-{lang}",
                     "device_id": "smoke09",
                     "output_sample_rate": output_rate,
+                    "wake_word": wake,
                 }
             )
         )
@@ -229,6 +237,16 @@ def main() -> None:
         choices=[16000, 24000],
         help="the reSpeaker's I2S rate (16000) or the browser's 24000",
     )
+    parser.add_argument(
+        "--wake",
+        default="off",
+        choices=["off", "auto"],
+        help=(
+            "wake_word value for the start frame. There is deliberately no 'on': "
+            "this script streams an ordinary question, so a gated run would be "
+            "rejected and report a false failure. Use smoke_10 for that."
+        ),
+    )
     parser.add_argument("--url", default=DEFAULT_URL)
     parser.add_argument(
         "--out",
@@ -245,7 +263,9 @@ def main() -> None:
     logging.basicConfig(
         level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
-    asyncio.run(run(args.lang, args.output_rate, args.url, args.out, args.drop))
+    asyncio.run(
+        run(args.lang, args.output_rate, args.url, args.out, args.wake, args.drop)
+    )
 
 
 async def test_smoke_09_voice_ws() -> None:

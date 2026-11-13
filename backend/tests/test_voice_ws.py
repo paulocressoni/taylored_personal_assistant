@@ -14,7 +14,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from conftest import FakeSynthesizer, FakeTranscriber, ScriptedVad, transcript
+from conftest import (
+    BrokenWake,
+    FakeSynthesizer,
+    FakeTranscriber,
+    ScriptedVad,
+    ScriptedWake,
+    transcript,
+)
 from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessageChunk
@@ -155,6 +162,7 @@ def test_the_ready_frame_announces_the_negotiated_rate(client: TestClient) -> No
             "input_sample_rate": settings.voice_input_sample_rate,
             "output_sample_rate": 24000,
             "format": "pcm_s16le",
+            "wake_word": False,
         }
 
 
@@ -266,6 +274,145 @@ def test_a_rate_limited_socket_is_refused_before_it_takes_a_slot(
 
     assert exc_info.value.code == 1013
     assert app.state.voice_slots.active == 0
+
+
+# --- the wake-word start frame ----------------------------------------------
+
+
+def _providers_with_wake(wake: Any, phrase: str = "hey jarvis") -> VoiceProviders:
+    """Providers with a wake factory, so a session can actually be gated."""
+    return VoiceProviders(
+        transcriber=FakeTranscriber(transcript("Hey Jarvis, turn on the light")),
+        synthesizer=FakeSynthesizer(b"\x01\x00"),
+        vad_factory=lambda: ScriptedVad(0.9, 0.9, 0.1, 0.1),
+        wake_word_factory=lambda: wake,
+        wake_phrase=phrase,
+    )
+
+
+def _ready(socket: Any, start: dict[str, Any]) -> dict[str, Any]:
+    """Send a start frame and return the ready frame it produced."""
+    socket.send_text(json.dumps(start))
+    return socket.receive_json()
+
+
+@pytest.mark.parametrize(
+    ("wake_word", "expected"),
+    [
+        ("auto", True),  # follows the server, which has a detector here
+        ("on", True),
+        ("manual", False),  # a user gesture is never gated
+        ("off", False),  # allowed by default
+    ],
+)
+def test_the_start_frame_decides_whether_the_session_is_gated(
+    client: TestClient, wake_word: str, expected: bool
+) -> None:
+    # The four values are distinguished by the echo: a factory call count cannot
+    # tell them apart, because the two un-gated values never call it.
+    app.state.voice_providers = _providers_with_wake(ScriptedWake(0.0))
+
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        ready = _ready(
+            socket,
+            {
+                "session_id": "wake-ws",
+                "output_sample_rate": 24000,
+                "wake_word": wake_word,
+            },
+        )
+
+        assert ready["type"] == "ready"
+        assert ready["wake_word"] is expected
+
+
+def test_a_server_without_a_detector_echoes_an_ungated_session(
+    client: TestClient,
+) -> None:
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        ready = _ready(socket, {"session_id": "wake-ws-2", "output_sample_rate": 24000})
+
+        assert ready["wake_word"] is False
+
+
+def test_asking_for_the_wake_word_on_an_unconfigured_server_is_refused(
+    client: TestClient,
+) -> None:
+    # Never silently un-gate: that would stream ambient audio to a paid STT while
+    # the client believes it is gated.
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        socket.send_text(
+            json.dumps(
+                {
+                    "session_id": "wake-ws-3",
+                    "output_sample_rate": 24000,
+                    "wake_word": "on",
+                }
+            )
+        )
+
+        assert socket.receive_json()["detail"] == (
+            "wake word is not enabled on this server"
+        )
+        assert socket.receive()["code"] == 1008
+
+
+def test_opting_out_is_refused_when_the_operator_forbids_it(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app.state.voice_providers = _providers_with_wake(ScriptedWake(0.0))
+    monkeypatch.setattr(settings, "voice_wake_word_allow_opt_out", False)
+
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        socket.send_text(
+            json.dumps(
+                {
+                    "session_id": "wake-ws-4",
+                    "output_sample_rate": 24000,
+                    "wake_word": "off",
+                }
+            )
+        )
+
+        assert socket.receive_json()["detail"] == "this server requires the wake word"
+        assert socket.receive()["code"] == 1008
+
+
+def test_manual_sessions_survive_a_strict_server(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The browser must keep working when opt-out is forbidden; only an explicit
+    # "off" is refused, because a click is not ambient audio.
+    app.state.voice_providers = _providers_with_wake(ScriptedWake(0.0))
+    monkeypatch.setattr(settings, "voice_wake_word_allow_opt_out", False)
+
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        ready = _ready(
+            socket,
+            {
+                "session_id": "wake-ws-5",
+                "output_sample_rate": 24000,
+                "wake_word": "manual",
+            },
+        )
+
+        assert ready["wake_word"] is False
+
+
+def test_a_broken_detector_closes_the_socket_with_1011(client: TestClient) -> None:
+    app.state.voice_providers = _providers_with_wake(BrokenWake())
+
+    with client.websocket_connect("/ws/voice", subprotocols=[API_KEY]) as socket:
+        ready = _ready(
+            socket,
+            {"session_id": "wake-ws-6", "output_sample_rate": 24000, "wake_word": "on"},
+        )
+        assert ready["wake_word"] is True
+
+        socket.send_bytes(UTTERANCE_PCM)
+
+        assert socket.receive_json()["detail"] == "wake word unavailable"
+        assert socket.receive()["code"] == 1011
 
 
 class VanishedPeer:

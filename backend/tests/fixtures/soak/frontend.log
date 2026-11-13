@@ -1,0 +1,2 @@
+2026-01-01T00:00:02.000000001Z 2026/01/01 00:00:02 [warn] 33#33: *10 upstream sent duplicate header line: "date:", ignored while reading response header from upstream
+172.18.0.10 - - [01/Jan/2026:00:00:02 +0000] "GET /ws/voice?api_key=REDACTED HTTP/1.1" 101 0 "-" "-"
