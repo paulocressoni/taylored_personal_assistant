@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/paulocressoni/taylored_personal_assistant/compare/v0.4.0...v0.5.0) (2026-11-13)
+
+
+### Features
+
+* **firmware:** satellite firmware v1 — wireless audio transport (D1.3) ([#50](https://github.com/paulocressoni/taylored_personal_assistant/issues/50)) ([5b49d47](https://github.com/paulocressoni/taylored_personal_assistant/commit/5b49d47b78db9d2606fa5c4ea21933d2fb462628))
+* **voice:** add a server-side wake word ("Hey Jarvis", openWakeWord) and the soak report that measures it ([#53](https://github.com/paulocressoni/taylored_personal_assistant/issues/53)) ([4c605cf](https://github.com/paulocressoni/taylored_personal_assistant/commit/4c605cf29daf0271eb035835e37ea2b7b3405579))
+* **voice:** add a server-side wake word and the soak report that measures it ([4c605cf](https://github.com/paulocressoni/taylored_personal_assistant/commit/4c605cf29daf0271eb035835e37ea2b7b3405579))
+
+
+### Bug Fixes
+
+* **frontend:** install the libxslt security release in the runtime image ([#56](https://github.com/paulocressoni/taylored_personal_assistant/issues/56)) ([2d1b990](https://github.com/paulocressoni/taylored_personal_assistant/commit/2d1b99007ed13d608c1e2ea2c51d57727511bc92))
+* **voice:** report the secure-context requirement and document the first prod run ([#45](https://github.com/paulocressoni/taylored_personal_assistant/issues/45)) ([8f59940](https://github.com/paulocressoni/taylored_personal_assistant/commit/8f59940077a40b1dbbcfcb99cc788d3be208426b))
+* **voice:** treat a vanished client as a normal session end ([#54](https://github.com/paulocressoni/taylored_personal_assistant/issues/54)) ([fc0971e](https://github.com/paulocressoni/taylored_personal_assistant/commit/fc0971ebc266612866bcad4daac389d80f9f8719))
+
+
+### Documentation
+
+* make the setup guide followable on a fresh, cross-platform machine ([#52](https://github.com/paulocressoni/taylored_personal_assistant/issues/52)) ([08f1ed8](https://github.com/paulocressoni/taylored_personal_assistant/commit/08f1ed87d1243afc52470da0aefcaa3b991c89bc))
+
 ## [0.4.0](https://github.com/paulocressoni/taylored_personal_assistant/compare/v0.3.1...v0.4.0) (2026-10-23)
 
 
