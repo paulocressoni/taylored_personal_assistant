@@ -389,13 +389,14 @@ signal. Ground truth Q4.
 
 Success rate ≈ 4b ÷ (4a + 4b).
 
-**Provenance:** both tags are written by `trace_attributes()` from the run's
-`tool_outcomes`: `status:tool_ok` when at least one tool ran and none raised,
-`status:tool_error` when at least one raised, and `status:permission_denied`
-when a denial occurred (it wins over the other two). Per-call detail is in the
-`tool_outcomes` metadata key, a comma-separated
+**Provenance:** both tags are written by `trace_attributes()` from the CURRENT
+turn's `tool_outcomes`: `status:tool_ok` when at least one tool ran and none
+raised, `status:tool_error` when at least one raised, and
+`status:permission_denied` when a denial occurred (it wins over the other two).
+Per-call detail is in the `tool_outcomes` metadata key, a comma-separated
 `<tool>:<ok|denied|error_type>:<duration_ms>` list — e.g.
-`calculate:ok:3.3,calculate:ok:4.4`.
+`calculate:ok:3.3,calculate:ok:4.4`. Earlier turns in the same session are
+never included; the tool lists reset at the start of each turn.
 
 **Gotchas:** the calculator returns an error *string* on bad input instead of
 raising, so user-input mistakes count as `status:tool_ok` by design — this panel

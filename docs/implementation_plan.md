@@ -799,6 +799,13 @@ Each of these removes a real trap.
   fast and the `langchain-deepseek` *docs* are stale — trust the changelogs and PyPI over the integration page.
 - **H6 — Notes from D1 that do not fit elsewhere:** confirm `nct6683` fan/temperature monitoring; confirm the
   2.5" bay is empty or holds a backup disk; record serials for the backup runbook.
+- **H7 — Session lifecycle and history compaction (TODO).** `IPAState.messages` is the thread's persisted
+  memory and is intentionally unbounded; `MAX_HISTORY_MESSAGES` (20) only caps the model prompt. A long-lived
+  session therefore makes `GET /sessions/{id}/history` large and makes LangGraph's Chain span serialize the
+  whole thread, so the Langfuse payload grows even though the model saw 20 messages. Candidate fixes, not
+  implemented: auto-create a new session after N turns/bytes/age; summarize older turns and replace them with
+  one summary message; add a retention job; paginate `GET /sessions/{id}/history`. Document the chosen policy
+  here before changing the state schema.
 
 ---
 

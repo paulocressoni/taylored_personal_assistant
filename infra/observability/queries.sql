@@ -158,8 +158,8 @@ GROUP BY day
 ORDER BY day;
 
 -- 5b. Per-call outcomes of the newest failing turns.
--- `tool_outcomes` is the compact per-call summary the app writes, one entry
--- per invocation: `<tool>:<ok|denied|error_type>:<duration_ms>`.
+-- `tool_outcomes` is the compact CURRENT-TURN per-call summary the app writes,
+-- one entry per invocation: `<tool>:<ok|denied|error_type>:<duration_ms>`.
 SELECT
     trace_id,
     trace_name,

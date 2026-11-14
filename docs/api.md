@@ -329,8 +329,10 @@ default `backend/checkpoints.db`, configurable via `CHECKPOINT_DB_PATH` in
 - The **`thread_id`** is *which conversation this turn belongs to* — it's in
   `config["configurable"]["thread_id"]`, never in `IPAState`.
 - Reducers (`Annotated[list, operator.add]` on `messages`) make history accumulate: each
-  new turn's messages are appended to the saved ones, so the model sees the whole
-  conversation.
+  new turn's messages are appended to the saved ones. The FULL list is persisted and
+  returned by `GET /sessions/{id}/history`; only the last `MAX_HISTORY_MESSAGES`
+  (default 20) are sent to the model, through `trim_messages()`. The model does not see
+  the whole unbounded thread.
 
 ### GET /sessions/{session_id}/history
 
@@ -351,6 +353,20 @@ curl -H "X-API-Key: <ASSISTANT_API_KEY>" \
 Returns `SessionHistoryResponse` — `{"session_id": "...", "messages": [...]}` oldest
 first, or `"messages": []` if the session never ran. Debugging/inspection only; the chat
 routes read the same store implicitly.
+
+#### Known limitation: session history grows without bound
+
+`messages` is the thread's persisted memory and is intentionally never trimmed in the
+checkpoint. `MAX_HISTORY_MESSAGES` (default 20) only caps the prompt a node sends to the
+model. A long-lived session therefore has two consequences:
+
+- `GET /sessions/{id}/history` returns the entire thread, however long it is.
+- LangGraph's Chain span serializes the full checkpointed state, so the Langfuse payload
+  grows with the thread even though the model saw only the 20-message window.
+
+This is one thread's history, not data from other sessions. Session splitting,
+summarization/compaction, retention and paginated history are tracked as **H7** in
+[implementation_plan.md](implementation_plan.md); they are not implemented today.
 
 ### DELETE /sessions/{session_id}
 

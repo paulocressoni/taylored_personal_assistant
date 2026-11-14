@@ -204,6 +204,11 @@ before that first start.
   `IPAState` from the `RunTelemetry` counter in
   `config["configurable"]["run_telemetry"]`, so the persisted state — and the trace
   metadata built from it — reflects every model call in the run.
+- **Tool metadata is per-turn.** `tools_called`, `tool_outcomes`, the tool error taxonomy
+  and the `status:tool_*` / `status:permission_denied` tags describe the CURRENT turn.
+  `build_initial_state()` seeds the tool lists empty, and `tool_exec_node` appends within
+  the turn; they are deliberately not reducers, so a previous turn's calls cannot appear
+  on a later trace.
 - `_get_client()` builds the singleton with `environment=settings.env` (so traces land
   in `prod` / `dev` rather than Langfuse's `default`) and `release=__version__`.
 - `flush()` (v4: on the client) is called on app shutdown and after the smoke test so
