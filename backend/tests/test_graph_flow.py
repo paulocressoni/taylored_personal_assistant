@@ -8,8 +8,10 @@ tools-free finalize, and mode derived from tool_iterations.
 
 from conftest import FakeChatModel, make_state
 from langchain_core.messages import AIMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from app.api.deps import build_initial_state
+from app.core.observability import trace_attributes
 from app.graph.graph import build_graph
 from app.graph.nodes.telemetry import telemetry_node
 from app.graph.nodes.tool_exec import TOOL_ITERATION_CAP
@@ -61,6 +63,68 @@ async def test_one_tool_round_uses_two_model_calls_and_mode_tools(
     assert final["tool_iterations"] == 1
     assert "calculate" in final["tools_called"]
     assert get_last_message(final["messages"]).content == "2"
+
+
+async def test_two_tool_rounds_accumulate_within_one_turn(patch_llm) -> None:
+    fake = FakeChatModel(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculate", "args": {"expression": "1+1"}, "id": "c1"}
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculate", "args": {"expression": "2+2"}, "id": "c2"}
+            ],
+        ),
+        AIMessage(content="4"),
+    )
+    patch_llm(lambda role: fake)
+
+    final = await build_graph().ainvoke(
+        _turn("What is 2+2?"), config={"configurable": {}}
+    )
+
+    assert final["tool_iterations"] == 2
+    assert final["tools_called"] == ["calculate", "calculate"]
+    assert len(final["tool_outcomes"]) == 2
+    assert final["mode"] == "tools"
+
+
+async def test_a_new_turn_resets_tool_telemetry(patch_llm) -> None:
+    fake = FakeChatModel(
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculate", "args": {"expression": "1+1"}, "id": "c1"}
+            ],
+        ),
+        AIMessage(content="2"),
+        AIMessage(content="Hello."),
+    )
+    patch_llm(lambda role: fake)
+    graph = build_graph(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "telemetry-reset"}}
+
+    first = await graph.ainvoke(_turn("What is 1+1?"), config=config)
+    assert first["tools_called"] == ["calculate"]
+    assert len(first["tool_outcomes"]) == 1
+
+    second = await graph.ainvoke(_turn("Hello"), config=config)
+
+    assert second["tools_called"] == []
+    assert second["tool_outcomes"] == []
+    assert second["tool_iterations"] == 0
+    assert second["mode"] == "chat"
+
+    attributes = trace_attributes(second)
+    assert attributes.metadata["tools_called"] == ""
+    assert attributes.metadata["tool_outcomes"] == ""
+    assert "status:tool_error" not in attributes.tags
+    assert "status:permission_denied" not in attributes.tags
+    assert "status:ok" in attributes.tags
 
 
 async def test_cap_reaches_finalize_and_keeps_mode_tools(patch_llm) -> None:

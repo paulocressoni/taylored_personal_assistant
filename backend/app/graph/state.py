@@ -19,6 +19,11 @@ class IPAState(TypedDict):
     # Settings.max_history_messages and app.graph.utils.trim_messages when
     # they build their prompt input. Persistence unbounded, model window
     # bounded — two different concerns.
+    #
+    # TODO(H7): session splitting/compaction is not implemented. A long-lived
+    # thread keeps every message here, and LangGraph's Chain span serializes
+    # the full state; see docs/api.md "Known limitation" and
+    # docs/implementation_plan.md H7.
     messages: Annotated[list[AnyMessage], operator.add]
     user_input: str
     session_id: str
@@ -42,16 +47,20 @@ class IPAState(TypedDict):
     pending_action: dict | None
     llm_calls: int
     tool_iterations: int
-    tools_called: Annotated[list[str], operator.add]
+    # Tool telemetry is TURN-SCOPED, not a reducer: build_initial_state() seeds
+    # [] and the input overwrites the previous turn's value. tool_exec_node
+    # appends within the turn so every ReAct iteration is still recorded.
+    # A reducer here would make the checkpointer carry old tool calls into
+    # every later trace (the 10x calculate leak).
+    tools_called: list[str]
     # --- Observability additions ---
-    # One dict per tool INVOCATION, appended by tool_exec_node through the
-    # reducer so every ReAct iteration this turn is recorded, e.g.
+    # One dict per tool INVOCATION this turn, e.g.
     # {"tool": "calculate", "ok": false, "error_type": "ValueError",
     #  "denied": false, "duration_ms": 12.4}.
-    tool_outcomes: Annotated[list[dict], operator.add]
-    # Permission-denial records: {"tool": str, "reason": str,
+    tool_outcomes: list[dict]
+    # Permission-denial records for THIS turn: {"tool": str, "reason": str,
     # "user_id": str | None}. Empty until authorization lands.
-    permission_denials: Annotated[list[dict], operator.add]
+    permission_denials: list[dict]
     # Per-run LLM usage totals, written ONCE by telemetry_node at the end of a
     # run: {llm_calls, input_tokens, output_tokens, cache_hit_tokens,
     # cache_miss_tokens, cache_hit_ratio, error_types}. Read via .get().

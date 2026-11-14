@@ -6,9 +6,11 @@ Every exception from a tool is captured and turned into a ToolMessage so a
 tool failure can never crash the whole graph.
 
 Each invocation also produces a structured OUTCOME dict (success / error type /
-permission-denied / duration) that is appended to state["tool_outcomes"] via the
-list reducer. The observability dashboards slice this per tool, so a trend of
-failures or slow calls is visible without digging through logs.
+permission-denied / duration) that tool_exec_node appends to the TURN-SCOPED
+state["tool_outcomes"]. The state channels are deliberately not reducers: a
+new turn seeds empty lists, so old calls can never leak into its trace. The
+observability dashboards slice this per turn, so a trend of failures or slow
+calls is visible without digging through logs.
 """
 
 import logging
@@ -96,7 +98,8 @@ async def tool_exec_node(state: IPAState) -> dict:
 
     Returns:
         A dict with the tool results, updated iteration count, and structured
-        outcomes for observability.
+        outcomes for observability. The telemetry lists carry forward this
+        turn's earlier tool_exec calls but never a previous turn's calls.
     """
     last = get_last_message(state["messages"])
     tool_calls = getattr(last, "tool_calls", None) or []
@@ -154,16 +157,24 @@ async def tool_exec_node(state: IPAState) -> dict:
 
         results.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
 
-    # Hand the tool names + structured outcomes to the reducers so
-    # observability can report which tools ran and how each one fared.
+    # Append to the current turn's telemetry. These channels are NOT reducers:
+    # the input's seeded [] resets them at the start of each run, and this
+    # explicit append preserves earlier tool_exec iterations within the run.
+    # A reducer here would make the checkpointer accumulate calls across turns.
     out: dict = {
         "messages": results,
         "tool_iterations": iterations,
-        "tools_called": [call["name"] for call in tool_calls],
-        "tool_outcomes": outcomes,
+        "tools_called": [
+            *(state.get("tools_called") or []),
+            *(call["name"] for call in tool_calls),
+        ],
+        "tool_outcomes": [*(state.get("tool_outcomes") or []), *outcomes],
     }
     if denials:
-        out["permission_denials"] = denials
+        out["permission_denials"] = [
+            *(state.get("permission_denials") or []),
+            *denials,
+        ]
 
     # The cap notice lives in finalize_node's prompt, not in persisted history:
     # after_tools routes here to finalize at the cap, so no synthetic

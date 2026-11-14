@@ -94,6 +94,8 @@ def build_initial_state(
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,
+        # Turn-scoped, not reducers: these empty lists overwrite the previous
+        # turn's tool telemetry so a new trace cannot inherit old calls.
         "tools_called": [],
         "tool_outcomes": [],
         "permission_denials": [],

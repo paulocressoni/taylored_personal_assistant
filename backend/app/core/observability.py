@@ -218,7 +218,7 @@ def _error_taxonomy(tool_outcomes: list[dict[str, Any]]) -> dict[str, int]:
     """Bucket failed tool calls into the dashboard error taxonomy.
 
     Args:
-        tool_outcomes: The run's `tool_outcomes` state records.
+        tool_outcomes: The current turn's `tool_outcomes` state records.
 
     Returns:
         error_type name -> count for each failed, non-denied call (denials are
@@ -253,7 +253,7 @@ def _tool_outcomes_summary(tool_outcomes: list[dict[str, Any]]) -> str:
     """Render each tool call as `name:outcome:duration_ms`, comma-joined.
 
     Args:
-        tool_outcomes: The run's `tool_outcomes` state records.
+        tool_outcomes: The current turn's `tool_outcomes` state records.
 
     Returns:
         One entry per invocation (`calculate:ok:2.4`, `x:ValueError:0.0`,
@@ -289,8 +289,12 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
     `MAX_METADATA_VALUE_LEN` characters; nested blobs (the whole `usage` dict,
     a multi-call `tool_outcomes` list) were discarded for exactly that reason.
 
+    The tool lists are TURN-SCOPED: `build_initial_state()` resets them and
+    `tool_exec_node` appends within the turn, so a previous turn's calls cannot
+    appear here. Do not make them reducers again.
+
     Args:
-        state: The final graph state of the run.
+        state: The final graph state of this turn.
 
     Returns:
         The trace name (`assistant:<mode>`), the flat metadata dict and the

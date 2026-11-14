@@ -85,6 +85,29 @@ async def test_tool_exec_multiple_calls_one_tool_message_each() -> None:
     assert out["tool_iterations"] == 2
 
 
+async def test_tool_exec_appends_to_this_turns_telemetry() -> None:
+    prior_outcome = {
+        "tool": "calculate",
+        "ok": True,
+        "duration_ms": 1.0,
+        "error_type": None,
+        "denied": False,
+    }
+    state = make_state(
+        messages=[_tool_calls(("calculate", {"expression": "2+3"}, "c2"))],
+        tool_iterations=1,
+        tools_called=["calculate"],
+        tool_outcomes=[prior_outcome],
+    )
+
+    out = await tool_exec_node(state)
+
+    assert out["tool_iterations"] == 2
+    assert out["tools_called"] == ["calculate", "calculate"]
+    assert len(out["tool_outcomes"]) == 2
+    assert out["tool_outcomes"][0] == prior_outcome
+
+
 @tool
 def _boom(value: str) -> str:
     """A tool that always raises, for the exception-wrapping test."""

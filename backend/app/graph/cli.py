@@ -53,9 +53,11 @@ def main() -> None:
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,
-        "tools_called": [],  # One seeded so the reducer has a base
-        "tool_outcomes": [],  # Reducer base for the M28 per-tool outcome log
-        "permission_denials": [],  # Reducer base for the M28 denial log
+        # Turn-scoped telemetry: the empty lists reset the previous run's
+        # values because these channels are not reducers.
+        "tools_called": [],
+        "tool_outcomes": [],
+        "permission_denials": [],
         "usage": None,
     }
 

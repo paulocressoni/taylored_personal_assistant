@@ -5,8 +5,8 @@ RunTelemetry callback handler attached at the invoke site (see app.graph.cli /
 app.api.deps): the counter travels inside
 ``config["configurable"]["run_telemetry"]`` and has seen every model call in
 the run. It also derives ``mode`` from ``tool_iterations``: that channel is a
-plain overwrite and resets every turn, unlike the reducer-accumulated
-``tools_called``.
+plain overwrite and resets every turn. The tool telemetry lists are turn-scoped
+for the same reason; only ``messages`` uses a reducer.
 
 The Langfuse trace is enriched by the INVOKE SITE instead
 (app.core.observability.turn_span / enrich_trace), because a trace's identity
@@ -30,8 +30,8 @@ def telemetry_node(state: IPAState, config: RunnableConfig) -> dict:
     """Reconcile the run's telemetry into state.
 
     Args:
-        state: The current graph state, including route, language and any
-            tools already called this run.
+        state: The current graph state, including language and this turn's
+            tool telemetry.
         config: The run configuration. May carry the shared `RunTelemetry`
             instance under `configurable.run_telemetry`.
 
