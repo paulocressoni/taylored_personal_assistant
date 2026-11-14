@@ -1,8 +1,10 @@
 """Unit tests for graph branching + the generic tool dispatcher.
 
-should_continue and tool_exec_node are PURE graph logic: they never touch the
-LLM, so NO mocking is needed — just well-formed state dicts. This is the
-cheapest, fastest layer of M06's three-tier strategy.
+should_continue and tool_exec_node never touch the LLM, so NO model mocking is
+needed — just well-formed state dicts. tool_exec_node is async because tools are
+awaited, so those tests are ``async def`` and the suite uses
+``asyncio_mode = "auto"``. This is the cheapest, fastest layer of M06's
+three-tier strategy.
 
 The one seam: tool_exec_node looks tools up in tools_by_name (a name imported
 into its module). To prove exception-wrapping we monkeypatch that registry
@@ -71,11 +73,11 @@ def test_route_edge_unknown_or_missing_route_goes_to_responder() -> None:
 # --- tool_exec_node: dispatch -------------------------------------------
 
 
-def test_tool_exec_dispatches_known_tool() -> None:
+async def test_tool_exec_dispatches_known_tool() -> None:
     state = make_state(
         messages=[_tool_calls(("calculate", {"expression": "2+3"}, "c1"))]
     )
-    out = tool_exec_node(state)
+    out = await tool_exec_node(state)
 
     (msg,) = out["messages"]
     assert isinstance(msg, ToolMessage)
@@ -84,13 +86,13 @@ def test_tool_exec_dispatches_known_tool() -> None:
     assert out["tool_iterations"] == 1
 
 
-def test_tool_exec_unknown_tool_is_safe() -> None:
+async def test_tool_exec_unknown_tool_is_safe() -> None:
     state = make_state(messages=[_tool_calls(("no_such_tool", {}, "c1"))])
-    (msg,) = tool_exec_node(state)["messages"]
+    (msg,) = (await tool_exec_node(state))["messages"]
     assert msg.content == "Unknown tool: no_such_tool"
 
 
-def test_tool_exec_multiple_calls_one_tool_message_each() -> None:
+async def test_tool_exec_multiple_calls_one_tool_message_each() -> None:
     state = make_state(
         messages=[
             _tool_calls(
@@ -99,7 +101,7 @@ def test_tool_exec_multiple_calls_one_tool_message_each() -> None:
             )
         ],
     )
-    out = tool_exec_node(state)
+    out = await tool_exec_node(state)
     assert [m.content for m in out["messages"]] == ["2", "4"]
     assert out["tool_iterations"] == 2
 
@@ -113,12 +115,14 @@ def _boom(value: str) -> str:
     raise RuntimeError("kaboom")
 
 
-def test_tool_exec_wraps_tool_exceptions(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_tool_exec_wraps_tool_exceptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     # Inject a raising tool into the registry the node actually reads.
     monkeypatch.setattr("app.graph.nodes.tool_exec.tools_by_name", {"boom": _boom})
     state = make_state(messages=[_tool_calls(("boom", {"value": "x"}, "c1"))])
 
-    (msg,) = tool_exec_node(state)["messages"]
+    (msg,) = (await tool_exec_node(state))["messages"]
     assert isinstance(msg, ToolMessage)
     assert msg.content == "Tool error: RuntimeError: kaboom"
 
@@ -126,7 +130,7 @@ def test_tool_exec_wraps_tool_exceptions(monkeypatch: pytest.MonkeyPatch) -> Non
 # --- tool_iterations cap ------------------------------------------------
 
 
-def test_tool_iterations_cap_stops_the_loop() -> None:
+async def test_tool_iterations_cap_stops_the_loop() -> None:
     # Two calls starting one below the cap: both run, then the 'cap reached'
     # SystemMessage is appended so the responder knows to stop and explain.
     state = make_state(
@@ -138,19 +142,19 @@ def test_tool_iterations_cap_stops_the_loop() -> None:
         ],
         tool_iterations=TOOL_ITERATION_CAP - 1,
     )
-    out = tool_exec_node(state)
+    out = await tool_exec_node(state)
 
     assert out["tool_iterations"] == TOOL_ITERATION_CAP + 1
     assert isinstance(out["messages"][-1], SystemMessage)
     assert "iteration cap" in str(out["messages"][-1].content)
 
 
-def test_tool_iterations_below_cap_has_no_system_message() -> None:
+async def test_tool_iterations_below_cap_has_no_system_message() -> None:
     state = make_state(
         messages=[_tool_calls(("calculate", {"expression": "1+1"}, "c1"))],
         tool_iterations=1,
     )
-    out = tool_exec_node(state)
+    out = await tool_exec_node(state)
 
     assert isinstance(out["messages"][-1], ToolMessage)  # no SystemMessage
     assert out["tool_iterations"] == 2

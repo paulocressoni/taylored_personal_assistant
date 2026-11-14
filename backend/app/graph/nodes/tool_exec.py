@@ -88,7 +88,7 @@ def _outcome(
     }
 
 
-def tool_exec_node(state: IPAState) -> dict:
+async def tool_exec_node(state: IPAState) -> dict:
     """Run the tools requested by the last message.
 
     Args:
@@ -123,7 +123,10 @@ def tool_exec_node(state: IPAState) -> dict:
             content = f"Unknown tool: {name}"
         else:
             try:
-                content = str(tool.invoke(args))
+                content = str(await tool.ainvoke(args))
+            # Catch Exception, never BaseException: CancelledError must escape
+            # so barge-in and asyncio.timeout can stop the turn. The broad catch
+            # is the tool boundary's "a tool failure never crashes the graph".
             except Exception as exc:  # noqa: BLE001 - tool boundary: never crash the graph
                 logger.warning(
                     "tool %r failed with args %r: %s: %s",
