@@ -54,21 +54,23 @@ def test_parse_route_empty_string_falls_back() -> None:
 # --- Level 2: router_node with a faked model (dependency injection) -----
 
 
-def test_router_node_extracts_route_from_fake_reply(patch_llm) -> None:
+async def test_router_node_extracts_route_from_fake_reply(patch_llm) -> None:
     fake = FakeChatModel(AIMessage(content="<route>weather</route>"))
     patch_llm(lambda role: fake)
 
-    result = router_node(make_state(user_input="Is it sunny tomorrow?"), config=None)
+    result = await router_node(
+        make_state(user_input="Is it sunny tomorrow?"), config=None
+    )
 
     assert result["route"] == "weather"
     assert len(fake.calls) == 1  # exactly one model call was made
 
 
-def test_router_node_no_tag_falls_back_to_default(patch_llm) -> None:
+async def test_router_node_no_tag_falls_back_to_default(patch_llm) -> None:
     fake = FakeChatModel(AIMessage(content="I don't know, let me think..."))
     patch_llm(lambda role: fake)
 
-    result = router_node(make_state(user_input="hi"), config=None)
+    result = await router_node(make_state(user_input="hi"), config=None)
 
     assert result["route"] == DEFAULT_ROUTE
     assert len(fake.calls) == 1  # exactly one model call was made

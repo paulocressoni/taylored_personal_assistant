@@ -7,14 +7,14 @@ from app.core.config import settings
 from app.graph.nodes.responder import responder_node
 
 
-def test_responder_caps_history_sent_to_model(patch_llm) -> None:
+async def test_responder_caps_history_sent_to_model(patch_llm) -> None:
     cap = settings.max_history_messages
     history = [HumanMessage(content=f"m{i}") for i in range(cap + 5)]
     fake = FakeChatModel(AIMessage(content="hello"))
     patch_llm(lambda role: fake)
 
     state = make_state(messages=history, lang="en")
-    result = responder_node(state, config=None)
+    result = await responder_node(state, config=None)
 
     # The node returns the model's answer (which the graph persists).
     (out,) = result["messages"]

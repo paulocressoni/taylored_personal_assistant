@@ -63,7 +63,9 @@ def test_detect_low_confidence_falls_back_to_persisted_lang(monkeypatch) -> None
 # --- end-to-end: two checkpointed turns keep the language ------------------
 
 
-def test_two_turn_continuation_keeps_persisted_lang(monkeypatch, patch_llm) -> None:
+async def test_two_turn_continuation_keeps_persisted_lang(
+    monkeypatch, patch_llm
+) -> None:
     # Script all four model calls (router + responder per turn) on one fake.
     fake = FakeChatModel(
         AIMessage(content="<route>responder</route>"),
@@ -83,7 +85,7 @@ def test_two_turn_continuation_keeps_persisted_lang(monkeypatch, patch_llm) -> N
     graph = build_graph(checkpointer=checkpointer)
     config = {"configurable": {"thread_id": "session-1"}}
 
-    final1 = graph.invoke(
+    final1 = await graph.ainvoke(
         build_initial_state(
             user_input="Wie ist das Wetter?",
             session_id="session-1",
@@ -95,7 +97,7 @@ def test_two_turn_continuation_keeps_persisted_lang(monkeypatch, patch_llm) -> N
     assert final1["lang"] == "de"
     assert len(final1["messages"]) == 2  # Human + AI
 
-    final2 = graph.invoke(
+    final2 = await graph.ainvoke(
         build_initial_state(
             user_input="ok",
             session_id="session-1",

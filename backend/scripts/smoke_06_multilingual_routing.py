@@ -10,6 +10,7 @@ The reply's language is verified with the SAME deterministic detector we use
 in production (dogfooding) — no second LLM call, no guesswork.
 """
 
+import asyncio
 import uuid
 
 import pytest
@@ -31,7 +32,7 @@ CASES = [
 ]
 
 
-def _invoke(user_input: str) -> dict:
+async def _invoke(user_input: str) -> dict:
     initial: IPAState = {
         "messages": [HumanMessage(content=user_input)],
         "user_input": user_input,
@@ -47,7 +48,7 @@ def _invoke(user_input: str) -> dict:
     }
     telemetry = RunTelemetry()
     graph = build_graph()
-    return graph.invoke(
+    return await graph.ainvoke(
         initial,
         config={
             "callbacks": [telemetry],
@@ -56,9 +57,9 @@ def _invoke(user_input: str) -> dict:
     )
 
 
-def test_smoke_06_multilingual_routing() -> None:
+async def test_smoke_06_multilingual_routing() -> None:
     for user_input, expected_route, expected_lang in CASES:
-        final = _invoke(user_input)
+        final = await _invoke(user_input)
         reply = str(get_last_message(final["messages"]).content)
 
         assert final["lang"] == expected_lang, (
@@ -81,10 +82,14 @@ def test_smoke_06_multilingual_routing() -> None:
         print(f"   reply: {reply}")
 
 
-if __name__ == "__main__":
+async def _main() -> None:
     for user_input, expected_route, expected_lang in CASES:
-        final = _invoke(user_input)
+        final = await _invoke(user_input)
         reply = str(get_last_message(final["messages"]).content)
         print(f"input={user_input!r}")
         print(f"  route={final['route']!r} lang={final['lang']!r}")
         print(f"  reply={reply!r}")
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

@@ -12,7 +12,7 @@ import re
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableConfig
 
-from app.core.llm import get_chat_model, llm_call
+from app.core.llm import get_chat_model
 from app.graph.state import IPAState
 from app.prompts.router import ROUTER_INSTRUCTIONS
 
@@ -48,20 +48,22 @@ def parse_route(text: str) -> str:
     return candidate if candidate in VALID_ROUTES else DEFAULT_ROUTE
 
 
-def router_node(state: IPAState, config: RunnableConfig) -> dict:
-    """Function to route user input to the appropriate intent based on the ROUTER_PROMPT.
+async def router_node(state: IPAState, config: RunnableConfig) -> dict:
+    """Route the user input to one intent using the router prompt.
+
+    The call is awaited instead of run in a worker thread so a request-level
+    cancellation can stop the in-flight provider request.
 
     Args:
-        state (IPAState): The current state of the IPA, containing user input and other relevant information.
-        config (RunnableConfig): The configuration for the runnable.
+        state: The current IPA state, including the user input.
+        config: The run configuration carrying callbacks and metadata.
 
     Returns:
-        dict: A dictionary containing the routed intent.
+        A state update containing the routed intent.
     """
     model = get_chat_model("router")
     messages = ROUTER_PROMPT.invoke({"user_input": state["user_input"]}).to_messages()
-    llm_result = llm_call(model, messages, config)
-    response = llm_result["response"]  # Extract the response from the llm_call result
+    response = await model.ainvoke(messages, config=config)
 
     # reply.content is typed as a union (str | content blocks). For a text
     # model it's always a str; anything else means "no usable tag" -> responder.

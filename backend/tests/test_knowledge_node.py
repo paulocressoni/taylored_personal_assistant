@@ -23,7 +23,7 @@ from app.prompts.knowledge import KNOWLEDGE_SYSTEM_PROMPT
 from app.tools.registry import TOOLS
 
 
-def test_knowledge_node_binds_tools_and_prepends_system_prompt(patch_llm) -> None:
+async def test_knowledge_node_binds_tools_and_prepends_system_prompt(patch_llm) -> None:
     fake = FakeChatModel(
         AIMessage(
             content="",
@@ -35,7 +35,7 @@ def test_knowledge_node_binds_tools_and_prepends_system_prompt(patch_llm) -> Non
     patch_llm(lambda role: fake)
 
     state = make_state(user_input="What is 15% of 240?")
-    result = knowledge_node(state, config=None)
+    result = await knowledge_node(state, config=None)
 
     # 1. The node returned the model's message (a tool call) as its output.
     (out_msg,) = result["messages"]
@@ -53,7 +53,7 @@ def test_knowledge_node_binds_tools_and_prepends_system_prompt(patch_llm) -> Non
     assert state["messages"] == []
 
 
-def test_knowledge_node_caps_history_sent_to_model(patch_llm) -> None:
+async def test_knowledge_node_caps_history_sent_to_model(patch_llm) -> None:
     cap = settings.max_history_messages
     history = [HumanMessage(content=f"m{i}") for i in range(cap + 5)]
     fake = FakeChatModel(
@@ -67,7 +67,7 @@ def test_knowledge_node_caps_history_sent_to_model(patch_llm) -> None:
     patch_llm(lambda role: fake)
 
     state = make_state(user_input="What is 1+1?", messages=history)
-    result = knowledge_node(state, config=None)
+    result = await knowledge_node(state, config=None)
 
     (out_msg,) = result["messages"]
     assert isinstance(out_msg, AIMessage)

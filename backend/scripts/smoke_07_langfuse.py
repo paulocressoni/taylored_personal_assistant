@@ -11,6 +11,7 @@ Verify: open http://localhost:3000 -> Traces -> newest run -> expect a
         knowledge / responder and an LLM generation with token counts.
 """
 
+import asyncio
 import uuid
 from typing import Any
 
@@ -35,7 +36,7 @@ from app.graph.utils import get_last_message
 pytestmark = pytest.mark.integration
 
 
-def _invoke(user_input: str) -> tuple[dict, Any]:
+async def _invoke(user_input: str) -> tuple[dict, Any]:
     """Run the graph with Langfuse wired up; return (final_state, handler).
 
     ``handler`` is None when observability is off — the smoke test just
@@ -68,7 +69,7 @@ def _invoke(user_input: str) -> tuple[dict, Any]:
     graph = build_graph()
     with turn_span():
         try:
-            result = graph.invoke(
+            result = await graph.ainvoke(
                 initial,
                 config={
                     "callbacks": callbacks,
@@ -89,11 +90,11 @@ def _invoke(user_input: str) -> tuple[dict, Any]:
     return result, langfuse
 
 
-def test_smoke_07_langfuse_trace() -> None:
+async def test_smoke_07_langfuse_trace() -> None:
     if not settings.langfuse_ready:
         pytest.skip("Langfuse not configured (LANGFUSE_ENABLED/keys missing)")
 
-    final, _langfuse = _invoke("What is the capital of France?")
+    final, _langfuse = await _invoke("What is the capital of France?")
 
     assert final["route"] == "knowledge"
     reply = str(get_last_message(final["messages"]).content)
@@ -104,8 +105,8 @@ def test_smoke_07_langfuse_trace() -> None:
     print("Now open http://localhost:3000 -> Traces -> look for the newest run.")
 
 
-if __name__ == "__main__":
-    final, langfuse = _invoke("What is the capital of France?")
+async def _main() -> None:
+    final, langfuse = await _invoke("What is the capital of France?")
     print("=== last message ===")
     print(get_last_message(final["messages"]).content)
     print(f"route={final['route']!r} lang={final['lang']!r}")
@@ -113,3 +114,7 @@ if __name__ == "__main__":
     if langfuse is not None:
         print(f"=== langfuse trace: {trace_url(langfuse)} ===")
     print("Open http://localhost:3000 -> Traces to see the run.")
+
+
+if __name__ == "__main__":
+    asyncio.run(_main())

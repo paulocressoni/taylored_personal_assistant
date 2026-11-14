@@ -7,10 +7,9 @@ is a one-place change.
 """
 
 from functools import cache
-from typing import Any, TypedDict
+from typing import TypedDict
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_deepseek import ChatDeepSeek
 
 from app.core.config import settings
@@ -87,24 +86,3 @@ def get_chat_model(role: str) -> BaseChatModel:
         max_retries=role_config["max_retries"],
         extra_body=extra_body,
     )
-
-
-def llm_call(
-    model: BaseChatModel | Runnable[Any, Any],
-    messages: list[Any],
-    config: RunnableConfig,
-) -> dict[str, Any]:
-    """Invoke the given model with the provided messages and update state.
-
-    Args:
-        model (BaseChatModel): The chat model to invoke.
-        messages (list[Any]): The list of messages to send to the model.
-        config (RunnableConfig): The configuration for the runnable.
-
-    Returns:
-        dict[str, Any]: A dictionary containing the model's response and updated state.
-    """
-
-    # Invoke the model with the provided messages and configuration
-    response = model.invoke(messages, config)
-    return {"response": response}

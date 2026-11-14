@@ -10,7 +10,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables import RunnableConfig
 
 from app.core.config import settings
-from app.core.llm import get_chat_model, llm_call
+from app.core.llm import get_chat_model
 from app.graph.state import IPAState
 from app.graph.utils import trim_messages
 from app.language.detector import DEFAULT_LANG
@@ -37,30 +37,31 @@ RESPONDER_PROMPT = _prompt(RESPONDER_SYSTEM_PROMPT)
 VOICE_PROMPT = _prompt(f"{RESPONDER_SYSTEM_PROMPT.rstrip()}\n\n{VOICE_STYLE_ADDENDUM}")
 
 
-def responder_node(state: IPAState, config: RunnableConfig) -> dict:
+async def responder_node(state: IPAState, config: RunnableConfig) -> dict:
     """Generate the final user-facing answer with the responder model.
 
     The model only ever sees the CAPPED history window: we trim
-    state["messages"] to Settings.max_history_messages so long sessions
+    ``state["messages"]`` to ``Settings.max_history_messages`` so long sessions
     cannot exceed the model's context window. The persisted state is left
-    untouched — only what the model sees is trimmed.
+    untouched — only what the model sees is trimmed. The model is awaited
+    asynchronously so request-level cancellation reaches the provider request.
 
-    A `channel` of "voice" selects the spoken-answer addendum: the same
+    A ``channel`` of ``"voice"`` selects the spoken-answer addendum: the same
     persona and rules, plus brevity and "no markdown" instructions, because
     every character of a voice reply is read aloud.
 
     Args:
         state: The current state of the IPA, including message history and
             language preference.
-        config: The configuration for the runnable.
+        config: The run configuration carrying callbacks and metadata.
 
     Returns:
-        A dictionary containing the final user-facing response message.
+        A state update containing the final user-facing response message.
     """
     model = get_chat_model("responder")
     prompt = VOICE_PROMPT if state["channel"] == "voice" else RESPONDER_PROMPT
-    # Cap the window handed to the model; state["messages"] (the
-    # checkpointer's full session memory) is never mutated.
+    # Cap the window handed to the model; state["messages"] (the checkpointer's
+    # full session memory) is never mutated.
     history = trim_messages(state["messages"], settings.max_history_messages)
     messages = prompt.invoke(
         {
@@ -68,6 +69,5 @@ def responder_node(state: IPAState, config: RunnableConfig) -> dict:
             "messages": history,
         }
     ).to_messages()
-    llm_response = llm_call(model, messages, config)
-    response = llm_response["response"]  # Extract the response from the llm_call result
+    response = await model.ainvoke(messages, config=config)
     return {"messages": [response]}
