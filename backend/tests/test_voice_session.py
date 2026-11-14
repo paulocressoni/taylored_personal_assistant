@@ -839,6 +839,25 @@ async def test_a_bare_wake_word_skips_stt_and_runs_no_turn() -> None:
     assert session.turn_timings == []
 
 
+async def test_a_bare_wake_with_a_phrase_tail_skips_stt() -> None:
+    graph = _graph()
+    transcriber = FakeTranscriber(transcript("Hey, Jarvis."))
+    # The live device measured a 118 ms phrase tail: the detection hop ends
+    # while the final phoneme still has one VAD-active window. A synthetic
+    # negative offset is the equivalent here; a 32 ms tolerance would fail.
+    session, recorder = _session(
+        graph,
+        transcriber=transcriber,
+        wake=ScriptedWake(0.9, offset=2 * WINDOW_SAMPLES - 1888),
+    )
+
+    await _drive(session, UTTERANCE_PCM)
+
+    assert recorder.types == ["ready", "speech_start"]
+    assert transcriber.calls == []
+    assert graph.initial == []
+
+
 async def test_a_cancel_phrase_does_not_reach_the_graph() -> None:
     graph = _graph()
     session, recorder = _session(

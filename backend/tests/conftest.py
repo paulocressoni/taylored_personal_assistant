@@ -227,6 +227,12 @@ class ScriptedVad:
         return self._probabilities.pop(0)
 
 
+# The synthetic utterances are only 128 ms, shorter than the 250 ms phrase-tail
+# allowance. Put scripted detections before the stream by default so they model
+# a one-breath command; the bare-wake test passes the real end-of-phrase offset.
+DEFAULT_SCRIPTED_WAKE_OFFSET = -5_000
+
+
 class ScriptedWake:
     """Duck-typed `WakeWord` that fires on the scripted pushes.
 
@@ -237,10 +243,13 @@ class ScriptedWake:
     test that pushes one chunk too many does not fail for the wrong reason.
 
     `offset` is the detection's absolute sample position, used by the session to
-    tell a bare phrase from a one-breath command.
+    tell a bare phrase from a one-breath command. Its default sits before the
+    synthetic stream on purpose; see `DEFAULT_SCRIPTED_WAKE_OFFSET`.
     """
 
-    def __init__(self, *scores: float, offset: int = 0) -> None:
+    def __init__(
+        self, *scores: float, offset: int = DEFAULT_SCRIPTED_WAKE_OFFSET
+    ) -> None:
         self._scores = list(scores)
         self._offset = offset
         self.pushes: list[int] = []

@@ -55,14 +55,7 @@ from app.language.voices import voice_for
 from app.voice.audio import StreamingResampler, duration_s
 from app.voice.stt import Transcriber
 from app.voice.tts import PCM_SAMPLE_RATE, SentenceSplitter, Synthesizer
-from app.voice.vad import (
-    WINDOW_SAMPLES,
-    EndpointDetector,
-    Ignored,
-    SpeechStart,
-    Utterance,
-    Vad,
-)
+from app.voice.vad import EndpointDetector, Ignored, SpeechStart, Utterance, Vad
 from app.voice.wake import (
     WAKE_GRACE_SECONDS,
     WakeGate,
@@ -96,6 +89,12 @@ INTERRUPTED_MARKER = "[interrupted]"
 # outcomes that never reach the graph, so they must not be averaged into turn
 # latency (`_run_turn` skips `turn_timings` for them).
 TurnOutcome = Literal["answer", "wake_only", "cancel"]
+
+# How far past the detection hop the phrase's final VAD-active window may sit.
+# The detector can cross the threshold before the last phoneme has finished:
+# soak logs show 118-160 ms for a bare "Hey Jarvis". 250 ms covers that with
+# margin, while a one-breath command adds its own duration and crosses it.
+WAKE_PHRASE_TAIL_SAMPLES = settings.voice_input_sample_rate * 250 // 1000
 
 
 def _answer_token(event: dict[str, Any]) -> str | None:
@@ -404,27 +403,29 @@ class VoiceSession:
 
         The endpointer and the wake detector consume the same audio, so their
         sample offsets share one timeline. If the last VAD-active window ends
-        within one VAD window of the detection, no command followed the phrase:
-        the segment is the bare wake word and STT has nothing to transcribe.
+        within the phrase-tail allowance of the detection, no command followed
+        the phrase: the segment is the bare wake word and STT has nothing to
+        transcribe.
 
-        One 32 ms window is the tolerance, not a tuning knob. The final phrase
-        window can sit just past the 80 ms detection hop (the committed
-        `wake_only_en.wav` does exactly that), while a command in the same breath
-        runs hundreds of milliseconds past it.
-
-        A detection that led the phrase by more than one window falls back to
-        STT, so the failure mode is a paid call, never a lost command.
+        The allowance is 250 ms, not one VAD window. `wake_only_en.wav` sits
+        32 ms past the detection, but the device's live bare phrase measured
+        118-160 ms in the soak logs — the detector crossed before the final
+        phoneme's VAD window. A command in the same breath adds its own
+        duration and runs further; the constant is sized from the measured
+        phrase tail rather than made generous, because a short one-breath
+        command is the case this could wrongly skip.
 
         Args:
             utterance: The admitted segment about to become a turn.
 
         Returns:
-            True when no VAD-active audio runs beyond the detection's window.
+            True when no VAD-active audio runs beyond the phrase-tail allowance.
         """
         if self._last_detection_sample is None:
             return False
         return (
-            utterance.active_end_sample <= self._last_detection_sample + WINDOW_SAMPLES
+            utterance.active_end_sample
+            <= self._last_detection_sample + WAKE_PHRASE_TAIL_SAMPLES
         )
 
     def _reject(self, utterance: Utterance) -> None:
