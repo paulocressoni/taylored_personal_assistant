@@ -36,7 +36,7 @@ from app.voice.audio import duration_s, resample_pcm
 from app.voice.session import INTERRUPTED_MARKER, VoiceSession
 from app.voice.stt import Transcript
 from app.voice.tts import PCM_SAMPLE_RATE
-from app.voice.vad import WINDOW_BYTES
+from app.voice.vad import WINDOW_BYTES, WINDOW_SAMPLES
 from app.voice.wake import WakeWordUnavailable
 
 # Four 32 ms windows: two loud enough to open a segment, two quiet enough to
@@ -818,17 +818,22 @@ async def test_a_gated_session_logs_a_rejection_with_since_arm(
     assert "voice turn ignored: no wake word (speech=" in caplog.text
 
 
-async def test_a_bare_wake_word_runs_no_turn() -> None:
+async def test_a_bare_wake_word_skips_stt_and_runs_no_turn() -> None:
     graph = _graph()
+    transcriber = FakeTranscriber(transcript("Hey, Jarvis."))
     session, recorder = _session(
         graph,
-        transcriber=FakeTranscriber(transcript("Hey, Jarvis.")),
-        wake=ScriptedWake(0.9),
+        transcriber=transcriber,
+        # The detection sits at the end of the two speech windows, so no VAD
+        # speech follows it: this is the bare phrase, not a one-breath command.
+        wake=ScriptedWake(0.9, offset=2 * WINDOW_SAMPLES),
     )
 
     await _drive(session, UTTERANCE_PCM)
 
     assert recorder.types == ["ready", "speech_start"]
+    # The whole point: no paid transcription for a phrase with no command.
+    assert transcriber.calls == []
     assert graph.initial == []
     # A wake-only turn is not a turn: it must not be averaged into latency.
     assert session.turn_timings == []

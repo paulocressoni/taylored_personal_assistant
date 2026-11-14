@@ -474,6 +474,11 @@ audio → wake detector (every 80 ms hop) ── detection ──▶ arm a permi
   answer while room noise cannot.
 - A **bare wake word** and a **cancel phrase** (`stop`, `quiet`, `cancel`, `hör auf`, `pare`, …)
   end the turn without touching the graph, and are excluded from `turn_timings`.
+- If the VAD's last active window ends within one VAD window (32 ms) of the detection's audio
+  offset, the segment is the bare phrase: the permit is re-armed **without an STT call**. The
+  window is the tolerance between 32 ms VAD windows and 80 ms detector hops, not a tuning knob.
+  A one-breath command runs well past it and is transcribed normally; a detection that led the
+  phrase by more than one window falls back to STT rather than risking a lost command.
 - A detector that raises **fails closed**: one `error` frame, then the socket closes with `1011`
   and the satellite reconnects with a fresh detector.
 

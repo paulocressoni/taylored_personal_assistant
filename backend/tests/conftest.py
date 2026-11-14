@@ -235,10 +235,14 @@ class ScriptedWake:
     say "this chunk holds the phrase, the next one does not" without any model.
     Running past the end of the script reports silence rather than raising, so a
     test that pushes one chunk too many does not fail for the wrong reason.
+
+    `offset` is the detection's absolute sample position, used by the session to
+    tell a bare phrase from a one-breath command.
     """
 
-    def __init__(self, *scores: float) -> None:
+    def __init__(self, *scores: float, offset: int = 0) -> None:
         self._scores = list(scores)
+        self._offset = offset
         self.pushes: list[int] = []
         self.resets = 0
 
@@ -250,7 +254,7 @@ class ScriptedWake:
         """Record the chunk and return the detections its scripted score implies."""
         self.pushes.append(len(pcm))
         score = self._scores.pop(0) if self._scores else 0.0
-        return [Detection(score=score)] if score > 0 else []
+        return [Detection(score=score, sample_offset=self._offset)] if score > 0 else []
 
 
 class BrokenWake:

@@ -55,7 +55,14 @@ from app.language.voices import voice_for
 from app.voice.audio import StreamingResampler, duration_s
 from app.voice.stt import Transcriber
 from app.voice.tts import PCM_SAMPLE_RATE, SentenceSplitter, Synthesizer
-from app.voice.vad import EndpointDetector, Ignored, SpeechStart, Utterance, Vad
+from app.voice.vad import (
+    WINDOW_SAMPLES,
+    EndpointDetector,
+    Ignored,
+    SpeechStart,
+    Utterance,
+    Vad,
+)
 from app.voice.wake import (
     WAKE_GRACE_SECONDS,
     WakeGate,
@@ -228,6 +235,10 @@ class VoiceSession:
         # When the most recent detection arrived. `wake_lead` is measured from
         # this, so it must be stamped by the session, not by the detector.
         self._last_detection_at: float | None = None
+        # Where that detection sat in the audio stream. Compared with the VAD's
+        # last active sample: no speech after the phrase means the segment was
+        # only "Hey Jarvis", which must not cost an STT call.
+        self._last_detection_sample: int | None = None
         # One slot for a segment rejected just before its own detection arrived.
         self._rejected: tuple[Utterance, float] | None = None
         # The language the LAST turn resolved to. It biases this turn's
@@ -320,6 +331,21 @@ class VoiceSession:
                     self._reject(event)
                     continue
                 self._rejected = None
+                if self._wake is not None and self._is_bare_wake(event):
+                    # The phrase ended the segment and nothing followed it. The
+                    # detection already sent `speech_start`; re-arm immediately
+                    # so a command spoken after the pause is still admitted, and
+                    # skip STT — there is no text to recover and the call costs
+                    # money. The one-shot permit is consumed either way.
+                    self._last_detection_sample = None
+                    logger.info(
+                        "wake word heard without a command; skipped STT, window re-armed"
+                    )
+                    self._gate.arm()
+                    continue
+                # A real segment: the detection has done its job, so a second
+                # segment cannot reuse its offset to look like a bare phrase.
+                self._last_detection_sample = None
                 # Deliberately not awaited: the reader has to stay available for
                 # the audio that would interrupt this turn.
                 self._turn = asyncio.create_task(self._run_turn(event))
@@ -358,6 +384,7 @@ class VoiceSession:
 
         for detection in detections:
             self._last_detection_at = monotonic_now()
+            self._last_detection_sample = detection.sample_offset
             self._gate.arm()
             logger.info(
                 "wake word detected (score=%.2f, in_turn=%s)",
@@ -371,6 +398,34 @@ class VoiceSession:
             await self._recover_rejected()
 
         return bool(detections)
+
+    def _is_bare_wake(self, utterance: Utterance) -> bool:
+        """Return whether a segment contains only the wake phrase.
+
+        The endpointer and the wake detector consume the same audio, so their
+        sample offsets share one timeline. If the last VAD-active window ends
+        within one VAD window of the detection, no command followed the phrase:
+        the segment is the bare wake word and STT has nothing to transcribe.
+
+        One 32 ms window is the tolerance, not a tuning knob. The final phrase
+        window can sit just past the 80 ms detection hop (the committed
+        `wake_only_en.wav` does exactly that), while a command in the same breath
+        runs hundreds of milliseconds past it.
+
+        A detection that led the phrase by more than one window falls back to
+        STT, so the failure mode is a paid call, never a lost command.
+
+        Args:
+            utterance: The admitted segment about to become a turn.
+
+        Returns:
+            True when no VAD-active audio runs beyond the detection's window.
+        """
+        if self._last_detection_sample is None:
+            return False
+        return (
+            utterance.active_end_sample <= self._last_detection_sample + WINDOW_SAMPLES
+        )
 
     def _reject(self, utterance: Utterance) -> None:
         """Keep a segment that arrived without a permit, and log why.
@@ -410,6 +465,14 @@ class VoiceSession:
             return
         if not self._gate.admit(utterance.started_at):
             return
+        if self._is_bare_wake(utterance):
+            self._last_detection_sample = None
+            logger.info(
+                "wake word recovered without a command; skipped STT, window re-armed"
+            )
+            self._gate.arm()
+            return
+        self._last_detection_sample = None
         logger.info("wake word recovered a segment finalised before the detection")
         self._turn = asyncio.create_task(self._run_turn(utterance))
 
@@ -626,7 +689,13 @@ class VoiceSession:
             return None
         if transcript.is_empty:
             # Silence, noise, or an invented phrase the adapter already dropped:
-            # answering nothing is better than answering a hallucination.
+            # answering nothing is better than answering a hallucination. The
+            # discovery consumed the one-shot permit, so re-arm it: the user
+            # already said the phrase and should be able to retry the command
+            # without saying it again.
+            if self._wake is not None:
+                self._gate.arm()
+                logger.info("empty transcript after wake; window re-armed")
             return None
 
         spoken_text = transcript.text

@@ -13,6 +13,7 @@ from app.voice.wake import (
     ANALYSIS_BYTES,
     FEATURE_WIDTH,
     HOP_BYTES,
+    HOP_SAMPLES,
     Detection,
     OpenWakeWordDetector,
     WakeGate,
@@ -167,6 +168,9 @@ def test_push_reports_every_crossing_in_one_chunk() -> None:
     detections = detector.push(HOP * 3)
     assert isinstance(detections[0], Detection)
     assert [round(d.score, 2) for d in detections] == [0.9, 0.8]
+    # Offsets follow the same stream as the VAD, one hop apart.
+    assert detections[0].sample_offset > 0
+    assert detections[1].sample_offset - detections[0].sample_offset == HOP_SAMPLES
 
 
 def test_debounce_suppresses_a_repeat_until_the_clock_moves_on() -> None:
