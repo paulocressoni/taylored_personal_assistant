@@ -696,8 +696,9 @@ class VoiceSession:
         # attribute would outlive a barge-in and misnumber the next turn.
         sentence_index = 0
 
-        # Same cooperative caveat as the text routes: this bounds the turn, it
-        # cannot abort a model call already running on its own thread.
+        # This bounds the whole turn. The nodes are async, so cancellation also
+        # reaches the in-flight model request; ROLE_CONFIG's per-role timeout is
+        # still the hard per-call bound.
         async with asyncio.timeout(settings.graph_timeout_seconds):
             async for event in self._graph.astream_events(
                 initial, config=config, version="v2"

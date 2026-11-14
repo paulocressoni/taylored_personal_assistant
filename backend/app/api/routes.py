@@ -96,10 +96,11 @@ async def chat(
     """One-shot request/response: run the graph, return the final answer.
 
     M11: we call ``graph.ainvoke`` (async), matching the async checkpointer.
-    LangGraph runs the sync node code in a thread executor internally, so the
-    event loop is not blocked. Because ``build_run_config`` stamps the
-    session's thread_id into the config, this turn is MERGED into the saved
-    history for that session instead of starting from scratch.
+    The graph nodes are async too, so the event loop is not blocked and a
+    request-level timeout can cancel the in-flight provider call. Because
+    ``build_run_config`` stamps the session's thread_id into the config, this
+    turn is MERGED into the saved history for that session instead of starting
+    from scratch.
 
     Args:
         payload: The request body containing the chat message and session ID.
@@ -122,14 +123,11 @@ async def chat(
     # the correlation id.
     logger.info("chat run start")
 
-    # Cooperative cancellation, NOT an abort. asyncio.timeout only
-    # cancels THIS coroutine's await. LangGraph runs its sync node code — the
-    # DeepSeek HTTP call included — on a thread-executor thread, so firing
-    # this timeout releases the HTTP request but does NOT stop the in-flight
-    # model call: it keeps occupying its thread until it finishes or hits its
-    # own bound. The REAL per-call bound is ROLE_CONFIG[role]["timeout"]
-    # (app/core/llm.py), enforced by the ChatDeepSeek client; this deadline is
-    # only a coarse request-level safety net.
+    # asyncio.timeout cancels THIS coroutine's await. The nodes await
+    # model.ainvoke, so cancellation propagates into the in-flight DeepSeek
+    # request instead of leaving it running on a worker thread.
+    # ROLE_CONFIG[role]["timeout"] (app/core/llm.py) remains the hard per-call
+    # bound; this deadline is the coarse request-level safety net.
     try:
         # turn_span() owns the app-root span, so enrich_trace() and
         # mark_turn_failed() have a recording span to write onto. It wraps the
@@ -338,10 +336,10 @@ async def chat_ws(websocket: WebSocket) -> None:
         # cancellation into TimeoutError once the body has unwound.
         with turn_span():
             try:
-                # Same cooperative-cancellation caveat as POST /chat: this
-                # timeout cancels the stream's await, not the in-flight model
-                # call on its thread-executor thread. ROLE_CONFIG's per-role
-                # timeout is the real bound on each DeepSeek call.
+                # As in POST /chat, the nodes are async, so this timeout
+                # cancels the stream and the in-flight model call together.
+                # ROLE_CONFIG's per-role timeout remains the hard per-call
+                # bound.
                 async with asyncio.timeout(settings.graph_timeout_seconds):
                     async for event in graph.astream_events(
                         initial, config=config, version="v2"

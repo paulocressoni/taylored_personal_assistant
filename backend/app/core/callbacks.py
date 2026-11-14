@@ -1,7 +1,7 @@
 """Per-run telemetry: count LLM calls and aggregate token usage for one run.
 
 How it works: a single `RunTelemetry` instance is created at the invoke site
-and passed to `graph.invoke(..., config={"callbacks": [telemetry]})`.
+and passed to `graph.ainvoke(..., config={"callbacks": [telemetry]})`.
 LangGraph threads those callbacks down through every node, so the handler
 fires for ALL model/tool calls in the run — including calls the nodes never
 persist to state (e.g. the router's classification call). The same instance is
@@ -106,7 +106,7 @@ def _classify_llm_error(error: BaseException) -> str:
 class RunTelemetry(BaseCallbackHandler):
     """Count LLM invocations and aggregate token usage for a single graph run.
 
-    One instance per `graph.invoke(...)` so counters reset every turn —
+    One instance per `graph.ainvoke(...)` so counters reset every turn —
     never reuse across sessions or you'll count the previous turn's work.
     Counters are plain ints; token totals are accumulated from each
     response's `usage_metadata` so they reflect real API usage. Cache-token
