@@ -83,6 +83,8 @@ async def test_tool_exec_multiple_calls_one_tool_message_each() -> None:
     out = await tool_exec_node(state)
     assert [m.content for m in out["messages"]] == ["2", "4"]
     assert out["tool_iterations"] == 2
+    assert out["tools_called"] == ["calculate", "calculate"]
+    assert len(out["tool_outcomes"]) == 2
 
 
 async def test_tool_exec_appends_to_this_turns_telemetry() -> None:
