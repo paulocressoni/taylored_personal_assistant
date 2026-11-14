@@ -1,4 +1,4 @@
-"""Central tool registry — the single list specialists bind and tool_exec
+"""Central tool registry — the single list the assistant binds and tool_exec
 dispatches against. Add every new tool here; nothing else changes."""
 
 from app.tools.calculator import calculate

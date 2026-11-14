@@ -116,6 +116,9 @@ def test_a_confirmed_turn_emits_utterance_trimmed_to_the_pad() -> None:
     assert len(utterance.pcm) == 10 * WINDOW_BYTES + PAD_BYTES
     assert utterance.detected_s == pytest.approx(10 * 32 / 1000)
     assert utterance.peak_probability == 0.9
+    # Absolute end of the tenth (last active) window, not the end of the
+    # trailing silence: the session compares this with the wake offset.
+    assert utterance.active_end_sample == 10 * WINDOW_SAMPLES
 
 
 def test_a_blip_shorter_than_min_speech_is_ignored() -> None:

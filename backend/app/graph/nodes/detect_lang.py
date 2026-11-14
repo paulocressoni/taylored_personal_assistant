@@ -1,7 +1,7 @@
 """detect_lang_node — resolve this turn's language into state["lang"].
 
-Runs BEFORE the router so every downstream node (router, specialists,
-responder) reads a resolved ``lang`` from state. Deterministic: no LLM call,
+Runs BEFORE the assistant so the answer node reads a resolved ``lang`` from
+state. Deterministic: no LLM call,
 no tokens spent — just the lingua detector plus the M05 fallback chain.
 
 Language continuity rides on PERSISTED STATE, not on re-detecting old turns.

@@ -131,7 +131,7 @@ taylored_personal_assistant/
 │   │   │   ├── checkpointer.py  # AsyncSqlite/Postgres saver (M11)
 │   │   │   ├── cli.py           # One-shot graph run, no API
 │   │   │   ├── utils.py
-│   │   │   └── nodes/           # detect_lang, router, knowledge, responder,
+│   │   │   └── nodes/           # detect_lang, assistant, finalize,
 │   │   │                         # tool_exec, telemetry
 │   │   ├── language/  # Deterministic language handling (M05)
 │   │   │   └── detector.py  # lingua detection + fallback chain
@@ -905,10 +905,10 @@ that exact value in your `backend/.env.prod`.
 ## Observability (M08/M12) — self-hosted Langfuse
 
 M08 added **self-hosted Langfuse v4** for local-dev observability: every graph run becomes
-a trace — spans for `detect_lang` / `router` / `knowledge` / `responder` / `telemetry`, LLM
-generations with token counts, and session grouping. A final `telemetry` node enriches each
-trace with the mid-run `route` / `lang` / `tools_called` values and names it
-`assistant:<route>`. Since M12 the 6 services (`langfuse-web`,
+a trace — spans for `detect_lang` / `assistant` / `finalize` / `tool_exec` / `telemetry`,
+LLM generations with token counts, and session grouping. A final `telemetry` node enriches
+each trace with the mid-run `mode` / `lang` / `tools_called` values and names it
+`assistant:<mode>`. Since M12 the 6 services (`langfuse-web`,
 `langfuse-worker`, `postgres`, `clickhouse`, `redis`, `minio`) live in
 `infra/compose/docker-compose.base.yml` under the optional `observability` profile.
 
@@ -976,8 +976,8 @@ the cached chat models, and flushes Langfuse on shutdown. Routes live in `backen
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/health` | Liveness probe (used by the Docker `HEALTHCHECK`) |
-| `POST` | `/chat` | One-shot: run the graph, return `{reply, lang, route}` |
-| `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame |
+| `POST` | `/chat` | One-shot: run the graph, return `{reply, lang, mode}` |
+| `WS` | `/ws/chat` | Stream assistant tokens, then a `done` frame |
 | `GET` | `/sessions/{id}/history` | Read a conversation's persisted messages (M11) |
 | `DELETE` | `/sessions/{id}` | Delete a conversation from the checkpointer (M11) |
 
@@ -1022,7 +1022,7 @@ ENV=dev uv run python scripts/ws_probe.py "tell me a short joke"
   returns `422` before your code runs.
 - `POST /chat` runs `graph.ainvoke` (async, matching the M11 `AsyncSqliteSaver`); `WS
   /ws/chat` streams `astream_events(version="v2")`, filtering `on_chat_model_stream`
-  events for the `responder` node only.
+  events for the `assistant` / `finalize` answer nodes only.
 - **M11 checkpointing:** the graph is compiled with a SQLite checkpointer
   (`app/graph/checkpointer.py`). Every run stamps `config["configurable"]["thread_id"]`
   from `session_id`, so turns sharing an id are merged into one conversation history.
@@ -1083,9 +1083,8 @@ All LLM access goes through the role-based factory in `backend/app/core/llm.py`.
 
 | Role | Model | Temperature | Thinking | Timeout (s) | Max tokens | Max retries | Use case |
 |---|---|---|---|---|---|---|---|
-| `router` | `deepseek-flash` | 0.0 | off | 10 | 1024 | 2 | Intent classification / routing |
-| `specialist` | `deepseek-flash` | 0.0 | off | 10 | 4096 | 2 | Deterministic tool calling |
-| `responder` | `deepseek-flash` | 1.3 | off | 10 | 1024 | 2 | Conversational replies |
+| `assistant` | `deepseek-flash` | 0.6 | off | 10 | 1024 | 2 | Text chat + tool calling |
+| `assistant_voice` | `deepseek-flash` | 0.6 | off | 10 | 512 | 2 | Spoken replies (shorter cap) |
 | `reasoner` *(planned)* | `deepseek-v4-pro` | 0.0 | on | — | — | — | Planning, diagnosis, disambiguation |
 
 > Each role carries a per-call `timeout`, `max_tokens` budget, and `max_retries` (M09) so a
@@ -1123,7 +1122,7 @@ ENV=dev uv run pytest -m integration              # all 6 as pytest integration 
 ENV=dev uv run pytest                             # fast unit suite (smoke excluded)
 ```
 
-Each smoke script verifies one capability: basic chat (`smoke_01`), tool calling (`smoke_02`), thinking mode (`smoke_03`), tools + thinking (`smoke_04`), multilingual round-trip en/de/pt-BR (`smoke_05`), and multilingual graph routing — detect → route → reply in the right language (`smoke_06`).
+Each smoke script verifies one capability: basic chat (`smoke_01`), tool calling (`smoke_02`), thinking mode (`smoke_03`), tools + thinking (`smoke_04`), multilingual round-trip en/de/pt-BR (`smoke_05`), and the multilingual assistant — detected language, `mode`, expected tool, and honest refusal when no tool exists (`smoke_06`).
 
 ---
 
@@ -1140,13 +1139,12 @@ the right language.
   guards against unreliable guesses on short text.
 - **Fallback chain** when confidence is low: previous turn's language →
   the user's stored preference (stub, M13) → `"en"`.
-- **Graph wiring**: `START → detect_lang → router`. The `detect_lang` node
-  resolves the turn's language into `state["lang"]` before routing, so the
-  router, specialists, and responder all read it.
-- **Responder policy**: the system prompt says `Reply in {lang}. Never switch
-  languages unless the user does.` The router prompt carries German and
-  Portuguese few-shot examples so intent routing stays robust for non-English
-  input.
+- **Graph wiring**: `START → detect_lang → assistant`. The `detect_lang` node
+  resolves the turn's language into `state["lang"]` before the answer node runs,
+  so the single assistant reads it.
+- **Assistant policy**: the system prompt says `Reply in {lang}. Never switch
+  languages unless the user does.` Tool schemas carry the capabilities; adding
+  weather/calendar/music is a tools-file change, not a routing change.
 
 ---
 

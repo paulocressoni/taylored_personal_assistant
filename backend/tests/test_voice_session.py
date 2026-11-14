@@ -8,7 +8,6 @@ the production default of 500 ms implies.
 
 import asyncio
 import logging
-import threading
 from collections.abc import AsyncIterator, Awaitable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,7 +36,7 @@ from app.voice.audio import duration_s, resample_pcm
 from app.voice.session import INTERRUPTED_MARKER, VoiceSession
 from app.voice.stt import Transcript
 from app.voice.tts import PCM_SAMPLE_RATE
-from app.voice.vad import WINDOW_BYTES
+from app.voice.vad import WINDOW_BYTES, WINDOW_SAMPLES
 from app.voice.wake import WakeWordUnavailable
 
 # Four 32 ms windows: two loud enough to open a segment, two quiet enough to
@@ -178,7 +177,7 @@ def _lang_event(lang: str) -> dict[str, Any]:
     }
 
 
-def _token_event(text: str, node: str = "responder") -> dict[str, Any]:
+def _token_event(text: str, node: str = "assistant") -> dict[str, Any]:
     return {
         "event": "on_chat_model_stream",
         "name": "ChatDeepSeek",
@@ -318,10 +317,10 @@ async def test_an_utterance_is_transcribed_answered_and_spoken() -> None:
     assert 0 < len(transcriber.calls[0][0]) < len(UTTERANCE_PCM)
 
 
-async def test_only_the_responder_tokens_reach_the_client() -> None:
+async def test_only_answer_node_tokens_reach_the_client() -> None:
     graph = FakeGraph(
         _lang_event("en"),
-        _token_event("<route>knowledge</route>", node="router"),
+        _token_event("not an answer", node="detect_lang"),
         _token_event(REPLY),
         _end_event({}),
     )
@@ -539,23 +538,33 @@ async def test_each_turn_publishes_its_stage_timings() -> None:
 class GatedChatModel(FakeChatModel):
     """FakeChatModel that announces itself, then blocks until it is released.
 
-    Holding the responder node open is what makes a barge-in land while the graph
+    Holding the assistant node open is what makes a barge-in land while the graph
     is still running — the only window where the checkpointer holds the turn's
     HumanMessage but not yet its AIMessage.
     """
 
     def __init__(
-        self, *responses: Any, gate: threading.Event, entered: threading.Event
+        self, *responses: Any, gate: asyncio.Event, entered: asyncio.Event
     ) -> None:
         super().__init__(*responses)
         self._gate = gate
         self._entered = entered
+        self.cancelled = False
 
-    def invoke(self, messages: Any, config: Any = None) -> Any:
-        """Signal that the node is running, wait to be released, then answer."""
+    async def ainvoke(self, messages: Any, config: Any = None) -> Any:
+        """Signal entry, wait to be released, then answer.
+
+        ``CancelledError`` is recorded and re-raised: the barge-in test can then
+        prove the cancellation reached the in-flight model call, not just the
+        session wrapper.
+        """
         self._entered.set()
-        self._gate.wait(timeout=5)
-        return super().invoke(messages, config)
+        try:
+            await self._gate.wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        return self._next(messages)
 
 
 async def _persisted(graph: Any, session_id: str = "voice-1") -> list[tuple[str, Any]]:
@@ -570,18 +579,20 @@ async def test_a_barge_in_closes_the_interrupted_turn(
     """A cancelled turn must not persist a question with no answer.
 
     LangGraph commits a run's input as its FIRST checkpoint and only commits the
-    responder's AIMessage when that node returns, so cancelling the turn mid-node
+    assistant's AIMessage when that node returns, so cancelling the turn mid-node
     used to leave the thread holding an unanswered question: it showed up in
     `GET /sessions/{id}/history` and was fed back to the model on the next turn.
     """
-    gate = threading.Event()
-    entered = threading.Event()
-    responder = GatedChatModel(AIMessage(content=REPLY), gate=gate, entered=entered)
+    gate = asyncio.Event()
+    entered = asyncio.Event()
+    assistant_model = GatedChatModel(
+        AIMessage(content=REPLY), gate=gate, entered=entered
+    )
     patch_llm(
         lambda role: (
-            responder
-            if role == "responder"
-            else FakeChatModel(AIMessage(content="<route>responder</route>"))
+            assistant_model
+            if role in {"assistant", "assistant_voice"}
+            else FakeChatModel(AIMessage(content="ok"))
         )
     )
 
@@ -593,9 +604,9 @@ async def test_a_barge_in_closes_the_interrupted_turn(
 
         async def stream() -> AsyncIterator[bytes | dict[str, Any]]:
             yield UTTERANCE_PCM
-            # Let the responder get inside the graph, so the onset below cancels a
+            # Let the assistant get inside the graph, so the onset below cancels a
             # running turn rather than a turn that never started.
-            await asyncio.to_thread(entered.wait, 5)
+            await asyncio.wait_for(entered.wait(), timeout=5)
             yield ONE_WINDOW
             yield {"type": "stop"}
 
@@ -615,6 +626,9 @@ async def test_a_barge_in_closes_the_interrupted_turn(
             "transcript",
             "speech_start",
         ]
+        # The cancellation reached the async model call itself, not just the
+        # session wrapper; otherwise barge-in would keep paying for the reply.
+        assert assistant_model.cancelled is True
         assert await _persisted(graph) == [
             ("human", "turn on the light"),
             ("ai", INTERRUPTED_MARKER),
@@ -804,20 +818,44 @@ async def test_a_gated_session_logs_a_rejection_with_since_arm(
     assert "voice turn ignored: no wake word (speech=" in caplog.text
 
 
-async def test_a_bare_wake_word_runs_no_turn() -> None:
+async def test_a_bare_wake_word_skips_stt_and_runs_no_turn() -> None:
     graph = _graph()
+    transcriber = FakeTranscriber(transcript("Hey, Jarvis."))
     session, recorder = _session(
         graph,
-        transcriber=FakeTranscriber(transcript("Hey, Jarvis.")),
-        wake=ScriptedWake(0.9),
+        transcriber=transcriber,
+        # The detection sits at the end of the two speech windows, so no VAD
+        # speech follows it: this is the bare phrase, not a one-breath command.
+        wake=ScriptedWake(0.9, offset=2 * WINDOW_SAMPLES),
     )
 
     await _drive(session, UTTERANCE_PCM)
 
     assert recorder.types == ["ready", "speech_start"]
+    # The whole point: no paid transcription for a phrase with no command.
+    assert transcriber.calls == []
     assert graph.initial == []
     # A wake-only turn is not a turn: it must not be averaged into latency.
     assert session.turn_timings == []
+
+
+async def test_a_bare_wake_with_a_phrase_tail_skips_stt() -> None:
+    graph = _graph()
+    transcriber = FakeTranscriber(transcript("Hey, Jarvis."))
+    # The live device measured a 118 ms phrase tail: the detection hop ends
+    # while the final phoneme still has one VAD-active window. A synthetic
+    # negative offset is the equivalent here; a 32 ms tolerance would fail.
+    session, recorder = _session(
+        graph,
+        transcriber=transcriber,
+        wake=ScriptedWake(0.9, offset=2 * WINDOW_SAMPLES - 1888),
+    )
+
+    await _drive(session, UTTERANCE_PCM)
+
+    assert recorder.types == ["ready", "speech_start"]
+    assert transcriber.calls == []
+    assert graph.initial == []
 
 
 async def test_a_cancel_phrase_does_not_reach_the_graph() -> None:

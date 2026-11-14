@@ -126,9 +126,14 @@ class Detection:
     Attributes:
         score: The classifier's probability for the hop that crossed the
             threshold. Logged, and the number used when tuning the threshold.
+        sample_offset: Absolute 16 kHz sample index at the end of the hop that
+            produced the detection. The session compares it with the VAD's last
+            active sample so a bare phrase can be re-armed without a paid STT
+            call.
     """
 
     score: float
+    sample_offset: int = 0
 
 
 class WakeWordUnavailable(RuntimeError):
@@ -448,6 +453,7 @@ class OpenWakeWordDetector:
         self._window = bytearray()
         self._features: deque[np.ndarray] = deque(maxlen=FEATURE_ROWS)
         self._last_detection: float | None = None
+        self._consumed_samples = 0
         self.reset()
 
     def reset(self) -> None:
@@ -456,6 +462,7 @@ class OpenWakeWordDetector:
         self._window.clear()
         self._features.clear()
         self._last_detection = None
+        self._consumed_samples = 0
         if self._seed is not None:
             for _ in range(FEATURE_ROWS):
                 self._features.append(self._seed)
@@ -470,7 +477,7 @@ class OpenWakeWordDetector:
             One `Detection` per accepted crossing, in order.
         """
         detections: list[Detection] = []
-        for score in self._consume(pcm):
+        for score, sample_offset in self._consume(pcm):
             if score < self._threshold:
                 continue
             at = self._now()
@@ -480,7 +487,7 @@ class OpenWakeWordDetector:
             ):
                 continue
             self._last_detection = at
-            detections.append(Detection(score=score))
+            detections.append(Detection(score=score, sample_offset=sample_offset))
         return detections
 
     def push_scores(self, pcm: bytes) -> list[float]:
@@ -496,15 +503,22 @@ class OpenWakeWordDetector:
         Returns:
             One score per completed hop that had a full feature history.
         """
-        return self._consume(pcm)
+        return [score for score, _ in self._consume(pcm)]
 
-    def _consume(self, pcm: bytes) -> list[float]:
-        """Advance the buffers by whole hops and score each completed one."""
+    def _consume(self, pcm: bytes) -> list[tuple[float, int]]:
+        """Advance the buffers by whole hops and score each completed one.
+
+        Returns:
+            One `(score, sample_offset)` pair per classifiable hop. The offset is
+            the absolute end of that hop, so callers can align a detection with
+            the VAD's sample timeline.
+        """
         self._pending.extend(pcm)
-        scores: list[float] = []
+        scores: list[tuple[float, int]] = []
         while len(self._pending) >= HOP_BYTES:
             hop = bytes(self._pending[:HOP_BYTES])
             del self._pending[:HOP_BYTES]
+            self._consumed_samples += HOP_SAMPLES
 
             self._window.extend(hop)
             if len(self._window) > ANALYSIS_BYTES:
@@ -515,7 +529,12 @@ class OpenWakeWordDetector:
             self._features.append(self._scorer.embed(bytes(self._window)))
             if len(self._features) < FEATURE_ROWS:
                 continue
-            scores.append(self._scorer.classify(np.vstack(self._features)))
+            scores.append(
+                (
+                    self._scorer.classify(np.vstack(self._features)),
+                    self._consumed_samples,
+                )
+            )
         return scores
 
 

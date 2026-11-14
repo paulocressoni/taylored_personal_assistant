@@ -41,10 +41,11 @@ export interface paths {
      * @description One-shot request/response: run the graph, return the final answer.
      *
      *     M11: we call ``graph.ainvoke`` (async), matching the async checkpointer.
-     *     LangGraph runs the sync node code in a thread executor internally, so the
-     *     event loop is not blocked. Because ``build_run_config`` stamps the
-     *     session's thread_id into the config, this turn is MERGED into the saved
-     *     history for that session instead of starting from scratch.
+     *     The graph nodes are async too, so the event loop is not blocked and a
+     *     request-level timeout can cancel the in-flight provider call. Because
+     *     ``build_run_config`` stamps the session's thread_id into the config, this
+     *     turn is MERGED into the saved history for that session instead of starting
+     *     from scratch.
      *
      *     Args:
      *         payload: The request body containing the chat message and session ID.
@@ -52,7 +53,7 @@ export interface paths {
      *
      *     Returns:
      *         A ChatResponse object containing the assistant's reply, resolved
-     *         language, and routed intent.
+     *         language, and mode.
      */
     post: operations['chat_chat_post']
     delete?: never
@@ -165,10 +166,10 @@ export interface components {
        */
       lang: string | null
       /**
-       * Route
-       * @description Routed intent, e.g. 'knowledge'.
+       * Mode
+       * @description How the turn was answered: 'chat' when no tool ran, 'tools' when at least one tool was invoked.
        */
-      route: string | null
+      mode: ('chat' | 'tools') | null
     }
     /** HTTPValidationError */
     HTTPValidationError: {

@@ -50,12 +50,17 @@ class Utterance:
         started_at: Monotonic time of the segment's FIRST speech window. The wake
             gate judges admission on this, not on the endpoint, so a long question
             that begins inside the window is still accepted when it ends outside.
+        active_end_sample: Absolute 16 kHz sample index at the end of the last
+            active window. The session compares it with a wake detection's
+            offset to tell a bare phrase (no speech after it) from a one-breath
+            command, without paying for a transcription to find out.
     """
 
     pcm: bytes
     detected_s: float
     peak_probability: float
     started_at: float
+    active_end_sample: int = 0
 
 
 @dataclass(frozen=True)
@@ -207,6 +212,10 @@ class EndpointDetector:
         self._peak = 0.0
         self._now = now
         self._started_at = 0.0
+        # Absolute stream position, in samples, so a wake detection and a
+        # segment's last active window can be compared on the same timeline.
+        self._stream_samples = 0
+        self._last_active_sample = 0
 
     def push(self, pcm: bytes) -> list[Event]:
         """Feed captured audio and collect the events it produced.
@@ -227,6 +236,9 @@ class EndpointDetector:
         while len(buffer) - offset >= WINDOW_BYTES:
             window = buffer[offset : offset + WINDOW_BYTES]
             offset += WINDOW_BYTES
+            # Advanced before scoring so `_accumulate` stamps the end of the
+            # window it just classified, not the start of the next one.
+            self._stream_samples += WINDOW_SAMPLES
             events.extend(self._process(window))
         self._pending = buffer[offset:]
         return events
@@ -236,6 +248,7 @@ class EndpointDetector:
         self._vad.reset()
         self._pending = b""
         self._pre_roll = b""
+        self._stream_samples = 0
         self._clear_segment()
 
     def _process(self, window: bytes) -> list[Event]:
@@ -272,6 +285,7 @@ class EndpointDetector:
             # speech, so a probability hovering near the threshold cannot cut
             # one sentence into several turns.
             self._active_end = len(self._segment)
+            self._last_active_sample = self._stream_samples
             self._silence_windows = 0
         else:
             self._silence_windows += 1
@@ -302,6 +316,7 @@ class EndpointDetector:
                 detected_s=detected_s,
                 peak_probability=self._peak,
                 started_at=self._started_at,
+                active_end_sample=self._last_active_sample,
             )
 
         self._pre_roll = b""
@@ -317,3 +332,4 @@ class EndpointDetector:
         self._active_end = 0
         self._peak = 0.0
         self._started_at = 0.0
+        self._last_active_sample = 0

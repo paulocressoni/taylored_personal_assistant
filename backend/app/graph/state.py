@@ -2,7 +2,7 @@
 between nodes. Extend here, never by ad-hoc dicts inside nodes."""
 
 import operator
-from typing import Annotated, NotRequired, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 
@@ -15,10 +15,15 @@ class IPAState(TypedDict):
     # This list is the PERSISTED session memory and intentionally
     # stays unbounded — the checkpointer stores it and GET /sessions/{id}/
     # history reads it back whole. We never mutate it. Instead, the nodes
-    # that call the LLM (responder, knowledge) cap what the MODEL sees via
+    # that call the LLM (assistant, finalize) cap what the MODEL sees via
     # Settings.max_history_messages and app.graph.utils.trim_messages when
     # they build their prompt input. Persistence unbounded, model window
     # bounded — two different concerns.
+    #
+    # TODO(H7): session splitting/compaction is not implemented. A long-lived
+    # thread keeps every message here, and LangGraph's Chain span serializes
+    # the full state; see docs/api.md "Known limitation" and
+    # docs/implementation_plan.md H7.
     messages: Annotated[list[AnyMessage], operator.add]
     user_input: str
     session_id: str
@@ -34,20 +39,28 @@ class IPAState(TypedDict):
     # a text turn seeding None CLEARS the previous voice turn's hint, whereas an
     # absent key would let that stale hint leak into the next trace.
     stt_lang: str | None
-    route: str | None
+    # "chat" when the turn answered without tools, "tools" when at least one
+    # tool ran. telemetry_node derives it from tool_iterations (a non-reducer
+    # channel that resets every turn) — never from the reducer-accumulated
+    # tools_called, which survives across turns.
+    mode: Literal["chat", "tools"] | None
     pending_action: dict | None
     llm_calls: int
     tool_iterations: int
-    tools_called: Annotated[list[str], operator.add]
+    # Tool telemetry is TURN-SCOPED, not a reducer: build_initial_state() seeds
+    # [] and the input overwrites the previous turn's value. tool_exec_node
+    # appends within the turn so every ReAct iteration is still recorded.
+    # A reducer here would make the checkpointer carry old tool calls into
+    # every later trace (the 10x calculate leak).
+    tools_called: list[str]
     # --- Observability additions ---
-    # One dict per tool INVOCATION, appended by tool_exec_node through the
-    # reducer so every ReAct iteration this turn is recorded, e.g.
+    # One dict per tool INVOCATION this turn, e.g.
     # {"tool": "calculate", "ok": false, "error_type": "ValueError",
     #  "denied": false, "duration_ms": 12.4}.
-    tool_outcomes: Annotated[list[dict], operator.add]
-    # Permission-denial records: {"tool": str, "reason": str,
+    tool_outcomes: list[dict]
+    # Permission-denial records for THIS turn: {"tool": str, "reason": str,
     # "user_id": str | None}. Empty until authorization lands.
-    permission_denials: Annotated[list[dict], operator.add]
+    permission_denials: list[dict]
     # Per-run LLM usage totals, written ONCE by telemetry_node at the end of a
     # run: {llm_calls, input_tokens, output_tokens, cache_hit_tokens,
     # cache_miss_tokens, cache_hit_ratio, error_types}. Read via .get().

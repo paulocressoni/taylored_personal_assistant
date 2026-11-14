@@ -49,6 +49,8 @@ from app.core.observability import (
     turn_span,
 )
 from app.core.timing import StageMarks, log_stage_marks, monotonic_now
+from app.graph.constants import ANSWER_NODES
+from app.graph.utils import content_to_str
 from app.language.voices import voice_for
 from app.voice.audio import StreamingResampler, duration_s
 from app.voice.stt import Transcriber
@@ -77,7 +79,7 @@ OUTPUT_SAMPLE_RATES = frozenset({16000, PCM_SAMPLE_RATE})
 
 # Persisted as the assistant's side of a turn a barge-in cut off. LangGraph
 # commits a run's input as its FIRST checkpoint, so the turn's HumanMessage is
-# durable long before the responder can answer; without this marker a cancelled
+# durable long before the assistant can answer; without this marker a cancelled
 # turn leaves that question unanswered for ever. The text is deliberately short
 # and plainly not spoken: it restores the question/answer alternation a model
 # expects without inventing an answer the assistant never gave.
@@ -88,52 +90,33 @@ INTERRUPTED_MARKER = "[interrupted]"
 # latency (`_run_turn` skips `turn_timings` for them).
 TurnOutcome = Literal["answer", "wake_only", "cancel"]
 
-
-def _content_to_str(content: Any) -> str:
-    """Flatten a message chunk's content to text.
-
-    Mirrors the same helper in `app.api.routes`; both exist because the two
-    transports stream the same token shape. Consolidating them into
-    `app.graph.utils` is a tidy-up, not a behaviour change.
-
-    Args:
-        content: A message's content: a string, or a list of content blocks.
-
-    Returns:
-        The text of the message, empty when there is none.
-    """
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in content or []:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
-    return "".join(parts)
+# How far past the detection hop the phrase's final VAD-active window may sit.
+# The detector can cross the threshold before the last phoneme has finished:
+# soak logs show 118-160 ms for a bare "Hey Jarvis". 250 ms covers that with
+# margin, while a one-breath command adds its own duration and crosses it.
+WAKE_PHRASE_TAIL_SAMPLES = settings.voice_input_sample_rate * 250 // 1000
 
 
-def _responder_token(event: dict[str, Any]) -> str | None:
+def _answer_token(event: dict[str, Any]) -> str | None:
     """Return the reply text a streaming event carries, or None.
 
-    Only the responder's tokens are the answer: the router and the knowledge node
-    also call models, and speaking their output would read the classification
-    aloud.
+    Only answer-node tokens are the answer. The assistant and finalize nodes
+    share one set so adding a future answer node cannot silently mute voice.
 
     Args:
         event: One `astream_events` v2 event.
 
     Returns:
-        The token's text, or None for anything that is not a responder token.
+        The token's text, or None for anything that is not an answer token.
     """
     if event.get("event") != "on_chat_model_stream":
         return None
-    if event.get("metadata", {}).get("langgraph_node") != "responder":
+    if event.get("metadata", {}).get("langgraph_node") not in ANSWER_NODES:
         return None
     chunk = event.get("data", {}).get("chunk")
     if not isinstance(chunk, AIMessageChunk):
         return None
-    return _content_to_str(chunk.content)
+    return content_to_str(chunk.content)
 
 
 def _detected_lang(event: dict[str, Any]) -> str | None:
@@ -251,6 +234,10 @@ class VoiceSession:
         # When the most recent detection arrived. `wake_lead` is measured from
         # this, so it must be stamped by the session, not by the detector.
         self._last_detection_at: float | None = None
+        # Where that detection sat in the audio stream. Compared with the VAD's
+        # last active sample: no speech after the phrase means the segment was
+        # only "Hey Jarvis", which must not cost an STT call.
+        self._last_detection_sample: int | None = None
         # One slot for a segment rejected just before its own detection arrived.
         self._rejected: tuple[Utterance, float] | None = None
         # The language the LAST turn resolved to. It biases this turn's
@@ -343,6 +330,21 @@ class VoiceSession:
                     self._reject(event)
                     continue
                 self._rejected = None
+                if self._wake is not None and self._is_bare_wake(event):
+                    # The phrase ended the segment and nothing followed it. The
+                    # detection already sent `speech_start`; re-arm immediately
+                    # so a command spoken after the pause is still admitted, and
+                    # skip STT — there is no text to recover and the call costs
+                    # money. The one-shot permit is consumed either way.
+                    self._last_detection_sample = None
+                    logger.info(
+                        "wake word heard without a command; skipped STT, window re-armed"
+                    )
+                    self._gate.arm()
+                    continue
+                # A real segment: the detection has done its job, so a second
+                # segment cannot reuse its offset to look like a bare phrase.
+                self._last_detection_sample = None
                 # Deliberately not awaited: the reader has to stay available for
                 # the audio that would interrupt this turn.
                 self._turn = asyncio.create_task(self._run_turn(event))
@@ -381,6 +383,7 @@ class VoiceSession:
 
         for detection in detections:
             self._last_detection_at = monotonic_now()
+            self._last_detection_sample = detection.sample_offset
             self._gate.arm()
             logger.info(
                 "wake word detected (score=%.2f, in_turn=%s)",
@@ -394,6 +397,36 @@ class VoiceSession:
             await self._recover_rejected()
 
         return bool(detections)
+
+    def _is_bare_wake(self, utterance: Utterance) -> bool:
+        """Return whether a segment contains only the wake phrase.
+
+        The endpointer and the wake detector consume the same audio, so their
+        sample offsets share one timeline. If the last VAD-active window ends
+        within the phrase-tail allowance of the detection, no command followed
+        the phrase: the segment is the bare wake word and STT has nothing to
+        transcribe.
+
+        The allowance is 250 ms, not one VAD window. `wake_only_en.wav` sits
+        32 ms past the detection, but the device's live bare phrase measured
+        118-160 ms in the soak logs — the detector crossed before the final
+        phoneme's VAD window. A command in the same breath adds its own
+        duration and runs further; the constant is sized from the measured
+        phrase tail rather than made generous, because a short one-breath
+        command is the case this could wrongly skip.
+
+        Args:
+            utterance: The admitted segment about to become a turn.
+
+        Returns:
+            True when no VAD-active audio runs beyond the phrase-tail allowance.
+        """
+        if self._last_detection_sample is None:
+            return False
+        return (
+            utterance.active_end_sample
+            <= self._last_detection_sample + WAKE_PHRASE_TAIL_SAMPLES
+        )
 
     def _reject(self, utterance: Utterance) -> None:
         """Keep a segment that arrived without a permit, and log why.
@@ -433,6 +466,14 @@ class VoiceSession:
             return
         if not self._gate.admit(utterance.started_at):
             return
+        if self._is_bare_wake(utterance):
+            self._last_detection_sample = None
+            logger.info(
+                "wake word recovered without a command; skipped STT, window re-armed"
+            )
+            self._gate.arm()
+            return
+        self._last_detection_sample = None
         logger.info("wake word recovered a segment finalised before the detection")
         self._turn = asyncio.create_task(self._run_turn(utterance))
 
@@ -474,8 +515,8 @@ class VoiceSession:
         """Give a turn that never finished an assistant reply, if it needs one.
 
         LangGraph commits a run's input as its first checkpoint, so a turn's
-        HumanMessage is durable the moment the graph starts — but the responder's
-        AIMessage only lands when the responder node returns. Cancelling the turn
+        HumanMessage is durable the moment the graph starts — but the assistant's
+        AIMessage only lands when the answer node returns. Cancelling the turn
         mid-node therefore used to leave the persisted thread holding a question
         with no answer: `GET /sessions/{id}/history` showed it unanswered, and the
         next run fed it back to the model as an unanswered user turn.
@@ -649,7 +690,13 @@ class VoiceSession:
             return None
         if transcript.is_empty:
             # Silence, noise, or an invented phrase the adapter already dropped:
-            # answering nothing is better than answering a hallucination.
+            # answering nothing is better than answering a hallucination. The
+            # discovery consumed the one-shot permit, so re-arm it: the user
+            # already said the phrase and should be able to retry the command
+            # without saying it again.
+            if self._wake is not None:
+                self._gate.arm()
+                logger.info("empty transcript after wake; window re-armed")
             return None
 
         spoken_text = transcript.text
@@ -696,8 +743,9 @@ class VoiceSession:
         # attribute would outlive a barge-in and misnumber the next turn.
         sentence_index = 0
 
-        # Same cooperative caveat as the text routes: this bounds the turn, it
-        # cannot abort a model call already running on its own thread.
+        # This bounds the whole turn. The nodes are async, so cancellation also
+        # reaches the in-flight model request; ROLE_CONFIG's per-role timeout is
+        # still the hard per-call bound.
         async with asyncio.timeout(settings.graph_timeout_seconds):
             async for event in self._graph.astream_events(
                 initial, config=config, version="v2"
@@ -710,7 +758,7 @@ class VoiceSession:
                 if state is not None:
                     final = state
                     continue
-                text = _responder_token(event)
+                text = _answer_token(event)
                 if not text:
                     continue
                 if marks.llm_first_token is None:

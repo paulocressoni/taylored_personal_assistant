@@ -51,7 +51,7 @@ class FakeGraph:
         self.initial.append(initial)
         yield {
             "event": "on_chat_model_stream",
-            "metadata": {"langgraph_node": "responder"},
+            "metadata": {"langgraph_node": "assistant"},
             "data": {"chunk": AIMessageChunk(content="The light is on.")},
         }
         yield {

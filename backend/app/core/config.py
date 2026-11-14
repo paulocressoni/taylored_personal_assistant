@@ -90,7 +90,7 @@ class Settings(BaseSettings):
     # Cap on how many conversation messages a node forwards to the
     # model. The checkpointer keeps the FULL history (the session's memory,
     # read back whole by GET /sessions/{id}/history) — this only bounds the
-    # window the responder / knowledge specialist build their prompt from,
+    # window the assistant builds its prompt from,
     # so a long session can't exceed the model's context window or bloat
     # every LLM call. Override with MAX_HISTORY_MESSAGES. 0 / negative =
     # no cap.

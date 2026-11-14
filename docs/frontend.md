@@ -169,7 +169,7 @@ Two consequences worth knowing:
      `device_id` from `lib/deviceId.ts` and the real `session_id` of the active
      conversation — M11),
   3. each `token` frame appends its `content` to the last assistant message,
-  4. `done` fills in the final reply / language / route and closes the socket.
+  4. `done` fills in the final reply / language / mode and closes the socket.
 - Every `token` updates state → React re-renders → the bubble grows live. That's the
   "token-by-token" effect.
 

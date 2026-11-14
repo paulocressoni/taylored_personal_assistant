@@ -36,7 +36,7 @@ export function useChatStream() {
   const [status, setStatus] = useState<string | null>(null) // "classifying intent..."
   const [error, setError] = useState<string | null>(null)
   const [lang, setLang] = useState<string | null>(null)
-  const [route, setRoute] = useState<string | null>(null)
+  const [mode, setMode] = useState<'chat' | 'tools' | null>(null)
 
   // --- M11 Phase 1: session state --------------------------------------
   // The function initializers (() => ...) run ONCE on first render, so we
@@ -80,9 +80,8 @@ export function useChatStream() {
   // backend an explicit cancel frame so it can finalize the run cleanly and
   // label the trace "aborted" rather than "error"; and/or (3) on the backend,
   // mark client-disconnect traces as "aborted" instead of "error". Note:
-  // closing the socket also does NOT stop the in-flight
-  // thread-executor model call — that keeps running until its own
-  // ROLE_CONFIG timeout.
+  // closing the socket now cancels the in-flight model call too, because the
+  // graph nodes are async; ROLE_CONFIG remains the per-call bound.
 
   // Reset the on-screen chat to an empty conversation. Also closes any
   // in-flight stream so tokens from the OLD session can't write into the new
@@ -98,7 +97,7 @@ export function useChatStream() {
     setError(null)
     setStatus(null)
     setLang(null)
-    setRoute(null)
+    setMode(null)
   }, [])
 
   // Load this conversation's history whenever the active session changes.
@@ -219,7 +218,7 @@ export function useChatStream() {
       setError(null)
       setStatus(null)
       setLang(null)
-      setRoute(null)
+      setMode(null)
 
       // Offer the API key as the WebSocket subprotocol so it never
       // appears in the URL. When the key is missing (misconfiguration) open
@@ -304,7 +303,7 @@ export function useChatStream() {
               return next
             })
             setLang(frame.lang)
-            setRoute(frame.route)
+            setMode(frame.mode)
             setIsStreaming(false)
             setStatus(null)
             resolved = true
@@ -356,7 +355,7 @@ export function useChatStream() {
     status,
     error,
     lang,
-    route,
+    mode,
     sendMessage,
     reloadHistory,
     sessions,

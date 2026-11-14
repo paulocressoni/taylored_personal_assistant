@@ -13,7 +13,7 @@ PROMPT = "Reply with exactly one word: pong."
 
 
 def _run():
-    return get_chat_model("responder").invoke(PROMPT)
+    return get_chat_model("assistant").invoke(PROMPT)
 
 
 def test_smoke_01_chat():

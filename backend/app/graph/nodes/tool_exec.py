@@ -6,16 +6,18 @@ Every exception from a tool is captured and turned into a ToolMessage so a
 tool failure can never crash the whole graph.
 
 Each invocation also produces a structured OUTCOME dict (success / error type /
-permission-denied / duration) that is appended to state["tool_outcomes"] via the
-list reducer. The observability dashboards slice this per tool, so a trend of
-failures or slow calls is visible without digging through logs.
+permission-denied / duration) that tool_exec_node appends to the TURN-SCOPED
+state["tool_outcomes"]. The state channels are deliberately not reducers: a
+new turn seeds empty lists, so old calls can never leak into its trace. The
+observability dashboards slice this per turn, so a trend of failures or slow
+calls is visible without digging through logs.
 """
 
 import logging
 import time
 from typing import Any
 
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 
 from app.graph.state import IPAState
 from app.graph.utils import get_last_message
@@ -88,7 +90,7 @@ def _outcome(
     }
 
 
-def tool_exec_node(state: IPAState) -> dict:
+async def tool_exec_node(state: IPAState) -> dict:
     """Run the tools requested by the last message.
 
     Args:
@@ -96,7 +98,8 @@ def tool_exec_node(state: IPAState) -> dict:
 
     Returns:
         A dict with the tool results, updated iteration count, and structured
-        outcomes for observability.
+        outcomes for observability. The telemetry lists carry forward this
+        turn's earlier tool_exec calls but never a previous turn's calls.
     """
     last = get_last_message(state["messages"])
     tool_calls = getattr(last, "tool_calls", None) or []
@@ -123,7 +126,10 @@ def tool_exec_node(state: IPAState) -> dict:
             content = f"Unknown tool: {name}"
         else:
             try:
-                content = str(tool.invoke(args))
+                content = str(await tool.ainvoke(args))
+            # Catch Exception, never BaseException: CancelledError must escape
+            # so barge-in and asyncio.timeout can stop the turn. The broad catch
+            # is the tool boundary's "a tool failure never crashes the graph".
             except Exception as exc:  # noqa: BLE001 - tool boundary: never crash the graph
                 logger.warning(
                     "tool %r failed with args %r: %s: %s",
@@ -151,27 +157,26 @@ def tool_exec_node(state: IPAState) -> dict:
 
         results.append(ToolMessage(content=str(content), tool_call_id=call["id"]))
 
-    # Hand the tool names + structured outcomes to the reducers so
-    # observability can report which tools ran and how each one fared.
+    # Append to the current turn's telemetry. These channels are NOT reducers:
+    # the input's seeded [] resets them at the start of each run, and this
+    # explicit append preserves earlier tool_exec iterations within the run.
+    # A reducer here would make the checkpointer accumulate calls across turns.
     out: dict = {
         "messages": results,
         "tool_iterations": iterations,
-        "tools_called": [call["name"] for call in tool_calls],
-        "tool_outcomes": outcomes,
+        "tools_called": [
+            *(state.get("tools_called") or []),
+            *(call["name"] for call in tool_calls),
+        ],
+        "tool_outcomes": [*(state.get("tool_outcomes") or []), *outcomes],
     }
     if denials:
-        out["permission_denials"] = denials
-
-    # Cap reached: stop the loop and tell the responder why, so it wraps up
-    # with a clear message instead of the user seeing silence.
-    if iterations >= TOOL_ITERATION_CAP:
-        out["messages"] = results + [
-            SystemMessage(
-                content=(
-                    "The tool loop reached its iteration cap and was stopped. "
-                    "Do NOT call any more tools. Tell the user you couldn't "
-                    "get a definitive answer and suggest rephrasing."
-                )
-            )
+        out["permission_denials"] = [
+            *(state.get("permission_denials") or []),
+            *denials,
         ]
+
+    # The cap notice lives in finalize_node's prompt, not in persisted history:
+    # after_tools routes here to finalize at the cap, so no synthetic
+    # SystemMessage needs to pollute the session's 20-message window.
     return out

@@ -124,7 +124,7 @@ ORDER BY turn_ms DESC
 LIMIT 20;
 
 -- 4. ROUTING DISTRIBUTION ACROSS INTENTS -------------------------------------
--- Trace names are `assistant:<route>` (set by enrich_trace at the end of the
+-- Trace names are `assistant:<mode>` (set by enrich_trace at the end of the
 -- run), so the app root is the only row that carries them.
 SELECT trace_name, count() AS runs
 FROM default.events_full
@@ -158,8 +158,8 @@ GROUP BY day
 ORDER BY day;
 
 -- 5b. Per-call outcomes of the newest failing turns.
--- `tool_outcomes` is the compact per-call summary the app writes, one entry
--- per invocation: `<tool>:<ok|denied|error_type>:<duration_ms>`.
+-- `tool_outcomes` is the compact CURRENT-TURN per-call summary the app writes,
+-- one entry per invocation: `<tool>:<ok|denied|error_type>:<duration_ms>`.
 SELECT
     trace_id,
     trace_name,

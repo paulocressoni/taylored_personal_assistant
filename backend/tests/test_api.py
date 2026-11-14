@@ -30,16 +30,16 @@ class FakeGraph:
         return {
             "messages": [AIMessage(content="fake reply")],
             "lang": "en",
-            "route": "responder",
+            "mode": "chat",
         }
 
     async def astream_events(self, initial, config=None, version="v2"):
         # Mimic exactly the two events the WS handler looks for:
-        #  1. a responder token chunk
+        #  1. an assistant token chunk
         #  2. the root on_chain_end carrying the final state
         yield {
             "event": "on_chat_model_stream",
-            "metadata": {"langgraph_node": "responder"},
+            "metadata": {"langgraph_node": "assistant"},
             "data": {"chunk": AIMessageChunk(content="fake reply")},
         }
         yield {
@@ -50,7 +50,7 @@ class FakeGraph:
                 "output": {
                     "messages": [AIMessage(content="fake reply")],
                     "lang": "en",
-                    "route": "responder",
+                    "mode": "chat",
                 }
             },
         }
@@ -96,14 +96,14 @@ def test_health(client):
     assert r.json()["version"] == __version__
 
 
-def test_chat_returns_reply_lang_route(client):
+def test_chat_returns_reply_lang_mode(client):
     r = client.post(
         "/chat",
         json={"session_id": "s1", "message": "hello"},
         headers={"X-API-Key": API_KEY},
     )
     assert r.status_code == 200
-    assert r.json() == {"reply": "fake reply", "lang": "en", "route": "responder"}
+    assert r.json() == {"reply": "fake reply", "lang": "en", "mode": "chat"}
 
 
 def test_chat_rejects_empty_message(client):

@@ -1,8 +1,35 @@
-"""Unit tests for the pure helpers in app.graph.utils (BE-07)."""
+"""Unit tests for the pure helpers in app.graph.utils (BE-07).
 
-from langchain_core.messages import AIMessage, HumanMessage
+``content_to_str`` is the one flattening seam shared by the API, voice and
+assistant paths. ``trim_messages`` must never open a model window on an orphan
+ToolMessage, even when a long tool loop has filled the tail.
+"""
 
-from app.graph.utils import trim_messages
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from app.graph.utils import content_to_str, trim_messages
+
+# --- content_to_str ---------------------------------------------------------
+
+
+def test_content_to_str_returns_plain_strings_unchanged() -> None:
+    assert content_to_str("hello") == "hello"
+
+
+def test_content_to_str_joins_text_blocks() -> None:
+    assert content_to_str(["hello", " ", "world"]) == "hello world"
+
+
+def test_content_to_str_extracts_text_dict_blocks() -> None:
+    assert (
+        content_to_str([{"type": "text", "text": "hello"}, " world"]) == "hello world"
+    )
+
+
+def test_content_to_str_returns_empty_for_empty_content() -> None:
+    assert content_to_str("") == ""
+    assert content_to_str([]) == ""
+
 
 # --- trim_messages: no cap / within limit ----------------------------------
 
@@ -46,8 +73,29 @@ def test_trim_window_starts_on_a_human_turn() -> None:
     assert trimmed[-1].content == "h24"
 
 
-def test_trim_window_with_no_human_returns_whole_tail() -> None:
+def test_trim_window_extends_back_when_the_tail_is_a_tool_exchange() -> None:
+    messages = [
+        HumanMessage(content="q1"),
+        AIMessage(content="a1"),
+        HumanMessage(content="q2"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"name": "calculate", "args": {"expression": "1+1"}, "id": "c1"}
+            ],
+        ),
+        ToolMessage(content="2", tool_call_id="c1"),
+    ]
+
+    trimmed = trim_messages(messages, max_messages=2)
+
+    # The tail [AIMessage(tool_calls), ToolMessage] has no HumanMessage, so the
+    # window extends back to q2. It intentionally exceeds max_messages.
+    assert trimmed[0] is messages[2]
+    assert len(trimmed) == 3
+    assert not isinstance(trimmed[0], ToolMessage)
+
+
+def test_trim_window_with_no_human_returns_empty() -> None:
     messages = [AIMessage(content=f"a{i}") for i in range(30)]
-    trimmed = trim_messages(messages, max_messages=20)
-    assert len(trimmed) == 20  # never returns an empty list
-    assert all(isinstance(m, AIMessage) for m in trimmed)
+    assert trim_messages(messages, max_messages=20) == []

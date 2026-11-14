@@ -67,7 +67,7 @@ def build_initial_state(
     the persisted value survive; on a brand-new thread there is nothing to
     preserve and detect_lang_node (the graph's first node) writes ``lang``
     before any reader runs. The user's text becomes a HumanMessage so the
-    responder model sees a proper message list.
+    assistant model sees a proper message list.
 
     ``stt_lang`` IS seeded, as None, even though ``lang`` is not: it records this
     turn's transcription bias, so a text turn has to CLEAR whatever a previous
@@ -90,10 +90,12 @@ def build_initial_state(
         "device_id": device_id,
         "principal": None,
         "stt_lang": None,
-        "route": None,
+        "mode": None,
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,
+        # Turn-scoped, not reducers: these empty lists overwrite the previous
+        # turn's tool telemetry so a new trace cannot inherit old calls.
         "tools_called": [],
         "tool_outcomes": [],
         "permission_denials": [],
@@ -123,7 +125,7 @@ def build_run_config(session_id: str, channel: str) -> dict[str, Any]:
     """
     telemetry = RunTelemetry()
     # Stamp the session/channel onto this request's log context BEFORE
-    # the run starts, so every log line for this turn (route-level info, node
+    # the run starts, so every log line for this turn (turn-level info, node
     # warnings, exceptions) carries the correlation id. FastAPI runs each
     # request handler in its own asyncio task (a private contextvars copy), so
     # this can never leak into the next request. Worker-thread logs inside
