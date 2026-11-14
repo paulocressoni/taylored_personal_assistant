@@ -15,7 +15,7 @@ PROMPT = "How many r's are in the word strawberry? Think step by step."
 
 
 def _run(enabled: bool) -> AIMessage:
-    llm = get_chat_model("specialist")
+    llm = get_chat_model("assistant")
     thinking_type = "enabled" if enabled else "disabled"
     return llm.invoke(PROMPT, extra_body={"thinking": {"type": thinking_type}})
 

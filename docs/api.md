@@ -94,7 +94,7 @@ Interactive docs (generated from the Pydantic schemas): `http://localhost:8000/d
 |---|---|---|---|
 | `GET` | `/health` | Liveness probe for the Docker HEALTHCHECK | `{"status": "ok"}` |
 | `POST` | `/chat` | One-shot: run the graph, return the final answer | `ChatResponse` JSON |
-| `WS` | `/ws/chat` | Stream responder tokens, then a `done` frame | `token` frames + `done` |
+| `WS` | `/ws/chat` | Stream assistant tokens, then a `done` frame | `token` frames + `done` |
 | `WS` | `/ws/voice` | Always-listening voice socket (M29): PCM in, PCM + control frames out | `ready` / `speech_start` / `transcript` / `token` / `audio_end` / `error` + binary PCM |
 | `GET` | `/sessions/{id}/history` | Read a conversation's persisted messages (M11) | `SessionHistoryResponse` |
 | `DELETE` | `/sessions/{id}` | Delete a conversation's checkpoints (M11) | `{"session_id", "deleted"}` |
@@ -179,14 +179,14 @@ Request body — `ChatRequest`:
 Response — `ChatResponse`:
 
 ```json
-{ "reply": "...", "lang": "en", "route": "knowledge" }
+{ "reply": "...", "lang": "en", "mode": "chat" }
 ```
 
 | Field | Meaning |
 |---|---|
 | `reply` | The assistant's final answer (last message in the graph state) |
 | `lang` | Resolved language tag, e.g. `"pt-BR"` |
-| `route` | Routed intent, e.g. `"knowledge"` / `"responder"` |
+| `mode` | `"chat"` when no tool ran, `"tools"` when at least one tool was invoked |
 
 Example:
 
@@ -210,11 +210,11 @@ curl -X POST http://localhost:8000/chat \
 
 **How it works:** Pydantic validates the body at the boundary (a 422 is returned without
 your code running). The route then runs the compiled graph via `await graph.ainvoke(...)`
-(async, matching the M11 `AsyncSqliteSaver` — LangGraph runs the sync node code in a
-thread executor internally). `build_run_config` stamps
+(async, matching the M11 `AsyncSqliteSaver`; the nodes await their model calls too).
+`build_run_config` stamps
 `config["configurable"]["thread_id"] = session_id`, so this turn is **merged into the
 saved history** for that session instead of starting from scratch. Finally it returns the
-last message plus `lang` / `route` from the final state.
+last message plus `lang` / `mode` from the final state.
 
 ## WS /ws/chat
 
@@ -229,11 +229,11 @@ const ws = new WebSocket('ws://localhost:8000/ws/chat', [ASSISTANT_API_KEY])
 | Frame | Fields | Meaning |
 |---|---|---|
 | `token` | `{ "type": "token", "content": "<chunk>" }` | One chunk of the final answer |
-| `done` | `{ "type": "done", "reply", "lang", "route" }` | Run finished; `reply` = all tokens joined |
+| `done` | `{ "type": "done", "reply", "lang", "mode" }` | Run finished; `reply` = all tokens joined |
 
-- Only `on_chat_model_stream` events tagged `langgraph_node == "responder"` are streamed.
-  Internal model calls (router, specialist) are filtered out — clients never see
-  classification/tool tokens.
+- Only `on_chat_model_stream` events whose `langgraph_node` is in `ANSWER_NODES`
+  (`assistant` / `finalize`) are streamed. Tool and language-detection nodes are filtered
+  out — clients never see internal tokens.
 - The connection runs **one turn then closes** (one message per connection by design).
 - Error policy: a client leaving mid-run is a `WebSocketDisconnect` and is handled
   silently; any other failure propagates so the server logs the real traceback.
@@ -325,7 +325,7 @@ default `backend/checkpoints.db`, configurable via `CHECKPOINT_DB_PATH` in
 
 ### Why `thread_id` lives in `config`, not the state
 
-- The **state** is *what the graph remembers* (`messages`, `lang`, `route`, ...).
+- The **state** is *what the graph remembers* (`messages`, `lang`, `mode`, ...).
 - The **`thread_id`** is *which conversation this turn belongs to* — it's in
   `config["configurable"]["thread_id"]`, never in `IPAState`.
 - Reducers (`Annotated[list, operator.add]` on `messages`) make history accumulate: each
@@ -417,25 +417,21 @@ The React chat UI consumes `/ws/chat` directly (see [frontend.md](frontend.md)):
   `max_retries` in `ROLE_CONFIG` (`backend/app/core/llm.py`), so a hung upstream cannot
   block a thread forever.
 
-### Timeouts are cooperative, not an abort
+### Timeouts cancel the model call too
 
 `POST /chat` and `WS /ws/chat` wrap the graph run in
-`asyncio.timeout(settings.graph_timeout_seconds)` (default 90s). Important: this only
-cancels the route's `await`. LangGraph runs the sync node code — including the DeepSeek
-HTTP call — on a **thread-executor thread**, so when the timeout fires the request/socket
-is released but the model call keeps running on its thread until it finishes or hits its
-own bound. Consequences:
+`asyncio.timeout(settings.graph_timeout_seconds)` (default 90s). The graph nodes are
+async and await their model calls, so the timeout cancels the in-flight provider request
+instead of leaving it running on a worker thread. Consequences:
 
-- `graph_timeout_seconds` is a coarse request-level safety net: it stops a hung run from
-  holding a request (or socket) open forever, returning `503` on `POST /chat` or closing
-  the socket with `1013` on `WS /ws/chat`.
-- The **real bound on an in-flight model call** is the per-role
-  `ROLE_CONFIG[role]["timeout"]` (currently 10s) in `backend/app/core/llm.py`. That is
-  the timeout the `ChatDeepSeek` HTTP client actually enforces per call and raises as an
-  error mid-graph. Because `max_retries` is 2, worst-case wall time per role is a few ×
-  its timeout.
-- Do not rely on `asyncio.timeout` to abort upstream work. If a single model call must
-  return sooner, lower that role's `ROLE_CONFIG["timeout"]` instead.
+- `graph_timeout_seconds` is the coarse request-level safety net: it stops a hung run
+  from holding a request (or socket) open forever, returning `503` on `POST /chat` or
+  closing the socket with `1013` on `WS /ws/chat`.
+- The **per-call bound** is still `ROLE_CONFIG[role]["timeout"]` (currently 10s) in
+  `backend/app/core/llm.py`, enforced by the `ChatDeepSeek` client. Because `max_retries`
+  is 2, worst-case wall time per role is a few × its timeout.
+- Barge-in uses the same cancellation path: a new utterance cancels the running turn,
+  and the model request is cancelled with it.
 
 ## Testing the API layer (no DeepSeek)
 

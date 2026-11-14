@@ -7,10 +7,10 @@ fail-fast.
 
 ## What you get
 
-- A trace per graph run: spans for `detect_lang` / `router` / `knowledge` / `responder`
+- A trace per graph run: spans for `detect_lang` / `assistant` / `finalize` / `telemetry`
   and tool calls, plus LLM generations with real token counts.
 - Session grouping (`session_id`), user id, and the run's own name/tags/metadata
-  (`schema_version`, `route`, `lang`, `stt_lang` on voice turns, token + prompt-cache
+  (`schema_version`, `mode`, `lang`, `stt_lang` on voice turns, token + prompt-cache
   counters, tool outcomes and the error taxonomies) on every trace.
 - A readable **voice trace waterfall**: a spoken turn draws an `stt` span around the
   transcription and one `tts` span per sentence, so the stage timings become intervals you
@@ -135,10 +135,10 @@ ENV=dev uv run python -m scripts.smoke_07_langfuse
 ```
 
 Then open `http://localhost:3000` → **Traces** → newest run. You should see an
-`assistant:knowledge` trace with spans for `detect_lang` / `router` / `knowledge` /
-`responder` / `telemetry` and an LLM generation with token counts. The trace's name,
+`assistant:chat` trace with spans for `detect_lang` / `assistant` / `telemetry` and an
+LLM generation with token counts. The trace's name,
 its tags (`env:dev`, `channel:cli`, `status:*`) and its metadata
-(`schema_version = "2.2"`, `route`, `lang`, token counters, `tool_outcomes`, the error
+(`schema_version = "3.0"`, `mode`, `lang`, token counters, `tool_outcomes`, the error
 taxonomies) are written by the invoke site AFTER the graph returns — see "How the
 wiring works" below. Production dashboards, alerts and the ClickHouse ground-truth
 queries live in `infra/observability/`: [`dashboards.md`](../infra/observability/dashboards.md)
@@ -169,7 +169,7 @@ before that first start.
   trace identity — `langfuse_trace_name` (fallback `assistant:turn`) and `langfuse_tags`
   (`env:*`, `channel:*`). Stamping those at invoke time means a run that crashes, times out
   or is abandoned still lands named and filterable; `enrich_trace` refines the name to
-  `assistant:<route>` and merges the `status:*` tag once the run finishes.
+  `assistant:<mode>` and merges the `status:*` tag once the run finishes.
 - `turn_span()` opens an **app-owned root span** around the graph call at every invoke
   site (HTTP `/chat`, the WebSocket handler, the CLI and the smoke test). Langfuse reads
   a trace's name/tags/metadata from its app-root span, and `propagate_attributes` only
@@ -224,7 +224,7 @@ Two facts about the app-root span explain both the bug and the fix:
    which writes each metadata key as its OWN span attribute
    (`langfuse.trace.metadata.<key>`) — so the second call ADDS to the first instead of
    replacing it. A voice turn therefore ends up with the run identity (`schema_version`,
-   `route`, …) AND the stage timings (`stt_ms`, `graph_ttft_ms`, …) on the same span.
+   `mode`, …) AND the stage timings (`stt_ms`, `graph_ttft_ms`, …) on the same span.
    That ordering is pinned by a unit test: a future refactor to a whole-blob write would
    silently strip the identity from every voice trace.
 
@@ -295,8 +295,9 @@ Two invariants to keep in mind before editing this code:
   exactly what closing the children before returning guarantees. A child span opened around
   them would take the `status:failed` marker and the stage timings onto itself and leave the
   crashed turn looking healthy.
-- The stage spans add **no trace-level metadata**, so `TRACE_SCHEMA_VERSION` is unchanged
-  (`2.2`). The dashboard contract — the six scalars on the root, and the ClickHouse queries
+- The stage spans add **no trace-level metadata** of their own; `TRACE_SCHEMA_VERSION` is
+  now `3.0` because the root's `route` field was replaced by `mode`. The dashboard
+  contract — the six scalars on the root, and the ClickHouse queries
   in `infra/observability/` — is untouched. The waterfall is an extra dimension for a human
   reading one turn, not a schema change: the `stt` / `tts` spans are what widgets 8a/8b
   count ([dashboards.md](../infra/observability/dashboards.md) §5.8), and the measured
@@ -434,7 +435,7 @@ After a reboot, check in this order:
 1. `make prod-ps` — every service `Up (healthy)` except `langfuse-worker`.
 2. `http://<host>:8080` serves the UI and `/health` answers.
 3. `http://<host>:3000` accepts a login.
-4. One assistant turn produces a new `assistant:<route>` trace — that single check
+4. One assistant turn produces a new `assistant:<mode>` trace — that single check
    covers backend → Langfuse ingest → ClickHouse end to end.
 
 ## Troubleshooting

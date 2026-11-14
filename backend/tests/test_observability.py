@@ -64,7 +64,7 @@ def test_error_taxonomy_ignores_ok_and_denied_calls() -> None:
 def test_trace_attributes_marks_tool_ok_when_tools_ran() -> None:
     attributes = trace_attributes(
         {
-            "route": "knowledge",
+            "mode": "tools",
             "lang": "en",
             "channel": "api",
             "tool_outcomes": [
@@ -72,7 +72,7 @@ def test_trace_attributes_marks_tool_ok_when_tools_ran() -> None:
             ],
         }
     )
-    assert attributes.name == "assistant:knowledge"
+    assert attributes.name == "assistant:tools"
     assert attributes.tags == [f"env:{settings.env}", "channel:api", "status:tool_ok"]
     assert attributes.metadata["schema_version"] == TRACE_SCHEMA_VERSION
 
@@ -80,7 +80,7 @@ def test_trace_attributes_marks_tool_ok_when_tools_ran() -> None:
 def test_trace_attributes_reports_failures_and_denials() -> None:
     attributes = trace_attributes(
         {
-            "route": "responder",
+            "mode": "chat",
             "channel": "api",
             "tool_outcomes": [
                 {"tool": "a", "ok": False, "denied": False, "error_type": "ValueError"}
@@ -103,7 +103,7 @@ def test_trace_attributes_reports_failures_and_denials() -> None:
 def test_trace_attributes_values_fit_the_sdk_limit() -> None:
     attributes = trace_attributes(
         {
-            "route": "knowledge",
+            "mode": "tools",
             "channel": "api",
             "lang": "pt-BR",
             "tools_called": ["calculate", "calculate", "calculate"],
@@ -130,7 +130,7 @@ def test_trace_attributes_values_fit_the_sdk_limit() -> None:
 def test_trace_attributes_summarises_per_call_tool_outcomes() -> None:
     attributes = trace_attributes(
         {
-            "route": "knowledge",
+            "mode": "tools",
             "channel": "api",
             "tool_outcomes": [
                 {"tool": "calculate", "ok": True, "denied": False, "duration_ms": 2.4},
@@ -156,7 +156,7 @@ def test_trace_attributes_truncates_a_long_tool_outcome_summary() -> None:
         {"tool": "calculate", "ok": True, "denied": False, "duration_ms": 1.0}
     ] * 20
     attributes = trace_attributes(
-        {"route": "knowledge", "channel": "api", "tool_outcomes": outcomes}
+        {"mode": "tools", "channel": "api", "tool_outcomes": outcomes}
     )
     summary = attributes.metadata["tool_outcomes"]
     assert len(summary) == MAX_METADATA_VALUE_LEN
@@ -171,17 +171,13 @@ def test_timing_metadata_flattens_milliseconds_to_one_decimal_strings() -> None:
 
 
 def test_trace_attributes_records_the_transcription_bias() -> None:
-    attributes = trace_attributes(
-        {"route": "responder", "lang": "de", "stt_lang": "en"}
-    )
+    attributes = trace_attributes({"mode": "chat", "lang": "de", "stt_lang": "en"})
 
     assert attributes.metadata["stt_lang"] == "en"
 
 
 def test_trace_attributes_leaves_the_bias_empty_on_a_text_turn() -> None:
-    attributes = trace_attributes(
-        {"route": "responder", "lang": "en", "stt_lang": None}
-    )
+    attributes = trace_attributes({"mode": "chat", "lang": "en", "stt_lang": None})
 
     assert attributes.metadata["stt_lang"] == ""
 
@@ -293,14 +289,14 @@ def test_turn_io_flattens_block_content() -> None:
 def test_enrich_then_stamp_voice_timing_keeps_both_metadata_writes(
     recorder: _FakeSpan,
 ) -> None:
-    enrich_trace({"route": "knowledge", "channel": "voice", "messages": []})
+    enrich_trace({"mode": "tools", "channel": "voice", "messages": []})
     stamp_voice_timing({"stt_ms": 200.0})
 
     assert (
         recorder.attributes["langfuse.trace.metadata.schema_version"]
         == TRACE_SCHEMA_VERSION
     )
-    assert recorder.attributes["langfuse.trace.metadata.route"] == "knowledge"
+    assert recorder.attributes["langfuse.trace.metadata.mode"] == "tools"
     assert recorder.attributes["langfuse.trace.metadata.stt_ms"] == "200.0"
 
 

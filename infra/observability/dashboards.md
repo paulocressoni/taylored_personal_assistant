@@ -14,15 +14,15 @@ lets you prove the panel number is right.
   observability profile is up). The run's trace identity is stamped by the
   invoke site AFTER the graph returns, so nothing here depends on the graph's
   node order.
-- Each run's trace carries `schema_version = "2.2"` metadata, `tags` with
+- Each run's trace carries `schema_version = "3.0"` metadata, `tags` with
   `env:*`, `channel:*` and `status:*`, the token counters (incl. the flat
   `cache_hit_ratio`), `tool_outcomes` (per-call summary) and the error
   taxonomies. That identity is written onto the run's own **app-root span** —
   the only row Langfuse reads a trace's name/tags/metadata from. Confirm once:
   1. Run a single assistant turn with tools.
-  2. Open the trace in **Project → Traces**; it is named `assistant:<route>`
-     (e.g. `assistant:knowledge`).
-  3. In **Trace details → Metadata**, verify `schema_version = "2.2"` and the
+  2. Open the trace in **Project → Traces**; it is named `assistant:<mode>`
+     (e.g. `assistant:chat`).
+  3. In **Trace details → Metadata**, verify `schema_version = "3.0"` and the
      keys above. In the trace **Tags**, verify `status:tool_ok` (or
      `status:tool_error`) plus `env:prod` and `channel:*`.
 - A **voice** turn adds two more things to that SAME app-root row: `stt_lang`
@@ -50,7 +50,7 @@ lets you prove the panel number is right.
   nothing.
 - A run that never finished (crash, timeout, abandoned socket) keeps the fallback
   trace name `assistant:turn`: it still carries `env:*` / `channel:*` but has no
-  `status:*` tag and no route metadata. `assistant:turn` rows in the routing
+  `status:*` tag and no mode metadata. `assistant:turn` rows in the mode
   distribution are therefore a signal worth reading, not a bug.
 - **Cost needs pricing.** The DeepSeek API does not return cost in the
   response, so Langfuse can only infer it from a model definition:
@@ -274,7 +274,7 @@ the query in [`queries.sql`](./queries.sql) the panel must agree with.
 | 1b | Cost by model | observations | `totalCost` / `sum` | `providedModelName` | `type = GENERATION` | Vertical bar | Q1b |
 | 2a | Latency p50 | observations | `latency` / `p50` | — | `type = GENERATION` | Line | Q2 |
 | 2b | Latency p95 | observations | `latency` / `p95` | — | `type = GENERATION` | Line | Q2 |
-| 3 | Routing distribution | observations | `count` / `count` | `traceName` | `isRootObservation = true` | Horizontal bar | Q4 |
+| 3 | Mode distribution | observations | `count` / `count` | `traceName` | `isRootObservation = true` | Horizontal bar | Q4 |
 | 4a | Tool errors per day | observations | `count` / `count` | — | `isRootObservation = true` + tag `status:tool_error` | Line | Q5, Q6 |
 | 4b | Runs with tools OK | observations | `count` / `count` | — | `isRootObservation = true` + tag `status:tool_ok` | Line | Q5 |
 | 5 | Cache tokens by usage type | observations | `usageByType` / `sum` | `usageType` | `type = GENERATION` | Vertical bar | Q9, Q10 |
@@ -354,7 +354,7 @@ reason then, not the measurements.) Cross-check generations against Q2 and turns
 against Q3. Read p95, not p50 — personal usage is bursty and the tail is where
 ReAct loops and cold caches show up.
 
-### 5.3 Dashboard "Routing distribution" (widget 3)
+### 5.3 Dashboard "Mode distribution" (widget 3)
 
 Answers: which intents did users hit this week?
 
@@ -368,13 +368,13 @@ Answers: which intents did users hit this week?
 
 **Provenance:** the app stamps the trace name at invoke time as
 `langfuse_trace_name` (`assistant:turn`), and `enrich_trace` refines it to
-`assistant:<route>` once the run finishes — so `assistant:turn` rows are runs
+`assistant:<mode>` once the run finishes — so `assistant:turn` rows are runs
 that *never completed* (crash, timeout, abandoned socket). The
 `isRootObservation = true` filter is what makes this a **per-run** count: it
 selects the app-owned root span, our `turn_span()`.
 
 **Gotchas:** without the root filter this counts every span in every run and the
-total is meaningless. A new, unexpected `assistant:<route>` value is itself a
+total is meaningless. A new, unexpected `assistant:<mode>` value is itself a
 signal. Ground truth Q4.
 
 ### 5.4 Dashboard "Tool success / failure" (widgets 4a, 4b)
@@ -579,7 +579,7 @@ it:
 | Token usage per type | `usageByType` | `usage_details[k]` | DeepSeek response → LangChain → Langfuse callback handler |
 | Latency | `latency` | `end_time − start_time` | Span timestamps from the tracer |
 | Run / trace count | `count` with `isRootObservation = true` | `is_app_root = 1` | The app-owned root span opened by `turn_span()` |
-| Trace name | `traceName` | `trace_name` | `langfuse_trace_name` at invoke time, refined to `assistant:<route>` by `enrich_trace()` |
+| Trace name | `traceName` | `trace_name` | `langfuse_trace_name` at invoke time, refined to `assistant:<mode>` by `enrich_trace()` |
 | Tags | `tags` | `tags` | `langfuse_tags`, built by `trace_attributes()` |
 | Environment | `environment` | `environment` | Client construction: `environment=settings.env` |
 | Model | `providedModelName` | `provided_model_name` | The `model=` the app sends for that tier |
@@ -604,7 +604,7 @@ flowchart LR
 
 `trace_attributes()` (`backend/app/core/observability.py`) is the single place
 that turns run state into trace identity. It produces the flat keys
-`schema_version`, `route`, `lang`, `stt_lang`, `channel`, `tool_iterations`,
+`schema_version`, `mode`, `lang`, `stt_lang`, `channel`, `tool_iterations`,
 `llm_calls`, `input_tokens`, `output_tokens`, `cache_hit_tokens`,
 `cache_miss_tokens`, `cache_hit_ratio`, `tools_called`, `tool_outcomes`,
 `tool_error_taxonomy`, `llm_error_taxonomy`, plus the `env:*` / `channel:*` /
@@ -667,8 +667,8 @@ Once a week, answer these purely from the dashboards (no log access):
 2. **Latency p95** — creeping up? Correlate with cache-hit ratio: if the ratio
    dropped, prompts are cold-caching more (rephrased/rare intents) and calls
    get slower + pricier.
-3. **Routing distribution** — any new/unexpected route? Did voice/text usage
-   shift?
+3. **Mode distribution** — any unexpected `mode` value? Did voice/text usage
+   shift, and which tools ran?
 4. **Tool success/failure** — any tool erroring repeatedly this week? Open one
    trace per bucket to read `tool_error_taxonomy`; fix or file the bug.
 5. **Permission denials** — any? (Expected zero until authorization exists.)

@@ -13,7 +13,7 @@ export type WsDoneFrame = {
   type: 'done'
   reply: string
   lang: string | null
-  route: string | null
+  mode: 'chat' | 'tools' | null
   complete: boolean
 }
 

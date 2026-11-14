@@ -21,7 +21,7 @@ CASES = [
 
 def _run(language: str, label: str, concept: str):
     prompt = f"Reply with exactly one word: the {label} word for '{concept}'."
-    return get_chat_model("responder").invoke(prompt)
+    return get_chat_model("assistant").invoke(prompt)
 
 
 def test_smoke_05_multilingual():

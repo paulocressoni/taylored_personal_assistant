@@ -41,7 +41,12 @@ class ChatResponse(BaseModel):
 
     reply: str = Field(description="The assistant's final answer.")
     lang: str | None = Field(description="Resolved language tag, e.g. 'pt-BR'.")
-    route: str | None = Field(description="Routed intent, e.g. 'knowledge'.")
+    mode: Literal["chat", "tools"] | None = Field(
+        description=(
+            "How the turn was answered: 'chat' when no tool ran, "
+            "'tools' when at least one tool was invoked."
+        )
+    )
 
 
 class HistoryMessage(BaseModel):

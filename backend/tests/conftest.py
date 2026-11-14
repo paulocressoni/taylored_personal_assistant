@@ -9,7 +9,7 @@ The star of the show is FakeChatModel: the M06 pattern of replacing the real
 """
 
 from collections.abc import AsyncIterator, Callable
-from typing import Self
+from typing import Any, Self
 
 import pytest
 from langchain_core.messages import BaseMessage
@@ -24,15 +24,17 @@ class FakeChatModel:
     Why not the real ChatDeepSeek (or even GenericFakeChatModel)?
       - Real model = network + API key + non-determinism. Never in unit tests.
       - langchain-core's GenericFakeChatModel raises NotImplementedError on
-        bind_tools() (verified locally), but knowledge_node calls
-        get_chat_model("specialist").bind_tools(TOOLS).
+        bind_tools() (verified locally), while the nodes call
+        get_chat_model(...).bind_tools(TOOLS).
       - So we fake exactly the surface the nodes touch:
-            .invoke(messages, config=None) -> next scripted response
-            .bind_tools(tools)             -> returns self, remembers tools
+            .invoke(messages, config=None)  -> next scripted response
+            .ainvoke(messages, config=None) -> the same, async
+            .bind_tools(tools)              -> returns self, remembers tools
         and we RECORD every call so a test can assert what the node sent.
 
-    Each .invoke() pops the next scripted response; running out raises loudly
-    so a wrong script count fails the test instead of silently passing.
+    ``invoke`` and ``ainvoke`` share ``_next`` so a test that mixes both still
+    consumes one script in order. Running out raises loudly so a wrong script
+    count fails the test instead of silently passing.
     """
 
     def __init__(self, *responses: BaseMessage) -> None:
@@ -40,15 +42,26 @@ class FakeChatModel:
         self.calls: list[list[BaseMessage]] = []
         self.bound_tools: list | None = None
 
-    def bind_tools(self, tools):
+    def bind_tools(self, tools: list) -> Self:
         self.bound_tools = tools
         return self
 
-    def invoke(self, messages, config=None) -> BaseMessage:
+    def _next(self, messages: list[BaseMessage]) -> BaseMessage:
+        """Record one call and pop the next scripted response."""
         self.calls.append(messages)
         if not self._responses:
             raise AssertionError("FakeChatModel ran out of scripted responses")
         return self._responses.pop(0)
+
+    def invoke(self, messages: list[BaseMessage], config: Any = None) -> BaseMessage:
+        """Return the next scripted response synchronously."""
+        return self._next(messages)
+
+    async def ainvoke(
+        self, messages: list[BaseMessage], config: Any = None
+    ) -> BaseMessage:
+        """Return the next scripted response asynchronously."""
+        return self._next(messages)
 
 
 def make_state(**overrides) -> dict:
@@ -66,7 +79,7 @@ def make_state(**overrides) -> dict:
         "principal": None,
         "lang": "en",
         "stt_lang": None,
-        "route": None,
+        "mode": None,
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,
@@ -87,16 +100,15 @@ def patch_llm(monkeypatch: pytest.MonkeyPatch):
     the name lives inside each node module — we must patch it THERE, not in
     app.core.llm. Usage:
 
-        fake = FakeChatModel(AIMessage(content="<route>x</route>"))
+        fake = FakeChatModel(AIMessage(content="hello"))
         patch_llm(lambda role: fake)
-        result = router_node(state, config=None)
+        result = await assistant_node(state, config=None)
     """
 
     def _patch(factory: Callable[[str], FakeChatModel]) -> None:
         for module in (
-            "app.graph.nodes.router",
-            "app.graph.nodes.knowledge",
-            "app.graph.nodes.responder",
+            "app.graph.nodes.assistant",
+            "app.graph.nodes.finalize",
         ):
             monkeypatch.setattr(f"{module}.get_chat_model", factory)
 
