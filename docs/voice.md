@@ -20,7 +20,7 @@ for the ESP32/reSpeaker until the firmware exists.
 | Providers + slots | `backend/app/voice/registry.py` |
 | Per-stage timings | `backend/app/core/timing.py` + `stamp_voice_timing` in `backend/app/core/observability.py` |
 | Trace waterfall | `stt` / `tts` child spans via `child_observation` — see [observability.md](observability.md) |
-| Spoken-answer prompt | `VOICE_STYLE_ADDENDUM` in `backend/app/prompts/responder.py` |
+| Spoken-answer prompt | `VOICE_STYLE_ADDENDUM` in `backend/app/prompts/assistant.py` |
 | Browser client | `useVoiceSession.ts`, `MicButton.tsx`, `lib/socket.ts`, `lib/voice.ts`, `public/worklets/pcm-capture.js` |
 | Tooling | `scripts/make_voice_fixtures.py`, `smoke_08_voice_pipeline.py`, `smoke_09_voice_ws.py`, `voice_latency.py` |
 
@@ -63,7 +63,7 @@ Binary frames only ever carry audio: **mono, little-endian signed 16-bit PCM**.
 | `ready` | `{"input_sample_rate", "output_sample_rate", "format", "wake_word"}` | Once, after the start frame. `wake_word` echoes whether **this** session is gated. **Audio sent before this is read as the start frame** and the socket is refused |
 | `speech_start` | `{"type": "speech_start"}` | Every onset on an un-gated session; on a gated one, the wake detection and any onset that happens inside the permit. Doubles as **"stop playing what you have buffered"** — this is the barge-in signal |
 | `transcript` | `{"type": "transcript", "text": "..."}` | After STT, with the wake phrase already stripped. Not sent for a bare wake word or a cancel phrase |
-| `token` | `{"type": "token", "content": "..."}` | The responder's reply as text, token by token (the audio is the primary output) |
+| `token` | `{"type": "token", "content": "..."}` | The assistant's reply as text, token by token (the audio is the primary output) |
 | audio | binary PCM at the negotiated output rate | The spoken answer, streamed as it is synthesised |
 | `audio_end` | `{"type": "audio_end"}` | The turn's audio is complete |
 | `error` | `{"type": "error", "detail": "..."}` | Transcription failed, the turn failed, or the turn timed out |
@@ -108,7 +108,7 @@ it.
 
 A cancelled turn must not leave the conversation question-answer unbalanced. LangGraph
 commits a run's **input as its first checkpoint**, so the moment a turn enters the graph its
-`HumanMessage` is durable — but the responder's `AIMessage` is only committed when that node
+`HumanMessage` is durable — but the assistant's `AIMessage` is only committed when that node
 returns. Cancelling a turn mid-node therefore used to persist a question with no answer:
 `GET /sessions/{id}/history` showed it unanswered, and the *next* voice turn loaded that
 checkpoint and handed the model an unanswered user turn.
@@ -140,7 +140,7 @@ The original budget, from end-of-speech to the first audio byte:
 | Stage | Budget |
 |---|---|
 | STT round trip | 150–350 ms |
-| Graph → first responder token | 300–600 ms |
+| Graph → first assistant token | 300–600 ms |
 | TTS first PCM byte | 200–400 ms |
 | **Total** | **0.65–1.35 s** (target < 1.5 s) |
 
@@ -233,9 +233,13 @@ Read this honestly:
 
 - **STT meets its budget.** The 1.2 s seen in the very first cold run was TCP/TLS
   handshake, not transcription — which is exactly why the tool discards a warm-up run.
-- **The graph is ~70% of the wait.** `graph_ttft_ms` is 2225 ms p50 of a 3161 ms p50
-  `first_audio_ms`, and it covers **three sequential model round-trips** (router →
-  specialist → responder); the budget line above assumes one.
+- **The graph was ~70% of the wait.** `graph_ttft_ms` was 2225 ms p50 of a 3161 ms p50
+  `first_audio_ms` in the pre-collapse measurement, when it covered **three sequential
+  model round-trips** (router → specialist → responder). After the single-assistant
+  collapse the same fixture measures `graph_ttft_ms` p50 **0.57–0.76 s** and
+  `perceived_ms` p50 **1.91–2.04 s** across three local sets. The graph is no longer the
+  dominant cost; STT, TTS TTFB and the 500 ms VAD window are. The <1.5 s target is close
+  but not yet met.
 - **The first chunk is eager; later chunks are not.** Only the reply's FIRST chunk may be
   cut before a sentence ends: once `VOICE_TTS_FIRST_CHUNK_MIN_CHARS` (12) characters are
   buffered it takes the first clause break (comma, semicolon, colon, em dash), and if none

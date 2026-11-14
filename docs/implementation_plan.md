@@ -45,7 +45,7 @@ Release: **v0.3.1** (`backend/app/_version.py`), plus four manual `v0.4.x-test` 
 | M00 | Monorepo, dual-env config, tooling | `backend/app/core/config.py`, `Makefile`, `pyproject.toml` |
 | M01 | Trunk-based workflow, SemVer, pre-commit | `CONTRIBUTING.md`, `.pre-commit-config.yaml`, `v0.1.0` |
 | M02 | LLM provider layer (DeepSeek) + smoke tests | `backend/app/core/llm.py`, `backend/scripts/smoke_01..05` |
-| M03–M05 | LangGraph agent, router + ReAct tool loop, trilingual core | `backend/app/graph/*`, `backend/app/language/detector.py` |
+| M03–M05 | LangGraph agent, single tool-using assistant + ReAct tool loop, trilingual core | `backend/app/graph/*`, `backend/app/language/detector.py` |
 | M06 | Mocked unit tests + CI | `backend/tests/` (27 modules), `.github/workflows/ci.yml` |
 | M07 | Containerized backend (multi-stage) | `backend/Dockerfile` |
 | M08 | Self-hosted Langfuse (dev) | `infra/compose/docker-compose.base.yml` (`observability` profile) |
@@ -113,7 +113,7 @@ Sources are cited per item; treat unverified rows as open questions, not facts.
   $0.15/$0.30, output $0.60/$1.20 per 1 M. **Cache-hit input is ~2 % of cache-miss** — the prompt-prefix cache is
   the single biggest lever on both cost and latency.
 - Thinking is **on by default** with `reasoning_effort` low/high/max; `llm.py` already sends an explicit
-  `False`, which is the right call for the router/knowledge/responder roles.
+  `False`, which is the right call for the assistant/assistant_voice roles.
 
 ### 2.2 Orchestration
 
@@ -645,15 +645,19 @@ Social-engineering the agent ("I'm actually the owner") changes nothing.
 **GOAL:** Close the gap between the v6 budget (<1.5 s) and the measured ~3 s, where it is actually spent.
 
 **STEPS (cheapest first, measure after each):**
-1. **Attack `graph_ttft_ms` (~2.2 s of the ~3.2 s).** Ideas in order: a voice-specific responder prompt with a short
-   length cap; **skip the router hop for voice** (or use a much cheaper deterministic classifier) since one fewer
-   LLM round trip removes most of the delay; lower `reasoning_effort`; keep the prompt prefix cache-hot.
+1. **Attack `graph_ttft_ms` (~2.2 s of the ~3.2 s).** The single-assistant graph already removed the router and
+   specialist hops for every channel; the remaining levers are a voice-specific length cap, a short static policy
+   prompt, lower `reasoning_effort`, and keeping the prompt prefix cache-hot.
 2. **Deterministic command fast path** for a small closed set that should never touch an LLM
    ("stop", "volume up/down", "cancel") — instant, and removes the worst-case wait for the most repeated utterances.
 3. `VOICE_VAD_MIN_SILENCE_MS` 500 → **300** (−200 ms felt, already measured in `docs/voice.md`).
 4. Then TTS: the round trip is ~500 ms and is mostly *not* the model's thinking. `S1` below is the lever, not tuning.
 5. Add a **regression gate**: `voice_latency.py` numbers recorded in CI or in the docs, so this cannot silently rot.
 6. Consider partial-transcript streaming UI/LED feedback so the wait *feels* shorter even when it is not.
+
+**Measured after the single-assistant collapse (local, three sets):** `graph_ttft_ms` p50 **0.57–0.76 s**,
+`first_audio_ms` p50 **1.63–1.76 s**, `perceived_ms` p50 **1.91–2.04 s**. The graph hop is no longer the
+dominant cost; STT, TTS TTFB and the 500 ms VAD window are.
 
 **DONE WHEN:** `perceived_ms` p50 is materially below the D1.5 baseline, no measured turn regresses, and the
 number is tracked rather than remembered.
@@ -677,15 +681,15 @@ and only then switch the default. Keep OpenAI as the fallback provider.
 **Depends on:** M08, M16 · **Original M21**
 
 **STEPS:** `tests/evals/golden.yaml` with 30–45 cases split across the three languages, each specifying expected
-route, expected reply language, expected keywords, and (where relevant) **expected permission outcome**.
-Scorers: routing accuracy, response-language correctness, authorization correctness (all deterministic and cheap)
-plus LLM-as-judge for answer quality. Run against the **real** API and push results to **Langfuse as a dataset run**
+mode (`chat`/`tools`), expected tool (name or `none`), expected reply language, expected keywords, and (where
+relevant) **expected permission outcome**. Scorers: mode/tool-selection accuracy, response-language correctness,
+authorization correctness (all deterministic and cheap) plus LLM-as-judge for answer quality. Run against the **real** API and push results to **Langfuse as a dataset run**
 so score history is tracked. Add a **per-session token budget cap** enforced inside the graph with a friendly
 message instead of a silent failure. Wire it into CI as a pre-deploy job **with a hard cost ceiling**.
 **Establish your noise floor first** — run the identical suite three times with no changes; anything smaller than
 that variance is not an improvement. Consider **promptfoo 0.124.1** for lightweight CI prompt regression.
 
-**DONE WHEN:** degrading a routing prompt visibly drops the score, and the suite cannot run up a surprise bill.
+**DONE WHEN:** degrading the assistant/tool policy visibly drops the score, and the suite cannot run up a surprise bill.
 
 ### M30 — Speaker identification
 **Depends on:** M29, M16 · **Original M30**
@@ -708,7 +712,7 @@ voiceprint for someone who merely walked past the device.
 **DONE WHEN:** you can set an alarm by voice as your enrolled self, an unenrolled person is refused in their own
 detected language, and you have measured the false-accept/false-reject rates you are actually living with.
 
-### M18 — Calendar specialist
+### M18 — Calendar tools
 **Depends on:** M16 · **Original M18**
 
 Google Calendar OAuth (installed-app flow), refresh tokens **encrypted at rest, never sent to the frontend**.
@@ -718,13 +722,14 @@ in the user's language; `create_event` does not. Keep the distinction explicit i
 events are synced/shared; alarms and timers (M17) are local and ring on a device.** Add the token store to backups —
 losing it means redoing the whole consent flow.
 
-### M19 — Spotify specialist
+### M19 — Spotify tools
 **Depends on:** M12 · **Original M19**
 
 Spotipy OAuth; tools `search_track`, `play`, `pause`, `skip_next`, `queue_add`, `get_playback_state`; a
-`music_node` bound to them plus router examples in all three languages. **The architecture test from v6 still
-applies: this should touch only the router prompt, one node file and one tools file.** If it needs changes to
-`tool_exec` or the routing helpers, something is coupled that should not be — investigate before continuing.
+The tools plus their `Field(description=...)` metadata. **The architecture test from v6 still applies: this should
+touch only one tools file and a prompt-policy line; the single assistant binds the new tools automatically.** If it
+needs changes to `tool_exec`, `assistant_node` or the graph wiring, something is coupled that should not be —
+investigate before continuing.
 Note that the satellite has no local playback of its own; Spotify output needs a real speaker target.
 
 ### M20 — Long-term memory with multilingual embeddings

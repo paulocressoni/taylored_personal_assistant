@@ -124,7 +124,7 @@ ORDER BY turn_ms DESC
 LIMIT 20;
 
 -- 4. ROUTING DISTRIBUTION ACROSS INTENTS -------------------------------------
--- Trace names are `assistant:<route>` (set by enrich_trace at the end of the
+-- Trace names are `assistant:<mode>` (set by enrich_trace at the end of the
 -- run), so the app root is the only row that carries them.
 SELECT trace_name, count() AS runs
 FROM default.events_full
