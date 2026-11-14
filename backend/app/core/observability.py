@@ -8,7 +8,7 @@ keys; the handler reads them at root-run start and propagates them to the
 trace and all child spans via OpenTelemetry baggage.
 
 The run's OWN identity (trace name, tags, metadata) is not known up front —
-route, tools and usage are only decided mid-run. It is stamped at the END of
+mode, tools and usage are only decided mid-run. It is stamped at the END of
 the run by ``enrich_trace``, which only works while an app-owned root span is
 open: Langfuse reads a trace's identity from its app-root span, and
 ``propagate_attributes`` only affects the span that is current. Every invoke
@@ -28,6 +28,7 @@ from langfuse.langchain import CallbackHandler
 
 from app._version import __version__
 from app.core.config import settings
+from app.graph.utils import content_to_str
 
 # Imported for the two voice stage adapters below: neither module imports anything
 # from `app.core`, so this cannot cycle back through `app.voice.session`, which
@@ -45,7 +46,9 @@ from app.voice.stt import Transcript
 # 2.2: voice turns add `stt_lang` and the per-stage timing metrics. ONE bump
 # for the whole voice metadata generation — neither half has shipped yet, so
 # two bumps would only churn the dashboards.
-TRACE_SCHEMA_VERSION = "2.2"
+# 3.0: `route` (intent) is replaced by `mode` (chat/tools); the trace name is
+#      `assistant:<mode>`. Old and new values must stay distinguishable.
+TRACE_SCHEMA_VERSION = "3.0"
 
 # Any single metadata VALUE is coerced to a string and silently DROPPED when
 # longer than this, so only short scalars belong in trace metadata.
@@ -62,10 +65,10 @@ MAX_STATUS_MESSAGE_CHARS = 300
 # The Level values the v4 SDK accepts in `update_current_span`.
 SpanLevel = Literal["DEBUG", "DEFAULT", "WARNING", "ERROR"]
 
-# Fallback trace/span name used BEFORE the router has decided the route. The
-# invoke site stamps it as `langfuse_trace_name` so a run that crashes, times
-# out or is abandoned still appears named and filterable; `enrich_trace`
-# refines it to `assistant:<route>` once the run has actually finished.
+# Fallback trace/span name used BEFORE the turn has a mode. The invoke site
+# stamps it as `langfuse_trace_name` so a run that crashes, times out or is
+# abandoned still appears named and filterable; `enrich_trace` refines it to
+# `assistant:<mode>` once the run has actually finished.
 TURN_TRACE_NAME = "assistant:turn"
 
 _client: Langfuse | None = None
@@ -102,7 +105,7 @@ def turn_span(name: str = TURN_TRACE_NAME) -> Generator[None, None, None]:
 
     Args:
         name: Initial span name. The trace name itself is set later by
-            `enrich_trace`, once the router has decided the route.
+            `enrich_trace`, once the run has a mode.
 
     Yields:
         None. No-op when observability is switched off.
@@ -186,7 +189,7 @@ def langfuse_metadata(
     name plus the `env:*` / `channel:*` tags — because it is known before the
     run starts. A run that crashes, times out or is abandoned then still shows
     up named and filterable; `enrich_trace` later overwrites the name with
-    `assistant:<route>` and merges the `status:*` tag on success.
+    `assistant:<mode>` and merges the `status:*` tag on success.
 
     Args:
         session_id: Conversation id, written as `langfuse_session_id` so the
@@ -290,7 +293,7 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
         state: The final graph state of the run.
 
     Returns:
-        The trace name (`assistant:<route>`), the flat metadata dict and the
+        The trace name (`assistant:<mode>`), the flat metadata dict and the
         low-cardinality tag list.
     """
     usage = state.get("usage") or {}
@@ -313,10 +316,10 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
     if not status_tags:
         status_tags.append("status:tool_ok" if tool_outcomes else "status:ok")
 
-    route = state.get("route") or "unknown"
+    mode = state.get("mode") or "unknown"
     metadata: dict[str, str] = {
         "schema_version": TRACE_SCHEMA_VERSION,
-        "route": route,
+        "mode": mode,
         "lang": str(state.get("lang") or ""),
         "stt_lang": str(state.get("stt_lang") or ""),
         "channel": str(state.get("channel") or ""),
@@ -337,30 +340,7 @@ def trace_attributes(state: dict[str, Any]) -> TraceAttributes:
         f"channel:{state.get('channel') or 'cli'}",
         *status_tags,
     ]
-    return TraceAttributes(f"assistant:{route}", metadata, tags)
-
-
-def _flatten_content(content: Any) -> str:
-    """Flatten a message's content to plain text.
-
-    Mirrors the same helper in `app.api.routes` and `app.voice.session`; kept
-    local so `turn_io` stays pure and importable with no running stack.
-
-    Args:
-        content: A message's content: a string, or a list of content blocks.
-
-    Returns:
-        The message text, empty when there is none.
-    """
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in content or []:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
-    return "".join(parts)
+    return TraceAttributes(f"assistant:{mode}", metadata, tags)
 
 
 def turn_io(state: dict[str, Any]) -> tuple[str, str]:
@@ -386,9 +366,9 @@ def turn_io(state: dict[str, Any]) -> tuple[str, str]:
     question = ""
     for message in reversed(messages):
         if isinstance(message, HumanMessage):
-            question = _flatten_content(message.content)
+            question = content_to_str(message.content)
             break
-    reply = _flatten_content(messages[-1].content) if messages else ""
+    reply = content_to_str(messages[-1].content) if messages else ""
     return question[:MAX_TRACE_IO_CHARS], reply[:MAX_TRACE_IO_CHARS]
 
 

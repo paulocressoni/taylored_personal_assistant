@@ -49,7 +49,8 @@ from app.api.schemas import (
 )
 from app.core.config import settings
 from app.core.observability import enrich_trace, mark_turn_failed, turn_span
-from app.graph.utils import get_last_message
+from app.graph.constants import ANSWER_NODES
+from app.graph.utils import content_to_str, get_last_message
 from app.voice.registry import SessionSlots, VoiceProviders
 from app.voice.session import Inbound, Outbound, Send, VoiceSession
 from app.voice.wake import WakeWordUnavailable
@@ -108,7 +109,7 @@ async def chat(
 
     Returns:
         A ChatResponse object containing the assistant's reply, resolved
-        language, and routed intent.
+        language, and mode.
     """
     initial = build_initial_state(
         user_input=payload.message,
@@ -156,18 +157,18 @@ async def chat(
             detail="The assistant took too long. Please try again.",
         )
 
-    # Closing correlation line for this run — both route/lang land in
-    # the JSON/text record alongside session_id.
+    # Closing correlation line for this run — both mode/lang land in the
+    # JSON/text record alongside session_id.
     logger.info(
-        "chat run complete (route=%s lang=%s)", final.get("route"), final.get("lang")
+        "chat run complete (mode=%s lang=%s)", final.get("mode"), final.get("lang")
     )
 
     last = get_last_message(final["messages"])
 
     return ChatResponse(
-        reply=_content_to_str(last.content),
+        reply=content_to_str(last.content),
         lang=final.get("lang"),
-        route=final.get("route"),
+        mode=final.get("mode"),
     )
 
 
@@ -325,7 +326,7 @@ async def chat_ws(websocket: WebSocket) -> None:
 
     streamed: list[str] = []
     final_state: dict[str, Any] | None = None
-    thinking_sent = False  # send the router status exactly once
+    thinking_sent = False  # send the thinking status exactly once
     completed = False  # True only when the root on_chain_end is seen
 
     try:
@@ -350,25 +351,26 @@ async def chat_ws(websocket: WebSocket) -> None:
                         # produced by the model.
                         if kind == "on_chat_model_stream":
                             node = event.get("metadata", {}).get("langgraph_node")
-                            if node == "responder":
+                            if node in ANSWER_NODES:
                                 chunk = event["data"]["chunk"]
                                 if isinstance(chunk, AIMessageChunk):
-                                    text = _content_to_str(chunk.content)
+                                    text = content_to_str(chunk.content)
                                     if text:
                                         streamed.append(text)
                                         await websocket.send_json(
                                             {"type": "token", "content": text}
                                         )
 
-                        # Status frame when the router's model call begins
+                        # One status frame when the assistant's model call
+                        # begins. There is no separate router hop any more.
                         if kind == "on_chat_model_start":
                             node = event.get("metadata", {}).get("langgraph_node")
-                            if node == "router" and not thinking_sent:
+                            if node == "assistant" and not thinking_sent:
                                 thinking_sent = True
                                 await websocket.send_json(
                                     {
                                         "type": "status",
-                                        "detail": "classifying intent...",
+                                        "detail": "thinking...",
                                     }
                                 )
 
@@ -425,17 +427,17 @@ async def chat_ws(websocket: WebSocket) -> None:
     # extract the last message from the final state to form the reply.
 
     if not reply and final_state is not None:
-        reply = _content_to_str(get_last_message(final_state["messages"]).content)
+        reply = content_to_str(get_last_message(final_state["messages"]).content)
 
     try:
         # Send a final JSON message indicating the end of the conversation, along with
-        # the assistant's reply, resolved language, routed intent, and completion status.
+        # the assistant's reply, resolved language, mode, and completion status.
         await websocket.send_json(
             {
                 "type": "done",
                 "reply": reply,
                 "lang": final_state.get("lang") if final_state else None,
-                "route": final_state.get("route") if final_state else None,
+                "mode": final_state.get("mode") if final_state else None,
                 "complete": completed,
             }
         )
@@ -721,26 +723,6 @@ async def _close_with_error(websocket: WebSocket, detail: str, code: int) -> Non
         pass  # the client vanished while we were rejecting it
 
 
-def _content_to_str(content: Any) -> str:
-    """Normalize AIMessage.content (str | list of content blocks) to text.
-
-    Args:
-        content: The content of an AIMessage, which can be a string or a list of content blocks.
-
-    Returns:
-        A string representation of the content, concatenating text from content blocks if necessary.
-    """
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in content or []:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
-    return "".join(parts)
-
-
 def _message_to_history(message: BaseMessage) -> HistoryMessage:
     """Flatten a BaseMessage into a HistoryMessage for the API response.
 
@@ -750,4 +732,4 @@ def _message_to_history(message: BaseMessage) -> HistoryMessage:
     Returns:
         A HistoryMessage with "role" (message.type) and flattened text content.
     """
-    return HistoryMessage(role=message.type, content=_content_to_str(message.content))
+    return HistoryMessage(role=message.type, content=content_to_str(message.content))

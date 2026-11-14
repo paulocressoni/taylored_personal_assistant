@@ -177,7 +177,7 @@ def _lang_event(lang: str) -> dict[str, Any]:
     }
 
 
-def _token_event(text: str, node: str = "responder") -> dict[str, Any]:
+def _token_event(text: str, node: str = "assistant") -> dict[str, Any]:
     return {
         "event": "on_chat_model_stream",
         "name": "ChatDeepSeek",
@@ -317,10 +317,10 @@ async def test_an_utterance_is_transcribed_answered_and_spoken() -> None:
     assert 0 < len(transcriber.calls[0][0]) < len(UTTERANCE_PCM)
 
 
-async def test_only_the_responder_tokens_reach_the_client() -> None:
+async def test_only_answer_node_tokens_reach_the_client() -> None:
     graph = FakeGraph(
         _lang_event("en"),
-        _token_event("<route>knowledge</route>", node="router"),
+        _token_event("not an answer", node="detect_lang"),
         _token_event(REPLY),
         _end_event({}),
     )
@@ -538,7 +538,7 @@ async def test_each_turn_publishes_its_stage_timings() -> None:
 class GatedChatModel(FakeChatModel):
     """FakeChatModel that announces itself, then blocks until it is released.
 
-    Holding the responder node open is what makes a barge-in land while the graph
+    Holding the assistant node open is what makes a barge-in land while the graph
     is still running — the only window where the checkpointer holds the turn's
     HumanMessage but not yet its AIMessage.
     """
@@ -579,18 +579,20 @@ async def test_a_barge_in_closes_the_interrupted_turn(
     """A cancelled turn must not persist a question with no answer.
 
     LangGraph commits a run's input as its FIRST checkpoint and only commits the
-    responder's AIMessage when that node returns, so cancelling the turn mid-node
+    assistant's AIMessage when that node returns, so cancelling the turn mid-node
     used to leave the thread holding an unanswered question: it showed up in
     `GET /sessions/{id}/history` and was fed back to the model on the next turn.
     """
     gate = asyncio.Event()
     entered = asyncio.Event()
-    responder = GatedChatModel(AIMessage(content=REPLY), gate=gate, entered=entered)
+    assistant_model = GatedChatModel(
+        AIMessage(content=REPLY), gate=gate, entered=entered
+    )
     patch_llm(
         lambda role: (
-            responder
-            if role == "responder"
-            else FakeChatModel(AIMessage(content="<route>responder</route>"))
+            assistant_model
+            if role in {"assistant", "assistant_voice"}
+            else FakeChatModel(AIMessage(content="ok"))
         )
     )
 
@@ -602,7 +604,7 @@ async def test_a_barge_in_closes_the_interrupted_turn(
 
         async def stream() -> AsyncIterator[bytes | dict[str, Any]]:
             yield UTTERANCE_PCM
-            # Let the responder get inside the graph, so the onset below cancels a
+            # Let the assistant get inside the graph, so the onset below cancels a
             # running turn rather than a turn that never started.
             await asyncio.wait_for(entered.wait(), timeout=5)
             yield ONE_WINDOW
@@ -626,7 +628,7 @@ async def test_a_barge_in_closes_the_interrupted_turn(
         ]
         # The cancellation reached the async model call itself, not just the
         # session wrapper; otherwise barge-in would keep paying for the reply.
-        assert responder.cancelled is True
+        assert assistant_model.cancelled is True
         assert await _persisted(graph) == [
             ("human", "turn on the light"),
             ("ai", INTERRUPTED_MARKER),

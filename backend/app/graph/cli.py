@@ -39,7 +39,7 @@ def main() -> None:
     # continuation turn the checkpointer's persisted lang must survive;
     # a stateless CLI run simply has none until detect_lang_node fills it.
     # Kept in lockstep with build_initial_state in app/api/deps.py. The
-    # user's text becomes a HumanMessage so the responder model sees a
+    # user's text becomes a HumanMessage so the assistant model sees a
     # proper message list.
     initial: IPAState = {
         "messages": [HumanMessage(content=user_input)],
@@ -49,7 +49,7 @@ def main() -> None:
         "device_id": None,
         "principal": None,
         "stt_lang": None,  # No transcription bias on a typed turn
-        "route": None,
+        "mode": None,
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,

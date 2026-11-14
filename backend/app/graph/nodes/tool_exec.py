@@ -15,7 +15,7 @@ import logging
 import time
 from typing import Any
 
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 
 from app.graph.state import IPAState
 from app.graph.utils import get_last_message
@@ -165,16 +165,7 @@ async def tool_exec_node(state: IPAState) -> dict:
     if denials:
         out["permission_denials"] = denials
 
-    # Cap reached: stop the loop and tell the responder why, so it wraps up
-    # with a clear message instead of the user seeing silence.
-    if iterations >= TOOL_ITERATION_CAP:
-        out["messages"] = results + [
-            SystemMessage(
-                content=(
-                    "The tool loop reached its iteration cap and was stopped. "
-                    "Do NOT call any more tools. Tell the user you couldn't "
-                    "get a definitive answer and suggest rephrasing."
-                )
-            )
-        ]
+    # The cap notice lives in finalize_node's prompt, not in persisted history:
+    # after_tools routes here to finalize at the cap, so no synthetic
+    # SystemMessage needs to pollute the session's 20-message window.
     return out

@@ -23,7 +23,7 @@ PROMPT = "What's the weather in Berlin? Use the provided tool."
 
 
 def _run():
-    llm = get_chat_model("specialist").bind_tools([GetWeather])
+    llm = get_chat_model("assistant").bind_tools([GetWeather])
     return llm.invoke(PROMPT, extra_body={"thinking": {"type": "enabled"}})
 
 

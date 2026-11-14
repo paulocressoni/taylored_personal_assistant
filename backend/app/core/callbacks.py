@@ -4,7 +4,7 @@ How it works: a single `RunTelemetry` instance is created at the invoke site
 and passed to `graph.ainvoke(..., config={"callbacks": [telemetry]})`.
 LangGraph threads those callbacks down through every node, so the handler
 fires for ALL model/tool calls in the run — including calls the nodes never
-persist to state (e.g. the router's classification call). The same instance is
+persist to state (e.g. the assistant's model call). The same instance is
 also exposed to nodes via `config["configurable"]["run_telemetry"]` so the
 telemetry node can write the counts into IPAState at the end of the run.
 

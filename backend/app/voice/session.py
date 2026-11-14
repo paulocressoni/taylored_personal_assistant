@@ -49,6 +49,8 @@ from app.core.observability import (
     turn_span,
 )
 from app.core.timing import StageMarks, log_stage_marks, monotonic_now
+from app.graph.constants import ANSWER_NODES
+from app.graph.utils import content_to_str
 from app.language.voices import voice_for
 from app.voice.audio import StreamingResampler, duration_s
 from app.voice.stt import Transcriber
@@ -77,7 +79,7 @@ OUTPUT_SAMPLE_RATES = frozenset({16000, PCM_SAMPLE_RATE})
 
 # Persisted as the assistant's side of a turn a barge-in cut off. LangGraph
 # commits a run's input as its FIRST checkpoint, so the turn's HumanMessage is
-# durable long before the responder can answer; without this marker a cancelled
+# durable long before the assistant can answer; without this marker a cancelled
 # turn leaves that question unanswered for ever. The text is deliberately short
 # and plainly not spoken: it restores the question/answer alternation a model
 # expects without inventing an answer the assistant never gave.
@@ -89,51 +91,26 @@ INTERRUPTED_MARKER = "[interrupted]"
 TurnOutcome = Literal["answer", "wake_only", "cancel"]
 
 
-def _content_to_str(content: Any) -> str:
-    """Flatten a message chunk's content to text.
-
-    Mirrors the same helper in `app.api.routes`; both exist because the two
-    transports stream the same token shape. Consolidating them into
-    `app.graph.utils` is a tidy-up, not a behaviour change.
-
-    Args:
-        content: A message's content: a string, or a list of content blocks.
-
-    Returns:
-        The text of the message, empty when there is none.
-    """
-    if isinstance(content, str):
-        return content
-    parts: list[str] = []
-    for block in content or []:
-        if isinstance(block, str):
-            parts.append(block)
-        elif isinstance(block, dict) and block.get("type") == "text":
-            parts.append(block.get("text", ""))
-    return "".join(parts)
-
-
-def _responder_token(event: dict[str, Any]) -> str | None:
+def _answer_token(event: dict[str, Any]) -> str | None:
     """Return the reply text a streaming event carries, or None.
 
-    Only the responder's tokens are the answer: the router and the knowledge node
-    also call models, and speaking their output would read the classification
-    aloud.
+    Only answer-node tokens are the answer. The assistant and finalize nodes
+    share one set so adding a future answer node cannot silently mute voice.
 
     Args:
         event: One `astream_events` v2 event.
 
     Returns:
-        The token's text, or None for anything that is not a responder token.
+        The token's text, or None for anything that is not an answer token.
     """
     if event.get("event") != "on_chat_model_stream":
         return None
-    if event.get("metadata", {}).get("langgraph_node") != "responder":
+    if event.get("metadata", {}).get("langgraph_node") not in ANSWER_NODES:
         return None
     chunk = event.get("data", {}).get("chunk")
     if not isinstance(chunk, AIMessageChunk):
         return None
-    return _content_to_str(chunk.content)
+    return content_to_str(chunk.content)
 
 
 def _detected_lang(event: dict[str, Any]) -> str | None:
@@ -474,8 +451,8 @@ class VoiceSession:
         """Give a turn that never finished an assistant reply, if it needs one.
 
         LangGraph commits a run's input as its first checkpoint, so a turn's
-        HumanMessage is durable the moment the graph starts — but the responder's
-        AIMessage only lands when the responder node returns. Cancelling the turn
+        HumanMessage is durable the moment the graph starts — but the assistant's
+        AIMessage only lands when the answer node returns. Cancelling the turn
         mid-node therefore used to leave the persisted thread holding a question
         with no answer: `GET /sessions/{id}/history` showed it unanswered, and the
         next run fed it back to the model as an unanswered user turn.
@@ -711,7 +688,7 @@ class VoiceSession:
                 if state is not None:
                     final = state
                     continue
-                text = _responder_token(event)
+                text = _answer_token(event)
                 if not text:
                     continue
                 if marks.llm_first_token is None:

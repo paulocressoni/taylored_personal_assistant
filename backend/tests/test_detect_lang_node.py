@@ -66,11 +66,9 @@ def test_detect_low_confidence_falls_back_to_persisted_lang(monkeypatch) -> None
 async def test_two_turn_continuation_keeps_persisted_lang(
     monkeypatch, patch_llm
 ) -> None:
-    # Script all four model calls (router + responder per turn) on one fake.
+    # One assistant call per turn; the single assistant has no router hop.
     fake = FakeChatModel(
-        AIMessage(content="<route>responder</route>"),
         AIMessage(content="Antwort auf Deutsch."),
-        AIMessage(content="<route>responder</route>"),
         AIMessage(content="Antwort bleibt Deutsch."),
     )
     patch_llm(lambda role: fake)

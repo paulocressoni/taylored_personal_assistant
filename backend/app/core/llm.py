@@ -1,6 +1,6 @@
 """LLM client factory (model-agnostic).
 
-Callers pick a *role* (router / specialist / responder) and get back a fully
+Callers pick a *role* (assistant / assistant_voice) and get back a fully
 configured chat model. Model names and temperatures live only in ROLE_CONFIG,
 so business logic never hardcodes a model name — swapping models or providers
 is a one-place change.
@@ -25,30 +25,24 @@ class RoleConfig(TypedDict):
 
 
 ROLE_CONFIG: dict[str, RoleConfig] = {
-    # thinking: False keeps cheap roles cheap — verified empirically that
-    # flash thinks by default, so we must send "disabled" explicitly.
-    "router": {
+    # thinking: False keeps the assistant cheap and fast — verified empirically
+    # that flash thinks by default, so we must send "disabled" explicitly.
+    "assistant": {
         "model": settings.deepseek_model_flash,
-        "temperature": 0.0,
+        "temperature": 0.6,
         "thinking": False,
         "timeout": 10.0,
         "max_tokens": 1024,
         "max_retries": 2,
     },
-    "specialist": {
+    # Voice answers are spoken, so the output is capped lower than text. 512
+    # leaves room for a tool-call argument while keeping a runaway answer short.
+    "assistant_voice": {
         "model": settings.deepseek_model_flash,
-        "temperature": 0.0,
+        "temperature": 0.6,
         "thinking": False,
         "timeout": 10.0,
-        "max_tokens": 4096,
-        "max_retries": 2,
-    },
-    "responder": {
-        "model": settings.deepseek_model_flash,
-        "temperature": 1.3,
-        "thinking": False,
-        "timeout": 10.0,
-        "max_tokens": 1024,
+        "max_tokens": 512,
         "max_retries": 2,
     },
 }

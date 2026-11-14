@@ -79,7 +79,7 @@ def make_state(**overrides) -> dict:
         "principal": None,
         "lang": "en",
         "stt_lang": None,
-        "route": None,
+        "mode": None,
         "pending_action": None,
         "llm_calls": 0,
         "tool_iterations": 0,
@@ -100,16 +100,15 @@ def patch_llm(monkeypatch: pytest.MonkeyPatch):
     the name lives inside each node module — we must patch it THERE, not in
     app.core.llm. Usage:
 
-        fake = FakeChatModel(AIMessage(content="<route>x</route>"))
+        fake = FakeChatModel(AIMessage(content="hello"))
         patch_llm(lambda role: fake)
-        result = await router_node(state, config=None)
+        result = await assistant_node(state, config=None)
     """
 
     def _patch(factory: Callable[[str], FakeChatModel]) -> None:
         for module in (
-            "app.graph.nodes.router",
-            "app.graph.nodes.knowledge",
-            "app.graph.nodes.responder",
+            "app.graph.nodes.assistant",
+            "app.graph.nodes.finalize",
         ):
             monkeypatch.setattr(f"{module}.get_chat_model", factory)
 

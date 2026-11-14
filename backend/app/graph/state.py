@@ -2,7 +2,7 @@
 between nodes. Extend here, never by ad-hoc dicts inside nodes."""
 
 import operator
-from typing import Annotated, NotRequired, TypedDict
+from typing import Annotated, Literal, NotRequired, TypedDict
 
 from langchain_core.messages import AnyMessage
 
@@ -15,7 +15,7 @@ class IPAState(TypedDict):
     # This list is the PERSISTED session memory and intentionally
     # stays unbounded — the checkpointer stores it and GET /sessions/{id}/
     # history reads it back whole. We never mutate it. Instead, the nodes
-    # that call the LLM (responder, knowledge) cap what the MODEL sees via
+    # that call the LLM (assistant, finalize) cap what the MODEL sees via
     # Settings.max_history_messages and app.graph.utils.trim_messages when
     # they build their prompt input. Persistence unbounded, model window
     # bounded — two different concerns.
@@ -34,7 +34,11 @@ class IPAState(TypedDict):
     # a text turn seeding None CLEARS the previous voice turn's hint, whereas an
     # absent key would let that stale hint leak into the next trace.
     stt_lang: str | None
-    route: str | None
+    # "chat" when the turn answered without tools, "tools" when at least one
+    # tool ran. telemetry_node derives it from tool_iterations (a non-reducer
+    # channel that resets every turn) — never from the reducer-accumulated
+    # tools_called, which survives across turns.
+    mode: Literal["chat", "tools"] | None
     pending_action: dict | None
     llm_calls: int
     tool_iterations: int
